@@ -33,3 +33,9 @@
 - [x] 前端：密钥验证页面显示客户信息
 - [x] 侧边栏：添加客户管理导航入口
 - [x] 完善后台管理功能（客户管理 + 仪表盘快捷入口）
+- [x] 集成 MAC 地址读取功能（Web Serial API）
+- [x] 添加 SerialMacService 服务和 useSerialMac hook
+- [x] 添加 Web Serial API 类型声明
+- [x] 创建 MAC 读取页面（适配 DashboardLayout 暗色主题）
+- [x] 侧边栏添加 MAC 读取导航入口
+- [x] 路由注册 MAC 读取页面

@@ -26,6 +26,7 @@ import { useIsMobile } from "@/hooks/useMobile";
 import {
   BarChart3,
   Building2,
+  Cpu,
   KeyRound,
   LayoutDashboard,
   LogOut,
@@ -58,6 +59,7 @@ const menuItems = [
   { icon: Search, label: "密钥验证", path: "/verify" },
   { icon: Building2, label: "客户管理", path: "/customers" },
   { icon: Users, label: "账号管理", path: "/accounts", roles: ["super_admin", "admin"] },
+  { icon: Cpu, label: "MAC 读取", path: "/mac-reader" },
 ];
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";

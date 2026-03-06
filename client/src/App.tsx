@@ -11,6 +11,7 @@ import KeyList from "./pages/KeyList";
 import VerifyKey from "./pages/VerifyKey";
 import AccountManagement from "./pages/AccountManagement";
 import CustomerManagement from "./pages/CustomerManagement";
+import MacReader from "./pages/MacReader";
 
 function Router() {
   return (
@@ -22,6 +23,7 @@ function Router() {
         <Route path={"/verify"} component={VerifyKey} />
         <Route path={"/accounts"} component={AccountManagement} />
         <Route path={"/customers"} component={CustomerManagement} />
+        <Route path={"/mac-reader"} component={MacReader} />
         <Route path={"/404"} component={NotFound} />
         <Route component={NotFound} />
       </Switch>
