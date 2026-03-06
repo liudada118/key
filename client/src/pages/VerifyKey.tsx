@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
 import {
+  Building2,
   Calendar,
   Clock,
   Cpu,
@@ -34,6 +35,7 @@ type VerifyResult = {
   createdByName: string | null;
   createdAt: Date | null;
   dbRemark: string | null;
+  customerName: string | null;
 };
 
 export default function VerifyKey() {
@@ -209,6 +211,13 @@ export default function VerifyKey() {
                     label="创建者"
                     value={result.createdByName || "未知"}
                   />
+                  {result.customerName && (
+                    <InfoItem
+                      icon={Building2}
+                      label="关联客户"
+                      value={result.customerName}
+                    />
+                  )}
                   {result.activatedAt && (
                     <InfoItem
                       icon={Clock}

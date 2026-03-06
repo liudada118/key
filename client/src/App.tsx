@@ -10,6 +10,7 @@ import GenerateKey from "./pages/GenerateKey";
 import KeyList from "./pages/KeyList";
 import VerifyKey from "./pages/VerifyKey";
 import AccountManagement from "./pages/AccountManagement";
+import CustomerManagement from "./pages/CustomerManagement";
 
 function Router() {
   return (
@@ -20,6 +21,7 @@ function Router() {
         <Route path={"/keys"} component={KeyList} />
         <Route path={"/verify"} component={VerifyKey} />
         <Route path={"/accounts"} component={AccountManagement} />
+        <Route path={"/customers"} component={CustomerManagement} />
         <Route path={"/404"} component={NotFound} />
         <Route component={NotFound} />
       </Switch>

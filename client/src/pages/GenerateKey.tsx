@@ -17,10 +17,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { trpc } from "@/lib/trpc";
 import {
+  Building2,
   Copy,
   Download,
   KeyRound,
   Loader2,
+  Plus,
   Zap,
   X,
   RotateCcw,
@@ -107,6 +109,28 @@ function KeyGenerator({
   const [days, setDays] = useState("365");
   const [count, setCount] = useState("10");
   const [remark, setRemark] = useState("");
+
+  // 客户选择状态
+  const [selectedCustomerId, setSelectedCustomerId] = useState<number | undefined>(undefined);
+  const [selectedCustomerName, setSelectedCustomerName] = useState("");
+  const [showNewCustomer, setShowNewCustomer] = useState(false);
+  const [newCustomerName, setNewCustomerName] = useState("");
+  const [newCustomerPhone, setNewCustomerPhone] = useState("");
+
+  const { data: customerList } = trpc.customers.all.useQuery();
+  const createCustomerMutation = trpc.customers.create.useMutation({
+    onSuccess: (data) => {
+      if (data) {
+        setSelectedCustomerId(data.id);
+        setSelectedCustomerName(data.name);
+      }
+      setShowNewCustomer(false);
+      setNewCustomerName("");
+      setNewCustomerPhone("");
+      toast.success("客户创建成功");
+    },
+    onError: (err) => toast.error(err.message),
+  });
 
   // 结果状态
   const [singleResult, setSingleResult] = useState<{
@@ -214,6 +238,8 @@ function KeyGenerator({
         sensorTypes,
         days: parseInt(days),
         category,
+        customerId: selectedCustomerId,
+        customerName: selectedCustomerName || undefined,
         remark: remark || undefined,
       });
     } else {
@@ -223,6 +249,8 @@ function KeyGenerator({
         days: parseInt(days),
         category,
         count: parseInt(count),
+        customerId: selectedCustomerId,
+        customerName: selectedCustomerName || undefined,
         remark: remark || undefined,
       });
     }
@@ -468,6 +496,97 @@ function KeyGenerator({
                 />
               </div>
             )}
+
+            {/* 客户选择 */}
+            <div className="space-y-1.5">
+              <Label className="text-foreground text-sm flex items-center gap-1">
+                <Building2 className="h-3.5 w-3.5" />
+                关联客户（可选）
+              </Label>
+              {!showNewCustomer ? (
+                <div className="space-y-2">
+                  <Select
+                    value={selectedCustomerId ? String(selectedCustomerId) : "none"}
+                    onValueChange={(v) => {
+                      if (v === "none") {
+                        setSelectedCustomerId(undefined);
+                        setSelectedCustomerName("");
+                      } else {
+                        const id = parseInt(v);
+                        setSelectedCustomerId(id);
+                        const c = customerList?.find((c) => c.id === id);
+                        setSelectedCustomerName(c?.name || "");
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="bg-secondary/50">
+                      <SelectValue placeholder="选择客户（可不选）" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">不关联客户</SelectItem>
+                      {customerList?.map((c) => (
+                        <SelectItem key={c.id} value={String(c.id)}>
+                          {c.name}{c.contactPerson ? ` (${c.contactPerson})` : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs w-full"
+                    onClick={() => setShowNewCustomer(true)}
+                  >
+                    <Plus className="h-3 w-3 mr-1" />
+                    新建客户
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-2 p-3 bg-secondary/30 rounded-lg border border-border/50">
+                  <Input
+                    placeholder="客户名称 *"
+                    value={newCustomerName}
+                    onChange={(e) => setNewCustomerName(e.target.value)}
+                    className="bg-secondary/50 h-8 text-sm"
+                  />
+                  <Input
+                    placeholder="联系电话（可选）"
+                    value={newCustomerPhone}
+                    onChange={(e) => setNewCustomerPhone(e.target.value)}
+                    className="bg-secondary/50 h-8 text-sm"
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      className="h-7 text-xs flex-1"
+                      disabled={!newCustomerName.trim() || createCustomerMutation.isPending}
+                      onClick={() => {
+                        createCustomerMutation.mutate({
+                          name: newCustomerName.trim(),
+                          phone: newCustomerPhone || undefined,
+                        });
+                      }}
+                    >
+                      {createCustomerMutation.isPending && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
+                      创建
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 text-xs"
+                      onClick={() => {
+                        setShowNewCustomer(false);
+                        setNewCustomerName("");
+                        setNewCustomerPhone("");
+                      }}
+                    >
+                      取消
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* 备注 */}
             <div className="space-y-1.5">

@@ -37,15 +37,44 @@ export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
 /**
+ * 客户表
+ * 记录所有客户信息，密钥生成时可关联客户
+ */
+export const customers = mysqlTable("customers", {
+  id: int("id").autoincrement().primaryKey(),
+  /** 客户名称/公司名 */
+  name: varchar("name", { length: 256 }).notNull(),
+  /** 联系人 */
+  contactPerson: varchar("contactPerson", { length: 128 }),
+  /** 联系电话 */
+  phone: varchar("phone", { length: 32 }),
+  /** 邮箱 */
+  email: varchar("email", { length: 320 }),
+  /** 地址 */
+  address: text("address"),
+  /** 备注 */
+  remark: text("remark"),
+  /** 创建者用户 ID */
+  createdById: int("createdById").notNull(),
+  /** 是否启用 */
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type Customer = typeof customers.$inferSelect;
+export type InsertCustomer = typeof customers.$inferInsert;
+
+/**
  * 密钥表
- * 记录所有生成的密钥，包含类型、状态、激活信息
+ * 记录所有生成的密钥，包含类型、状态、激活信息、关联客户
  */
 export const licenseKeys = mysqlTable("licenseKeys", {
   id: int("id").autoincrement().primaryKey(),
   /** 加密后的密钥字符串 (hex) */
   keyString: text("keyString").notNull(),
-  /** 传感器类型 */
-  sensorType: varchar("sensorType", { length: 32 }).notNull(),
+  /** 传感器类型（多选时逗号分隔，或 "all"） */
+  sensorType: varchar("sensorType", { length: 512 }).notNull(),
   /** 密钥类型: production(量产) / rental(在线租赁) */
   category: mysqlEnum("category", ["production", "rental"]).notNull(),
   /** 有效期天数 */
@@ -56,6 +85,10 @@ export const licenseKeys = mysqlTable("licenseKeys", {
   createdById: int("createdById").notNull(),
   /** 创建者名称（冗余存储，方便查询） */
   createdByName: varchar("createdByName", { length: 128 }),
+  /** 关联客户 ID */
+  customerId: int("customerId"),
+  /** 客户名称（冗余存储，方便查询） */
+  customerName: varchar("customerName", { length: 256 }),
   /** 是否已激活 */
   isActivated: boolean("isActivated").default(false).notNull(),
   /** 激活时间 */

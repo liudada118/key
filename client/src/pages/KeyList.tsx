@@ -276,6 +276,7 @@ export default function KeyList() {
                       <TableHead className="text-muted-foreground">有效期</TableHead>
                       <TableHead className="text-muted-foreground">到期时间</TableHead>
                       <TableHead className="text-muted-foreground">状态</TableHead>
+                      <TableHead className="text-muted-foreground">客户</TableHead>
                       <TableHead className="text-muted-foreground">创建者</TableHead>
                       <TableHead className="text-muted-foreground">创建时间</TableHead>
                       <TableHead className="text-muted-foreground w-10"></TableHead>
@@ -322,6 +323,9 @@ export default function KeyList() {
                                 未激活
                               </Badge>
                             )}
+                          </TableCell>
+                          <TableCell className="text-sm text-foreground">
+                            {key.customerName || "-"}
                           </TableCell>
                           <TableCell className="text-sm text-foreground">
                             {key.createdByName || "-"}

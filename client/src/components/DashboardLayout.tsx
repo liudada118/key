@@ -25,6 +25,7 @@ import { getLoginUrl } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
 import {
   BarChart3,
+  Building2,
   KeyRound,
   LayoutDashboard,
   LogOut,
@@ -55,6 +56,7 @@ const menuItems = [
   { icon: KeyRound, label: "生成密钥", path: "/generate" },
   { icon: BarChart3, label: "密钥管理", path: "/keys" },
   { icon: Search, label: "密钥验证", path: "/verify" },
+  { icon: Building2, label: "客户管理", path: "/customers" },
   { icon: Users, label: "账号管理", path: "/accounts", roles: ["super_admin", "admin"] },
 ];
 

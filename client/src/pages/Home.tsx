@@ -1,7 +1,7 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { trpc } from "@/lib/trpc";
-import { BarChart3, Key, KeyRound, ShieldAlert, ShieldCheck, Zap } from "lucide-react";
+import { BarChart3, Building2, Key, KeyRound, ShieldAlert, ShieldCheck, Zap } from "lucide-react";
 
 export default function Home() {
   const { user } = useAuth();
@@ -132,6 +132,12 @@ export default function Home() {
                 icon={ShieldCheck}
                 label="验证密钥"
                 desc="解密验证密钥信息"
+              />
+              <QuickAction
+                href="/customers"
+                icon={Building2}
+                label="客户管理"
+                desc="管理客户信息"
               />
               <QuickAction
                 href="/accounts"
