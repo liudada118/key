@@ -1,0 +1,21 @@
+# Project TODO
+
+- [x] 数据库 schema（users 三级角色 + licenseKeys 表含量产/租赁 + 激活状态）
+- [x] AES-256-GCM 加密模块（独立可导出，支持 CJS/ESM，Electron 可用）
+- [x] 三级权限中间件（super_admin / admin / user）
+- [x] 账号管理 API（创建/编辑/禁用，层级关系）
+- [x] 密钥生成 API（量产 + 在线租赁，单个/批量）
+- [x] 密钥激活 API（每个密钥只能激活一次）
+- [x] 密钥解密验证 API
+- [x] 分级密钥查询 API
+- [x] 密钥导出 API（CSV/JSON）
+- [x] 密钥统计 API
+- [x] 前端暗色主题 + DashboardLayout
+- [x] 前端：Dashboard 统计页
+- [x] 前端：密钥生成页（量产 + 租赁）
+- [x] 前端：密钥管理列表页
+- [x] 前端：密钥验证页
+- [x] 前端：账号管理页
+- [x] 前端：批量生成 + 导出
+- [x] Vitest 测试（16 个测试全部通过）
+- [x] 独立 CJS 加密库文件（Electron 可直接 require）
