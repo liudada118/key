@@ -1,6 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -17,27 +17,15 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { trpc } from "@/lib/trpc";
 import { BarChart3, Copy, Download, Loader2, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-
-const SENSOR_MAP: Record<string, string> = {
-  yanfeng10: "轮椅",
-  foot: "脚型检测",
-  sit: "臀部监测",
-  hand: "手部检测",
-  car: "汽车",
-  jqbed: "小床监测",
-  matCol: "小床褥采集",
-  matColPos: "小床睡姿采集",
-  carCol: "车载传感器",
-  normal: "正常测试",
-  newHand: "手套监测",
-  smallBed: "席悦1.0",
-  xiyueReal1: "席悦2.0",
-  all: "全部类型",
-};
 
 export default function KeyList() {
   const [page, setPage] = useState(1);
@@ -46,6 +34,19 @@ export default function KeyList() {
   const [category, setCategory] = useState<string>("__all__");
   const [sensorType, setSensorType] = useState<string>("__all__");
   const [activated, setActivated] = useState<string>("__all__");
+
+  // 获取传感器分组用于 label 映射和筛选
+  const { data: sensorGroups } = trpc.keys.sensorGroups.useQuery();
+  const sensorLabelMap = useMemo(() => {
+    if (!sensorGroups) return {} as Record<string, string>;
+    const map: Record<string, string> = { all: "全部类型" };
+    for (const g of sensorGroups) {
+      for (const item of g.items) {
+        map[item.value] = item.label;
+      }
+    }
+    return map;
+  }, [sensorGroups]);
 
   const queryInput = useMemo(
     () => ({
@@ -89,6 +90,55 @@ export default function KeyList() {
 
   const totalPages = data ? Math.ceil(data.total / 20) : 0;
 
+  /** 将逗号分隔的传感器类型转为标签显示 */
+  const renderSensorTypes = (sensorTypeStr: string) => {
+    if (sensorTypeStr === "all") {
+      return (
+        <Badge variant="default" className="text-[10px]">
+          全部类型
+        </Badge>
+      );
+    }
+    const types = sensorTypeStr.split(",").filter(Boolean);
+    if (types.length === 1) {
+      return (
+        <span className="text-sm text-foreground">
+          {sensorLabelMap[types[0]] || types[0]}
+        </span>
+      );
+    }
+    // 多类型：显示前2个 + 数量提示
+    const displayTypes = types.slice(0, 2);
+    const remaining = types.length - 2;
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className="flex flex-wrap gap-0.5 cursor-help">
+            {displayTypes.map((t) => (
+              <Badge key={t} variant="secondary" className="text-[10px] h-4 px-1">
+                {sensorLabelMap[t] || t}
+              </Badge>
+            ))}
+            {remaining > 0 && (
+              <Badge variant="outline" className="text-[10px] h-4 px-1">
+                +{remaining}
+              </Badge>
+            )}
+          </div>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-[300px]">
+          <div className="flex flex-wrap gap-1">
+            {types.map((t) => (
+              <Badge key={t} variant="secondary" className="text-[10px]">
+                {sensorLabelMap[t] || t}
+              </Badge>
+            ))}
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    );
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -111,7 +161,7 @@ export default function KeyList() {
             disabled={exportMutation.isPending}
           >
             <Download className="h-3.5 w-3.5 mr-1.5" />
-            导出 CSV
+            CSV
           </Button>
           <Button
             variant="outline"
@@ -127,7 +177,7 @@ export default function KeyList() {
             disabled={exportMutation.isPending}
           >
             <Download className="h-3.5 w-3.5 mr-1.5" />
-            导出 JSON
+            JSON
           </Button>
         </div>
       </div>
@@ -163,7 +213,7 @@ export default function KeyList() {
               </Button>
             </div>
             <Select value={category} onValueChange={(v) => { setCategory(v); setPage(1); }}>
-              <SelectTrigger className="w-[140px] bg-secondary/50">
+              <SelectTrigger className="w-[130px] bg-secondary/50">
                 <SelectValue placeholder="密钥类型" />
               </SelectTrigger>
               <SelectContent>
@@ -178,10 +228,17 @@ export default function KeyList() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="__all__">全部传感器</SelectItem>
-                {Object.entries(SENSOR_MAP).map(([val, label]) => (
-                  <SelectItem key={val} value={val}>
-                    {label}
-                  </SelectItem>
+                {sensorGroups?.map((group) => (
+                  <div key={group.group}>
+                    <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
+                      {group.icon} {group.group}
+                    </div>
+                    {group.items.map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </div>
                 ))}
               </SelectContent>
             </Select>
@@ -244,8 +301,8 @@ export default function KeyList() {
                               {key.category === "production" ? "量产" : "租赁"}
                             </Badge>
                           </TableCell>
-                          <TableCell className="text-sm text-foreground">
-                            {SENSOR_MAP[key.sensorType] || key.sensorType}
+                          <TableCell>
+                            {renderSensorTypes(key.sensorType)}
                           </TableCell>
                           <TableCell className="text-sm text-foreground">{key.days}天</TableCell>
                           <TableCell className="text-sm text-foreground">

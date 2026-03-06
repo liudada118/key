@@ -22,6 +22,9 @@ import {
   decodeLicenseKey,
   generateLicenseKey,
   SENSOR_TYPES,
+  SENSOR_GROUPS,
+  ALL_SENSORS,
+  SENSOR_LABEL_MAP,
   KEY_CATEGORIES,
   type KeyCategory,
 } from "@shared/crypto";
@@ -110,29 +113,37 @@ export const appRouter = router({
 
   // ===== 密钥管理 =====
   keys: router({
-    /** 获取传感器类型列表 */
+    /** 获取传感器类型列表（平铺） */
     sensorTypes: publicProcedure.query(() => SENSOR_TYPES),
+
+    /** 获取传感器类型分组列表 */
+    sensorGroups: publicProcedure.query(() => SENSOR_GROUPS),
 
     /** 获取密钥类型列表 */
     categories: publicProcedure.query(() => KEY_CATEGORIES),
 
-    /** 生成单个密钥 */
+    /** 生成单个密钥（支持多选传感器类型） */
     generate: protectedProcedure
       .input(
         z.object({
-          sensorType: z.string(),
-          days: z.number().min(1).max(3650),
+          sensorTypes: z.union([z.string(), z.array(z.string())]),
+          days: z.number().min(1).max(36500),
           category: z.enum(["production", "rental"]),
           remark: z.string().optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const keyString = generateLicenseKey(input.sensorType, input.days, input.category);
+        const keyString = generateLicenseKey(input.sensorTypes, input.days, input.category);
         const expireTimestamp = Date.now() + input.days * 24 * 60 * 60 * 1000;
+
+        // 存储时将多选类型序列化为逗号分隔字符串
+        const sensorTypeStr = Array.isArray(input.sensorTypes)
+          ? input.sensorTypes.join(",")
+          : input.sensorTypes;
 
         await insertLicenseKey({
           keyString,
-          sensorType: input.sensorType,
+          sensorType: sensorTypeStr,
           category: input.category,
           days: input.days,
           expireTimestamp,
@@ -144,12 +155,12 @@ export const appRouter = router({
         return { keyString, expireTimestamp };
       }),
 
-    /** 批量生成密钥 */
+    /** 批量生成密钥（支持多选传感器类型） */
     batchGenerate: protectedProcedure
       .input(
         z.object({
-          sensorType: z.string(),
-          days: z.number().min(1).max(3650),
+          sensorTypes: z.union([z.string(), z.array(z.string())]),
+          days: z.number().min(1).max(36500),
           category: z.enum(["production", "rental"]),
           count: z.number().min(1).max(500),
           remark: z.string().optional(),
@@ -160,13 +171,17 @@ export const appRouter = router({
         const keys: { keyString: string; expireTimestamp: number }[] = [];
         const records: Parameters<typeof insertLicenseKeys>[0] = [];
 
+        const sensorTypeStr = Array.isArray(input.sensorTypes)
+          ? input.sensorTypes.join(",")
+          : input.sensorTypes;
+
         for (let i = 0; i < input.count; i++) {
-          const keyString = generateLicenseKey(input.sensorType, input.days, input.category);
+          const keyString = generateLicenseKey(input.sensorTypes, input.days, input.category);
           const expireTimestamp = Date.now() + input.days * 24 * 60 * 60 * 1000;
           keys.push({ keyString, expireTimestamp });
           records.push({
             keyString,
-            sensorType: input.sensorType,
+            sensorType: sensorTypeStr,
             category: input.category,
             days: input.days,
             expireTimestamp,
@@ -268,12 +283,12 @@ export const appRouter = router({
           isActivated: input.isActivated,
         });
 
-        const sensorMap = Object.fromEntries(SENSOR_TYPES.map((s) => [s.value, s.label]));
+        const sensorMap = SENSOR_LABEL_MAP;
 
         if (input.format === "json") {
           return items.map((k) => ({
             密钥: k.keyString,
-            传感器类型: sensorMap[k.sensorType] || k.sensorType,
+            传感器类型: k.sensorType.split(",").map((v: string) => sensorMap[v] || v).join(", "),
             密钥类型: k.category === "production" ? "量产密钥" : "在线租赁密钥",
             有效期天数: k.days,
             到期时间: new Date(k.expireTimestamp).toLocaleString("zh-CN"),
@@ -290,7 +305,7 @@ export const appRouter = router({
         const rows = items.map((k) =>
           [
             k.keyString,
-            sensorMap[k.sensorType] || k.sensorType,
+            k.sensorType.split(",").map((v: string) => sensorMap[v] || v).join("/"),
             k.category === "production" ? "量产密钥" : "在线租赁密钥",
             k.days,
             new Date(k.expireTimestamp).toLocaleString("zh-CN"),

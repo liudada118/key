@@ -15,30 +15,15 @@ import {
   User,
   Zap,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { toast } from "sonner";
-
-const SENSOR_MAP: Record<string, string> = {
-  yanfeng10: "轮椅",
-  foot: "脚型检测",
-  sit: "臀部监测",
-  hand: "手部检测",
-  car: "汽车",
-  jqbed: "小床监测",
-  matCol: "小床褥采集",
-  matColPos: "小床睡姿采集",
-  carCol: "车载传感器",
-  normal: "正常测试",
-  newHand: "手套监测",
-  smallBed: "席悦1.0",
-  xiyueReal1: "席悦2.0",
-  all: "全部类型",
-};
 
 type VerifyResult = {
   valid: boolean;
   expireTimestamp?: number;
   sensorType?: string;
+  sensorTypes?: string[];
+  isAllTypes?: boolean;
   category?: string;
   expireDate?: string;
   remainingDays?: number;
@@ -54,6 +39,19 @@ type VerifyResult = {
 export default function VerifyKey() {
   const [keyInput, setKeyInput] = useState("");
   const [result, setResult] = useState<VerifyResult | null>(null);
+
+  // 获取传感器分组用于 label 映射
+  const { data: sensorGroups } = trpc.keys.sensorGroups.useQuery();
+  const sensorLabelMap = useMemo(() => {
+    if (!sensorGroups) return {} as Record<string, string>;
+    const map: Record<string, string> = { all: "全部类型" };
+    for (const g of sensorGroups) {
+      for (const item of g.items) {
+        map[item.value] = item.label;
+      }
+    }
+    return map;
+  }, [sensorGroups]);
 
   const verifyMutation = trpc.keys.verify.useMutation({
     onSuccess: (data) => {
@@ -71,6 +69,28 @@ export default function VerifyKey() {
     if (!keyInput.trim()) return toast.error("请输入密钥");
     verifyMutation.mutate({ keyString: keyInput.trim() });
   };
+
+  // 解析传感器类型显示
+  const sensorDisplay = useMemo(() => {
+    if (!result) return null;
+    if (result.isAllTypes) {
+      return { mode: "全部授权", types: [] as string[] };
+    }
+    if (result.sensorTypes && result.sensorTypes.length > 0) {
+      return {
+        mode: result.sensorTypes.length === 1 ? "单类型" : `多类型 (${result.sensorTypes.length})`,
+        types: result.sensorTypes,
+      };
+    }
+    if (result.sensorType) {
+      const types = result.sensorType.split(",").filter(Boolean);
+      return {
+        mode: types.length === 1 ? "单类型" : `多类型 (${types.length})`,
+        types,
+      };
+    }
+    return null;
+  }, [result]);
 
   return (
     <div className="space-y-6">
@@ -117,6 +137,7 @@ export default function VerifyKey() {
           <CardContent>
             {result ? (
               <div className="space-y-5">
+                {/* 状态横幅 */}
                 <div className="flex items-center gap-3 p-4 rounded-xl bg-secondary/30 border border-border/50">
                   {result.valid ? (
                     <>
@@ -145,67 +166,92 @@ export default function VerifyKey() {
                   )}
                 </div>
 
-                {result.sensorType && (
-                  <div className="grid grid-cols-2 gap-3">
-                    <InfoItem
-                      icon={Cpu}
-                      label="传感器类型"
-                      value={SENSOR_MAP[result.sensorType] || result.sensorType}
-                    />
-                    <InfoItem
-                      icon={Zap}
-                      label="密钥类型"
-                      value={result.category === "production" ? "量产密钥" : "在线租赁密钥"}
-                    />
-                    <InfoItem
-                      icon={Calendar}
-                      label="到期时间"
-                      value={
-                        result.expireTimestamp
-                          ? new Date(result.expireTimestamp).toLocaleString("zh-CN")
-                          : "-"
-                      }
-                    />
+                {/* 基本信息 */}
+                <div className="grid grid-cols-2 gap-3">
+                  <InfoItem
+                    icon={Zap}
+                    label="密钥类型"
+                    value={result.category === "production" ? "量产密钥" : "在线租赁密钥"}
+                  />
+                  <InfoItem
+                    icon={Calendar}
+                    label="到期时间"
+                    value={
+                      result.expireTimestamp
+                        ? new Date(result.expireTimestamp).toLocaleString("zh-CN")
+                        : "-"
+                    }
+                  />
+                  <InfoItem
+                    icon={Clock}
+                    label="剩余天数"
+                    value={
+                      result.remainingDays !== undefined
+                        ? result.remainingDays > 0
+                          ? `${result.remainingDays} 天`
+                          : "已过期"
+                        : "-"
+                    }
+                  />
+                  <InfoItem
+                    icon={ShieldCheck}
+                    label="激活状态"
+                    value={result.isActivated ? "已激活" : "未激活"}
+                    badge
+                    badgeColor={
+                      result.isActivated
+                        ? "bg-chart-2/10 text-chart-2 border-chart-2/30"
+                        : "bg-muted text-muted-foreground"
+                    }
+                  />
+                  <InfoItem
+                    icon={User}
+                    label="创建者"
+                    value={result.createdByName || "未知"}
+                  />
+                  {result.activatedAt && (
                     <InfoItem
                       icon={Clock}
-                      label="剩余天数"
-                      value={
-                        result.remainingDays !== undefined
-                          ? result.remainingDays > 0
-                            ? `${result.remainingDays} 天`
-                            : "已过期"
-                          : "-"
-                      }
+                      label="激活时间"
+                      value={new Date(result.activatedAt).toLocaleString("zh-CN")}
                     />
+                  )}
+                  {result.createdAt && (
                     <InfoItem
-                      icon={ShieldCheck}
-                      label="激活状态"
-                      value={result.isActivated ? "已激活" : "未激活"}
-                      badge
-                      badgeColor={result.isActivated ? "bg-chart-2/10 text-chart-2 border-chart-2/30" : "bg-muted text-muted-foreground"}
+                      icon={Calendar}
+                      label="创建时间"
+                      value={new Date(result.createdAt).toLocaleString("zh-CN")}
                     />
-                    <InfoItem
-                      icon={User}
-                      label="创建者"
-                      value={result.createdByName || "未知"}
-                    />
-                    {result.activatedAt && (
-                      <InfoItem
-                        icon={Clock}
-                        label="激活时间"
-                        value={new Date(result.activatedAt).toLocaleString("zh-CN")}
-                      />
-                    )}
-                    {result.createdAt && (
-                      <InfoItem
-                        icon={Calendar}
-                        label="创建时间"
-                        value={new Date(result.createdAt).toLocaleString("zh-CN")}
-                      />
+                  )}
+                </div>
+
+                {/* 传感器类型详情 */}
+                {sensorDisplay && (
+                  <div className="p-3 bg-secondary/30 rounded-lg space-y-2">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <Cpu className="h-3 w-3 text-muted-foreground" />
+                      <p className="text-xs text-muted-foreground">授权传感器类型</p>
+                      <Badge variant="secondary" className="text-[10px] h-4 ml-1">
+                        {sensorDisplay.mode}
+                      </Badge>
+                    </div>
+                    {result.isAllTypes ? (
+                      <Badge variant="default" className="text-xs">
+                        全部传感器类型
+                      </Badge>
+                    ) : (
+                      <div className="flex flex-wrap gap-1">
+                        {sensorDisplay.types.map((t) => (
+                          <Badge key={t} variant="secondary" className="text-[10px]">
+                            {sensorLabelMap[t] || t}
+                          </Badge>
+                        ))}
+                      </div>
                     )}
                   </div>
                 )}
 
+                {/* 备注 */}
                 {result.dbRemark && (
                   <div className="p-3 bg-secondary/30 rounded-lg">
                     <p className="text-xs text-muted-foreground mb-1">备注</p>
