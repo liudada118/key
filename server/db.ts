@@ -4,12 +4,16 @@ import {
   InsertUser,
   customers,
   licenseKeys,
+  offlineKeys,
+  rsaKeyPairs,
   sensorTypes,
   users,
   type InsertCustomer,
   type InsertLicenseKey,
+  type InsertOfflineKey,
   type InsertSensorType,
 } from "../drizzle/schema";
+import crypto from "crypto";
 import bcrypt from "bcryptjs";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -620,4 +624,193 @@ export async function getAllUsers() {
     updatedAt: users.updatedAt,
     lastSignedIn: users.lastSignedIn,
   }).from(users).orderBy(desc(users.createdAt));
+}
+
+// ===== RSA Key Pair Helpers =====
+
+/** 生成 RSA 密钥对并存储到数据库 */
+export async function generateAndStoreRsaKeyPair(name: string = "default", keySize: number = 2048) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", {
+    modulusLength: keySize,
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+
+  // 将其他密钥对设为非活跃
+  await db.update(rsaKeyPairs).set({ isActive: false });
+
+  await db.insert(rsaKeyPairs).values({
+    name,
+    privateKey,
+    publicKey,
+    keySize,
+    isActive: true,
+  });
+
+  const result = await db.select().from(rsaKeyPairs).where(eq(rsaKeyPairs.isActive, true)).limit(1);
+  return result[0];
+}
+
+/** 获取当前活跃的 RSA 密钥对 */
+export async function getActiveRsaKeyPair() {
+  const db = await getDb();
+  if (!db) return null;
+  const result = await db.select().from(rsaKeyPairs).where(eq(rsaKeyPairs.isActive, true)).limit(1);
+  return result.length > 0 ? result[0] : null;
+}
+
+/** 确保至少存在一个 RSA 密钥对 */
+export async function ensureRsaKeyPair() {
+  const existing = await getActiveRsaKeyPair();
+  if (existing) return existing;
+  console.log("[Init] Generating default RSA key pair...");
+  return generateAndStoreRsaKeyPair("default", 2048);
+}
+
+/** 获取所有 RSA 密钥对（不含私钥） */
+export async function getAllRsaKeyPairs() {
+  const db = await getDb();
+  if (!db) return [];
+  const all = await db.select({
+    id: rsaKeyPairs.id,
+    name: rsaKeyPairs.name,
+    publicKey: rsaKeyPairs.publicKey,
+    keySize: rsaKeyPairs.keySize,
+    isActive: rsaKeyPairs.isActive,
+    createdAt: rsaKeyPairs.createdAt,
+  }).from(rsaKeyPairs).orderBy(desc(rsaKeyPairs.createdAt));
+  return all;
+}
+
+// ===== Offline Key Helpers =====
+
+const LICENSE_VERSION = 2;
+
+/** 生成离线激活码（RSA-SHA256 签名） */
+export async function generateOfflineActivationCode(params: {
+  machineId: string;
+  sensorTypes: string[] | "all";
+  days: number;
+  expireDate?: number;
+  customerId?: number | null;
+  customerName?: string | null;
+  createdById: number;
+  createdByName: string;
+  remark?: string | null;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  // 获取活跃的 RSA 密钥对
+  const keyPair = await ensureRsaKeyPair();
+  if (!keyPair) throw new Error("No RSA key pair available");
+
+  // 计算到期时间
+  const expireDate = params.expireDate || (Date.now() + params.days * 24 * 60 * 60 * 1000);
+
+  // 构造 payload
+  const payload = {
+    machineId: params.machineId,
+    sensorTypes: params.sensorTypes,
+    expireDate,
+    issuedAt: Date.now(),
+    version: LICENSE_VERSION,
+  };
+
+  const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64");
+
+  // RSA-SHA256 签名
+  const sign = crypto.createSign("RSA-SHA256");
+  sign.update(payloadB64);
+  sign.end();
+  const signature = sign.sign(keyPair.privateKey, "base64");
+
+  // 组装激活码
+  const licenseObj = { payload: payloadB64, signature };
+  const activationCode = Buffer.from(JSON.stringify(licenseObj)).toString("base64");
+
+  // 存储到数据库
+  const sensorTypeStr = params.sensorTypes === "all" ? "all" : params.sensorTypes.join(",");
+
+  await db.insert(offlineKeys).values({
+    machineId: params.machineId,
+    sensorTypes: sensorTypeStr,
+    expireDate,
+    days: params.days,
+    activationCode,
+    rsaKeyPairId: keyPair.id,
+    createdById: params.createdById,
+    createdByName: params.createdByName,
+    customerId: params.customerId || null,
+    customerName: params.customerName || null,
+    remark: params.remark || null,
+    licenseVersion: LICENSE_VERSION,
+  });
+
+  return {
+    activationCode,
+    machineId: params.machineId,
+    sensorTypes: params.sensorTypes,
+    expireDate,
+    days: params.days,
+  };
+}
+
+/** 获取离线密钥列表（分页） */
+export async function getOfflineKeys(params: {
+  userIds: number[];
+  page: number;
+  pageSize: number;
+  search?: string;
+  machineId?: string;
+}) {
+  const db = await getDb();
+  if (!db) return { items: [], total: 0, page: params.page, pageSize: params.pageSize };
+
+  const conditions = [inArray(offlineKeys.createdById, params.userIds)];
+
+  if (params.search) {
+    conditions.push(
+      or(
+        like(offlineKeys.machineId, `%${params.search}%`),
+        like(offlineKeys.customerName, `%${params.search}%`),
+        like(offlineKeys.remark, `%${params.search}%`),
+      )!
+    );
+  }
+
+  if (params.machineId) {
+    conditions.push(eq(offlineKeys.machineId, params.machineId));
+  }
+
+  const where = conditions.length > 1 ? and(...conditions) : conditions[0];
+
+  const [items, totalResult] = await Promise.all([
+    db.select().from(offlineKeys).where(where)
+      .orderBy(desc(offlineKeys.createdAt))
+      .limit(params.pageSize)
+      .offset((params.page - 1) * params.pageSize),
+    db.select({ count: count() }).from(offlineKeys).where(where),
+  ]);
+
+  return {
+    items,
+    total: totalResult[0]?.count ?? 0,
+    page: params.page,
+    pageSize: params.pageSize,
+  };
+}
+
+/** 获取离线密钥统计 */
+export async function getOfflineKeyStats(userIds: number[]) {
+  const db = await getDb();
+  if (!db) return { total: 0 };
+
+  const result = await db.select({ count: count() }).from(offlineKeys)
+    .where(inArray(offlineKeys.createdById, userIds));
+
+  return { total: result[0]?.count ?? 0 };
 }

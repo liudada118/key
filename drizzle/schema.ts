@@ -133,3 +133,61 @@ export const sensorTypes = mysqlTable("sensorTypes", {
 
 export type SensorType = typeof sensorTypes.$inferSelect;
 export type InsertSensorType = typeof sensorTypes.$inferInsert;
+
+/**
+ * RSA 密钥对表
+ * 存储用于离线密钥签名的 RSA 密钥对
+ */
+export const rsaKeyPairs = mysqlTable("rsaKeyPairs", {
+  id: int("id").autoincrement().primaryKey(),
+  /** 密钥对名称/标识 */
+  name: varchar("name", { length: 128 }).notNull().default("default"),
+  /** RSA 私钥 (PEM 格式) */
+  privateKey: text("privateKey").notNull(),
+  /** RSA 公钥 (PEM 格式) */
+  publicKey: text("publicKey").notNull(),
+  /** 密钥位数 */
+  keySize: int("keySize").notNull().default(2048),
+  /** 是否为当前使用的密钥对 */
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type RsaKeyPair = typeof rsaKeyPairs.$inferSelect;
+export type InsertRsaKeyPair = typeof rsaKeyPairs.$inferInsert;
+
+/**
+ * 离线密钥表
+ * 记录所有生成的离线激活码（RSA 签名）
+ */
+export const offlineKeys = mysqlTable("offlineKeys", {
+  id: int("id").autoincrement().primaryKey(),
+  /** 机器码（16位十六进制） */
+  machineId: varchar("machineId", { length: 32 }).notNull(),
+  /** 授权的传感器类型（逗号分隔，或 "all"） */
+  sensorTypes: varchar("sensorTypes", { length: 512 }).notNull(),
+  /** 到期时间戳 (ms) */
+  expireDate: bigint("expireDate", { mode: "number" }).notNull(),
+  /** 有效天数 */
+  days: int("days").notNull(),
+  /** 生成的激活码（Base64） */
+  activationCode: text("activationCode").notNull(),
+  /** 使用的 RSA 密钥对 ID */
+  rsaKeyPairId: int("rsaKeyPairId").notNull(),
+  /** 创建者用户 ID */
+  createdById: int("createdById").notNull(),
+  /** 创建者名称 */
+  createdByName: varchar("createdByName", { length: 128 }),
+  /** 关联客户 ID */
+  customerId: int("customerId"),
+  /** 客户名称 */
+  customerName: varchar("customerName", { length: 256 }),
+  /** 备注 */
+  remark: text("remark"),
+  /** 许可证版本 */
+  licenseVersion: int("licenseVersion").notNull().default(2),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type OfflineKey = typeof offlineKeys.$inferSelect;
+export type InsertOfflineKey = typeof offlineKeys.$inferInsert;

@@ -61,6 +61,7 @@ const menuItems = [
   { icon: Building2, label: "客户管理", path: "/customers" },
   { icon: Users, label: "账号管理", path: "/accounts", roles: ["super_admin", "admin"] },
   { icon: Settings2, label: "传感器管理", path: "/sensor-types", roles: ["super_admin"] },
+  { icon: ShieldCheck, label: "离线密钥", path: "/offline-keys" },
   { icon: Cpu, label: "MAC 读取", path: "/mac-reader" },
 ];
 

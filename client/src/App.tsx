@@ -13,6 +13,7 @@ import AccountManagement from "./pages/AccountManagement";
 import CustomerManagement from "./pages/CustomerManagement";
 import MacReader from "./pages/MacReader";
 import SensorTypeManagement from "./pages/SensorTypeManagement";
+import OfflineKeyGen from "./pages/OfflineKeyGen";
 import Login from "./pages/Login";
 import { useAuth } from "./_core/hooks/useAuth";
 import { Loader2 } from "lucide-react";
@@ -28,6 +29,7 @@ function AuthenticatedRouter() {
         <Route path={"/accounts"} component={AccountManagement} />
         <Route path={"/customers"} component={CustomerManagement} />
         <Route path={"/sensor-types"} component={SensorTypeManagement} />
+        <Route path={"/offline-keys"} component={OfflineKeyGen} />
         <Route path={"/mac-reader"} component={MacReader} />
         <Route path={"/404"} component={NotFound} />
         <Route component={NotFound} />

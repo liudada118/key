@@ -36,6 +36,13 @@ import {
   restoreSensorType,
   updateSensorType,
   getSensorGroups,
+  ensureRsaKeyPair,
+  getActiveRsaKeyPair,
+  getAllRsaKeyPairs,
+  generateAndStoreRsaKeyPair,
+  generateOfflineActivationCode,
+  getOfflineKeys,
+  getOfflineKeyStats,
 } from "./db";
 import {
   decodeLicenseKey,
@@ -321,6 +328,91 @@ export const appRouter = router({
       .mutation(async ({ input }) => {
         const { id, ...data } = input;
         return updateSensorType(id, data);
+      }),
+  }),
+
+  // ===== 离线密钥管理 =====
+  offlineKeys: router({
+    /** 生成离线激活码 */
+    generate: protectedProcedure
+      .input(
+        z.object({
+          machineId: z.string().length(16, "机器码必须为16位"),
+          sensorTypes: z.union([z.literal("all"), z.array(z.string().min(1))]),
+          days: z.number().min(1).max(36500),
+          customerId: z.number().optional(),
+          customerName: z.string().optional(),
+          remark: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        let customerName = input.customerName || null;
+        if (input.customerId && !customerName) {
+          const customer = await getCustomerById(input.customerId);
+          customerName = customer?.name || null;
+        }
+        return generateOfflineActivationCode({
+          machineId: input.machineId.toUpperCase(),
+          sensorTypes: input.sensorTypes,
+          days: input.days,
+          customerId: input.customerId || null,
+          customerName,
+          createdById: ctx.user.id,
+          createdByName: ctx.user.name || "未知",
+          remark: input.remark || null,
+        });
+      }),
+
+    /** 离线密钥列表 */
+    list: protectedProcedure
+      .input(
+        z.object({
+          page: z.number().min(1).default(1),
+          pageSize: z.number().min(1).max(100).default(20),
+          search: z.string().optional(),
+          machineId: z.string().optional(),
+        })
+      )
+      .query(async ({ ctx, input }) => {
+        const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+        return getOfflineKeys({
+          userIds,
+          page: input.page,
+          pageSize: input.pageSize,
+          search: input.search,
+          machineId: input.machineId,
+        });
+      }),
+
+    /** 离线密钥统计 */
+    stats: protectedProcedure.query(async ({ ctx }) => {
+      const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+      return getOfflineKeyStats(userIds);
+    }),
+
+    /** 获取公钥（供客户端下载） */
+    publicKey: publicProcedure.query(async () => {
+      const keyPair = await getActiveRsaKeyPair();
+      if (!keyPair) return null;
+      return { publicKey: keyPair.publicKey, keySize: keyPair.keySize, name: keyPair.name };
+    }),
+
+    /** RSA 密钥对管理（超级管理员） */
+    rsaKeyPairs: superAdminProcedure.query(async () => {
+      return getAllRsaKeyPairs();
+    }),
+
+    /** 生成新的 RSA 密钥对（超级管理员） */
+    generateRsaKeyPair: superAdminProcedure
+      .input(
+        z.object({
+          name: z.string().min(1, "名称不能为空").default("default"),
+          keySize: z.number().min(2048).max(4096).default(2048),
+        })
+      )
+      .mutation(async ({ input }) => {
+        const keyPair = await generateAndStoreRsaKeyPair(input.name, input.keySize);
+        return { id: keyPair.id, name: keyPair.name, keySize: keyPair.keySize, publicKey: keyPair.publicKey };
       }),
   }),
 

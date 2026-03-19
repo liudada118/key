@@ -7,7 +7,7 @@ import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { ensureDefaultSuperAdmin, ensureDefaultSensorTypes } from "../db";
+import { ensureDefaultSuperAdmin, ensureDefaultSensorTypes, ensureRsaKeyPair } from "../db";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -39,6 +39,7 @@ async function startServer() {
   try {
     await ensureDefaultSuperAdmin();
     await ensureDefaultSensorTypes();
+    await ensureRsaKeyPair();
     console.log("[Init] Database initialization complete");
   } catch (error) {
     console.warn("[Init] Database initialization failed (will retry on first request):", error);
