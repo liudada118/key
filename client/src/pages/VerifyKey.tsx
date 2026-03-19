@@ -43,7 +43,7 @@ export default function VerifyKey() {
   const [result, setResult] = useState<VerifyResult | null>(null);
 
   // 获取传感器分组用于 label 映射
-  const { data: sensorGroups } = trpc.keys.sensorGroups.useQuery();
+  const { data: sensorGroups } = trpc.sensors.groups.useQuery();
   const sensorLabelMap = useMemo(() => {
     if (!sensorGroups) return {} as Record<string, string>;
     const map: Record<string, string> = { all: "全部类型" };

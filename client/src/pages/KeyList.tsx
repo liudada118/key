@@ -1,7 +1,17 @@
+import { useAuth } from "@/_core/hooks/useAuth";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -23,11 +33,14 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { trpc } from "@/lib/trpc";
-import { BarChart3, Copy, Download, Loader2, Search } from "lucide-react";
+import { BarChart3, Copy, Download, Loader2, Pencil, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
 export default function KeyList() {
+  const { user } = useAuth();
+  const isSuperAdmin = user?.role === "super_admin";
+
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
@@ -35,8 +48,17 @@ export default function KeyList() {
   const [sensorType, setSensorType] = useState<string>("__all__");
   const [activated, setActivated] = useState<string>("__all__");
 
+  // 更改密钥类型弹窗状态
+  const [changeCategoryOpen, setChangeCategoryOpen] = useState(false);
+  const [changeCategoryKey, setChangeCategoryKey] = useState<{
+    id: number;
+    keyString: string;
+    category: string;
+  } | null>(null);
+  const [newCategory, setNewCategory] = useState<string>("");
+
   // 获取传感器分组用于 label 映射和筛选
-  const { data: sensorGroups } = trpc.keys.sensorGroups.useQuery();
+  const { data: sensorGroups } = trpc.sensors.groups.useQuery();
   const sensorLabelMap = useMemo(() => {
     if (!sensorGroups) return {} as Record<string, string>;
     const map: Record<string, string> = { all: "全部类型" };
@@ -60,6 +82,7 @@ export default function KeyList() {
     [page, category, sensorType, activated, search]
   );
 
+  const utils = trpc.useUtils();
   const { data, isLoading } = trpc.keys.list.useQuery(queryInput);
 
   const exportMutation = trpc.keys.export.useMutation({
@@ -88,7 +111,32 @@ export default function KeyList() {
     onError: (err) => toast.error(err.message),
   });
 
+  const changeCategoryMutation = trpc.keys.changeCategory.useMutation({
+    onSuccess: () => {
+      toast.success("密钥类型已更改");
+      setChangeCategoryOpen(false);
+      setChangeCategoryKey(null);
+      utils.keys.list.invalidate();
+      utils.keys.stats.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
   const totalPages = data ? Math.ceil(data.total / 20) : 0;
+
+  const handleOpenChangeCategory = (key: { id: number; keyString: string; category: string }) => {
+    setChangeCategoryKey(key);
+    setNewCategory(key.category === "production" ? "rental" : "production");
+    setChangeCategoryOpen(true);
+  };
+
+  const handleConfirmChangeCategory = () => {
+    if (!changeCategoryKey || !newCategory) return;
+    changeCategoryMutation.mutate({
+      keyId: changeCategoryKey.id,
+      category: newCategory as "production" | "rental",
+    });
+  };
 
   /** 将逗号分隔的传感器类型转为标签显示 */
   const renderSensorTypes = (sensorTypeStr: string) => {
@@ -107,7 +155,6 @@ export default function KeyList() {
         </span>
       );
     }
-    // 多类型：显示前2个 + 数量提示
     const displayTypes = types.slice(0, 2);
     const remaining = types.length - 2;
     return (
@@ -279,7 +326,7 @@ export default function KeyList() {
                       <TableHead className="text-muted-foreground">客户</TableHead>
                       <TableHead className="text-muted-foreground">创建者</TableHead>
                       <TableHead className="text-muted-foreground">创建时间</TableHead>
-                      <TableHead className="text-muted-foreground w-10"></TableHead>
+                      <TableHead className="text-muted-foreground w-16">操作</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -334,17 +381,39 @@ export default function KeyList() {
                             {new Date(key.createdAt).toLocaleDateString("zh-CN")}
                           </TableCell>
                           <TableCell>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-7 w-7 p-0"
-                              onClick={() => {
-                                navigator.clipboard.writeText(key.keyString);
-                                toast.success("已复制");
-                              }}
-                            >
-                              <Copy className="h-3 w-3" />
-                            </Button>
+                            <div className="flex items-center gap-1">
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-7 w-7 p-0"
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(key.keyString);
+                                      toast.success("已复制");
+                                    }}
+                                  >
+                                    <Copy className="h-3 w-3" />
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>复制密钥</TooltipContent>
+                              </Tooltip>
+                              {isSuperAdmin && (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      className="h-7 w-7 p-0"
+                                      onClick={() => handleOpenChangeCategory(key)}
+                                    >
+                                      <Pencil className="h-3 w-3" />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>更改密钥类型</TooltipContent>
+                                </Tooltip>
+                              )}
+                            </div>
                           </TableCell>
                         </TableRow>
                       );
@@ -380,6 +449,67 @@ export default function KeyList() {
           )}
         </CardContent>
       </Card>
+
+      {/* 更改密钥类型弹窗 */}
+      <Dialog open={changeCategoryOpen} onOpenChange={setChangeCategoryOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>更改密钥类型</DialogTitle>
+            <DialogDescription>
+              将密钥类型从「{changeCategoryKey?.category === "production" ? "量产密钥" : "在线租赁密钥"}」更改为其他类型
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label className="text-muted-foreground">密钥</Label>
+              <p className="font-mono text-xs bg-muted p-2 rounded break-all">
+                {changeCategoryKey?.keyString}
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>当前类型</Label>
+              <div>
+                <Badge
+                  variant="outline"
+                  className={
+                    changeCategoryKey?.category === "production"
+                      ? "bg-chart-3/10 text-chart-3 border-chart-3/30"
+                      : "bg-chart-4/10 text-chart-4 border-chart-4/30"
+                  }
+                >
+                  {changeCategoryKey?.category === "production" ? "量产密钥" : "在线租赁密钥"}
+                </Badge>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>更改为</Label>
+              <Select value={newCategory} onValueChange={setNewCategory}>
+                <SelectTrigger>
+                  <SelectValue placeholder="选择新类型" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="production">量产密钥</SelectItem>
+                  <SelectItem value="rental">在线租赁密钥</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setChangeCategoryOpen(false)}>
+              取消
+            </Button>
+            <Button
+              onClick={handleConfirmChangeCategory}
+              disabled={changeCategoryMutation.isPending || newCategory === changeCategoryKey?.category}
+            >
+              {changeCategoryMutation.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              ) : null}
+              确认更改
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

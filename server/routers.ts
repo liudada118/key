@@ -15,10 +15,12 @@ import {
   getCustomerKeyCount,
   getCustomers,
   getKeyStats,
+  getLicenseKeyById,
   getLicenseKeyByString,
   getLicenseKeys,
   getSubordinateUsers,
   getUserAndSubordinateIds,
+  updateLicenseKeyCategory,
   getUserById,
   getUserByUsername,
   insertLicenseKey,
@@ -27,14 +29,17 @@ import {
   updateAccount,
   updateCustomer,
   verifyUserCredentials,
+  getSensorTypesGrouped,
+  getAllSensorTypes,
+  addSensorType,
+  deleteSensorType,
+  restoreSensorType,
+  updateSensorType,
+  getSensorGroups,
 } from "./db";
 import {
   decodeLicenseKey,
   generateLicenseKey,
-  SENSOR_TYPES,
-  SENSOR_GROUPS,
-  ALL_SENSORS,
-  SENSOR_LABEL_MAP,
   KEY_CATEGORIES,
   type KeyCategory,
 } from "@shared/crypto";
@@ -255,10 +260,72 @@ export const appRouter = router({
       }),
   }),
 
+  // ===== 传感器类型管理 =====
+  sensors: router({
+    /** 获取分组传感器类型（仅启用的） */
+    groups: publicProcedure.query(async () => {
+      return getSensorTypesGrouped();
+    }),
+
+    /** 获取所有传感器类型（包括禁用的，管理用） */
+    all: superAdminProcedure.query(async () => {
+      return getAllSensorTypes();
+    }),
+
+    /** 获取所有分组名称 */
+    groupNames: publicProcedure.query(async () => {
+      return getSensorGroups();
+    }),
+
+    /** 添加传感器类型 */
+    add: superAdminProcedure
+      .input(
+        z.object({
+          label: z.string().min(1, "名称不能为空"),
+          value: z.string().min(1, "标识符不能为空").regex(/^[a-zA-Z0-9_]+$/, "标识符只能包含英文、数字和下划线"),
+          groupName: z.string().min(1, "分组名不能为空"),
+          groupIcon: z.string().optional(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        return addSensorType(input);
+      }),
+
+    /** 删除传感器类型（软删除） */
+    delete: superAdminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await deleteSensorType(input.id);
+        return { success: true };
+      }),
+
+    /** 恢复传感器类型 */
+    restore: superAdminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await restoreSensorType(input.id);
+        return { success: true };
+      }),
+
+    /** 更新传感器类型 */
+    update: superAdminProcedure
+      .input(
+        z.object({
+          id: z.number(),
+          label: z.string().optional(),
+          groupName: z.string().optional(),
+          groupIcon: z.string().optional(),
+          sortOrder: z.number().optional(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        const { id, ...data } = input;
+        return updateSensorType(id, data);
+      }),
+  }),
+
   // ===== 密钥管理 =====
   keys: router({
-    sensorTypes: publicProcedure.query(() => SENSOR_TYPES),
-    sensorGroups: publicProcedure.query(() => SENSOR_GROUPS),
     categories: publicProcedure.query(() => KEY_CATEGORIES),
 
     generate: protectedProcedure
@@ -416,6 +483,26 @@ export const appRouter = router({
       return getKeyStats(userIds);
     }),
 
+    /** 超级管理员更改密钥类型 */
+    changeCategory: superAdminProcedure
+      .input(
+        z.object({
+          keyId: z.number(),
+          category: z.enum(["production", "rental"]),
+        })
+      )
+      .mutation(async ({ input }) => {
+        const key = await getLicenseKeyById(input.keyId);
+        if (!key) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "密钥不存在" });
+        }
+        if (key.category === input.category) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "密钥类型未变更" });
+        }
+        const updated = await updateLicenseKeyCategory(input.keyId, input.category);
+        return { success: true, key: updated };
+      }),
+
     export: protectedProcedure
       .input(
         z.object({
@@ -438,7 +525,14 @@ export const appRouter = router({
           customerId: input.customerId,
         });
 
-        const sensorMap = SENSOR_LABEL_MAP;
+        // 从数据库动态获取传感器标签映射
+        const groups = await getSensorTypesGrouped();
+        const sensorMap: Record<string, string> = {};
+        for (const g of groups) {
+          for (const item of g.items) {
+            sensorMap[item.value] = item.label;
+          }
+        }
 
         if (input.format === "json") {
           return items.map((k) => ({

@@ -40,10 +40,8 @@ type SensorGroup = {
 
 /** 快捷预设 */
 const PRESETS = [
-  { label: "触觉全套", types: ["hand0205", "robot1", "robotSY", "robotLCF", "footVideo"] },
-  { label: "汽车全套", types: ["car", "car10", "volvo", "carQX", "yanfeng10", "sofa"] },
-  { label: "高速矩阵", types: ["fast256", "fast1024", "fast1024sit", "daliegu"] },
-  { label: "床垫全套", types: ["bigBed", "jqbed", "smallBed", "xiyueReal1"] },
+  { label: "精密全套", types: ["hand0205", "handGlove115200", "smallSample", "robot1", "robotSY", "robotLCF", "footVideo", "daliegu", "fast256", "fast1024"] },
+  { label: "全部选择", types: ["hand", "jqbed", "hand0205", "handGlove115200", "smallSample", "robot1", "robotSY", "robotLCF", "footVideo", "daliegu", "fast256", "fast1024"] },
 ];
 
 /** 时间预设 */
@@ -57,7 +55,7 @@ const TIME_PRESETS = [
 ];
 
 export default function GenerateKey() {
-  const { data: sensorGroups } = trpc.keys.sensorGroups.useQuery();
+  const { data: sensorGroups } = trpc.sensors.groups.useQuery();
 
   return (
     <div className="space-y-6">

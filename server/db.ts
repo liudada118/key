@@ -4,9 +4,11 @@ import {
   InsertUser,
   customers,
   licenseKeys,
+  sensorTypes,
   users,
   type InsertCustomer,
   type InsertLicenseKey,
+  type InsertSensorType,
 } from "../drizzle/schema";
 import bcrypt from "bcryptjs";
 
@@ -438,6 +440,134 @@ export async function getKeyStats(userIds: number[]) {
     rental: rentalResult[0]?.count ?? 0,
     expired: expiredResult[0]?.count ?? 0,
   };
+}
+
+/** 更新密钥类型（量产/租赁） */
+export async function updateLicenseKeyCategory(keyId: number, category: "production" | "rental") {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(licenseKeys).set({ category }).where(eq(licenseKeys.id, keyId));
+  const result = await db.select().from(licenseKeys).where(eq(licenseKeys.id, keyId)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+/** 根据 ID 获取密钥 */
+export async function getLicenseKeyById(keyId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(licenseKeys).where(eq(licenseKeys.id, keyId)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+// ===== Sensor Type Helpers =====
+
+/** 获取所有启用的传感器类型（按分组和排序） */
+export async function getSensorTypesGrouped() {
+  const db = await getDb();
+  if (!db) return [];
+  const all = await db.select().from(sensorTypes)
+    .where(eq(sensorTypes.isActive, true))
+    .orderBy(sensorTypes.sortOrder);
+
+  // 按分组聚合
+  const groupMap = new Map<string, { group: string; icon: string; items: { label: string; value: string; id: number }[] }>();
+  for (const s of all) {
+    if (!groupMap.has(s.groupName)) {
+      groupMap.set(s.groupName, { group: s.groupName, icon: s.groupIcon, items: [] });
+    }
+    groupMap.get(s.groupName)!.items.push({ label: s.label, value: s.value, id: s.id });
+  }
+  return Array.from(groupMap.values());
+}
+
+/** 获取所有传感器类型（包括禁用的，管理用） */
+export async function getAllSensorTypes() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(sensorTypes).orderBy(sensorTypes.sortOrder);
+}
+
+/** 添加传感器类型 */
+export async function addSensorType(data: {
+  label: string;
+  value: string;
+  groupName: string;
+  groupIcon?: string;
+  sortOrder?: number;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  // 检查 value 是否已存在
+  const existing = await db.select().from(sensorTypes).where(eq(sensorTypes.value, data.value)).limit(1);
+  if (existing.length > 0) throw new Error("传感器标识符已存在");
+
+  // 如果没指定 sortOrder，取同组最大值 +1
+  let order = data.sortOrder ?? 0;
+  if (!data.sortOrder) {
+    const maxResult = await db.select({ max: sql<number>`MAX(${sensorTypes.sortOrder})` })
+      .from(sensorTypes)
+      .where(eq(sensorTypes.groupName, data.groupName));
+    order = (maxResult[0]?.max ?? 0) + 1;
+  }
+
+  await db.insert(sensorTypes).values({
+    label: data.label,
+    value: data.value,
+    groupName: data.groupName,
+    groupIcon: data.groupIcon || "📦",
+    sortOrder: order,
+    isActive: true,
+  });
+
+  const result = await db.select().from(sensorTypes).where(eq(sensorTypes.value, data.value)).limit(1);
+  return result[0];
+}
+
+/** 删除传感器类型（软删除） */
+export async function deleteSensorType(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(sensorTypes).set({ isActive: false }).where(eq(sensorTypes.id, id));
+}
+
+/** 恢复传感器类型 */
+export async function restoreSensorType(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(sensorTypes).set({ isActive: true }).where(eq(sensorTypes.id, id));
+}
+
+/** 更新传感器类型 */
+export async function updateSensorType(id: number, data: {
+  label?: string;
+  groupName?: string;
+  groupIcon?: string;
+  sortOrder?: number;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const updateSet: Record<string, unknown> = {};
+  if (data.label !== undefined) updateSet.label = data.label;
+  if (data.groupName !== undefined) updateSet.groupName = data.groupName;
+  if (data.groupIcon !== undefined) updateSet.groupIcon = data.groupIcon;
+  if (data.sortOrder !== undefined) updateSet.sortOrder = data.sortOrder;
+  if (Object.keys(updateSet).length > 0) {
+    await db.update(sensorTypes).set(updateSet).where(eq(sensorTypes.id, id));
+  }
+  const result = await db.select().from(sensorTypes).where(eq(sensorTypes.id, id)).limit(1);
+  return result[0];
+}
+
+/** 获取所有分组名称和图标 */
+export async function getSensorGroups() {
+  const db = await getDb();
+  if (!db) return [];
+  const all = await db.select({
+    groupName: sensorTypes.groupName,
+    groupIcon: sensorTypes.groupIcon,
+  }).from(sensorTypes).groupBy(sensorTypes.groupName, sensorTypes.groupIcon);
+  return all;
 }
 
 export async function getAllUsers() {

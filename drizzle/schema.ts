@@ -108,3 +108,28 @@ export const licenseKeys = mysqlTable("licenseKeys", {
 
 export type LicenseKey = typeof licenseKeys.$inferSelect;
 export type InsertLicenseKey = typeof licenseKeys.$inferInsert;
+
+/**
+ * 传感器类型表
+ * 支持分组管理，超级管理员可动态增删
+ */
+export const sensorTypes = mysqlTable("sensorTypes", {
+  id: int("id").autoincrement().primaryKey(),
+  /** 显示名称（如"触觉手套"） */
+  label: varchar("label", { length: 128 }).notNull(),
+  /** 唯一标识符（如"hand0205"），用于加密和存储 */
+  value: varchar("value", { length: 128 }).notNull().unique(),
+  /** 所属分组名称（如"触觉手套"、"汽车座椅"） */
+  groupName: varchar("groupName", { length: 128 }).notNull(),
+  /** 分组图标（emoji） */
+  groupIcon: varchar("groupIcon", { length: 16 }).default("📦").notNull(),
+  /** 排序顺序（同组内排序） */
+  sortOrder: int("sortOrder").default(0).notNull(),
+  /** 是否启用 */
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type SensorType = typeof sensorTypes.$inferSelect;
+export type InsertSensorType = typeof sensorTypes.$inferInsert;

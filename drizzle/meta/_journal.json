@@ -29,6 +29,13 @@
       "when": 1773893253793,
       "tag": "0003_sturdy_chronomancer",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1773908377300,
+      "tag": "0004_slimy_iron_lad",
+      "breakpoints": true
     }
   ]
 }
