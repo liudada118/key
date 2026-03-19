@@ -57,7 +57,7 @@ const TIME_PRESETS = [
 ];
 
 export default function GenerateKey() {
-  const { data: sensorGroups } = trpc.keys.sensorGroups.useQuery();
+  const { data: sensorGroups, isLoading: sensorGroupsLoading } = trpc.keys.sensorGroups.useQuery();
 
   return (
     <div className="space-y-6">
@@ -70,25 +70,31 @@ export default function GenerateKey() {
         </p>
       </div>
 
-      <Tabs defaultValue="single" className="space-y-4">
-        <TabsList className="bg-secondary">
-          <TabsTrigger value="single">
-            <KeyRound className="h-3.5 w-3.5 mr-1.5" />
-            单个生成
-          </TabsTrigger>
-          <TabsTrigger value="batch">
-            <Zap className="h-3.5 w-3.5 mr-1.5" />
-            批量生成
-          </TabsTrigger>
-        </TabsList>
+      {sensorGroupsLoading ? (
+        <div className="flex items-center justify-center h-64">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        </div>
+      ) : (
+        <Tabs defaultValue="single" className="space-y-4">
+          <TabsList className="bg-secondary">
+            <TabsTrigger value="single">
+              <KeyRound className="h-3.5 w-3.5 mr-1.5" />
+              单个生成
+            </TabsTrigger>
+            <TabsTrigger value="batch">
+              <Zap className="h-3.5 w-3.5 mr-1.5" />
+              批量生成
+            </TabsTrigger>
+          </TabsList>
 
-        <TabsContent value="single">
-          <KeyGenerator sensorGroups={sensorGroups || []} mode="single" />
-        </TabsContent>
-        <TabsContent value="batch">
-          <KeyGenerator sensorGroups={sensorGroups || []} mode="batch" />
-        </TabsContent>
-      </Tabs>
+          <TabsContent value="single">
+            <KeyGenerator sensorGroups={sensorGroups || []} mode="single" />
+          </TabsContent>
+          <TabsContent value="batch">
+            <KeyGenerator sensorGroups={sensorGroups || []} mode="batch" />
+          </TabsContent>
+        </Tabs>
+      )}
     </div>
   );
 }
@@ -117,6 +123,7 @@ function KeyGenerator({
   const [newCustomerName, setNewCustomerName] = useState("");
   const [newCustomerPhone, setNewCustomerPhone] = useState("");
 
+  const utils = trpc.useUtils();
   const { data: customerList } = trpc.customers.all.useQuery();
   const createCustomerMutation = trpc.customers.create.useMutation({
     onSuccess: (data) => {
@@ -127,6 +134,9 @@ function KeyGenerator({
       setShowNewCustomer(false);
       setNewCustomerName("");
       setNewCustomerPhone("");
+      // 刷新客户列表缓存，确保新创建的客户出现在下拉列表中
+      utils.customers.all.invalidate();
+      utils.customers.list.invalidate();
       toast.success("客户创建成功");
     },
     onError: (err) => toast.error(err.message),
@@ -315,10 +325,10 @@ function KeyGenerator({
                   <Switch
                     checked={isAll}
                     onCheckedChange={handleToggleAll}
-                    id="all-switch"
+                    id={`all-switch-${mode}`}
                   />
                   <Label
-                    htmlFor="all-switch"
+                    htmlFor={`all-switch-${mode}`}
                     className="text-sm cursor-pointer text-foreground"
                   >
                     全部授权
