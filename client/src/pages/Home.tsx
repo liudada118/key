@@ -58,7 +58,7 @@ export default function Home() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
         {cards.map((card) => (
-          <Card key={card.title} className="border-border/50">
+          <Card key={card.title} className="shadow-sm hover:shadow-md transition-shadow">
             <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
               <CardTitle className="text-sm font-medium text-muted-foreground">
                 {card.title}
@@ -81,7 +81,7 @@ export default function Home() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card className="border-border/50">
+        <Card className="shadow-sm">
           <CardHeader>
             <CardTitle className="text-base font-medium flex items-center gap-2 text-foreground">
               <BarChart3 className="h-4 w-4 text-primary" />
@@ -106,7 +106,7 @@ export default function Home() {
           </CardContent>
         </Card>
 
-        <Card className="border-border/50">
+        <Card className="shadow-sm">
           <CardHeader>
             <CardTitle className="text-base font-medium flex items-center gap-2 text-foreground">
               <ShieldCheck className="h-4 w-4 text-primary" />
@@ -173,7 +173,7 @@ function StatBar({
           {value} <span className="text-muted-foreground font-normal">({pct}%)</span>
         </span>
       </div>
-      <div className="h-2 bg-secondary rounded-full overflow-hidden">
+      <div className="h-2 bg-muted rounded-full overflow-hidden">
         <div
           className={`h-full ${color} rounded-full transition-all duration-500`}
           style={{ width: `${pct}%` }}
@@ -197,7 +197,7 @@ function QuickAction({
   return (
     <a
       href={href}
-      className="flex flex-col gap-2 p-4 rounded-xl border border-border/50 hover:bg-accent/50 transition-colors group"
+      className="flex flex-col gap-2 p-4 rounded-xl border border-border hover:bg-accent/50 hover:shadow-sm transition-all group"
     >
       <Icon className="h-5 w-5 text-primary group-hover:scale-110 transition-transform" />
       <div>
