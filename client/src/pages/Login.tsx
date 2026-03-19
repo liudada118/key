@@ -32,7 +32,6 @@ export default function Login() {
       }
 
       toast.success("登录成功");
-      // 刷新页面以加载用户状态
       window.location.href = "/";
     } catch (err) {
       toast.error("网络错误，请重试");
@@ -42,18 +41,18 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary/5 via-background to-accent/10 p-4">
       <div className="w-full max-w-md">
         {/* Logo / Title */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-primary/10 mb-4">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-primary/10 mb-4 shadow-sm">
             <KeyRound className="h-8 w-8 text-primary" />
           </div>
           <h1 className="text-2xl font-bold text-foreground">密钥管理系统</h1>
           <p className="text-muted-foreground mt-1">请登录以继续</p>
         </div>
 
-        <Card className="border-border/50 bg-card/80 backdrop-blur">
+        <Card className="shadow-lg border-border">
           <CardHeader className="pb-4">
             <CardTitle className="text-lg text-foreground">账号登录</CardTitle>
             <CardDescription>使用用户名和密码登录系统</CardDescription>
@@ -69,7 +68,7 @@ export default function Login() {
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
                     placeholder="请输入用户名"
-                    className="pl-10 bg-secondary/50"
+                    className="pl-10"
                     autoComplete="username"
                     autoFocus
                   />
@@ -85,7 +84,7 @@ export default function Login() {
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="请输入密码"
-                    className="pl-10 bg-secondary/50"
+                    className="pl-10"
                     autoComplete="current-password"
                   />
                 </div>
@@ -100,7 +99,7 @@ export default function Login() {
               </Button>
             </form>
 
-            <div className="mt-6 pt-4 border-t border-border/30">
+            <div className="mt-6 pt-4 border-t border-border">
               <p className="text-xs text-muted-foreground text-center">
                 首次使用前请先配置数据库并重启服务
               </p>
