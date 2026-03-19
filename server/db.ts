@@ -14,14 +14,6 @@ import bcrypt from "bcryptjs";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
-export type DatabaseStatus =
-  | { available: true }
-  | {
-      available: false;
-      reason: "missing_database_url" | "invalid_database_url";
-      message: string;
-    };
-
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
@@ -32,27 +24,6 @@ export async function getDb() {
     }
   }
   return _db;
-}
-
-export async function getDatabaseStatus(): Promise<DatabaseStatus> {
-  if (!process.env.DATABASE_URL?.trim()) {
-    return {
-      available: false,
-      reason: "missing_database_url",
-      message: "数据库未配置，请在 .env 中设置 DATABASE_URL 后重启服务。",
-    };
-  }
-
-  const db = await getDb();
-  if (!db) {
-    return {
-      available: false,
-      reason: "invalid_database_url",
-      message: "数据库初始化失败，请检查 DATABASE_URL 配置后重启服务。",
-    };
-  }
-
-  return { available: true };
 }
 
 // ===== User / Auth Helpers =====
@@ -120,14 +91,11 @@ export async function createUserWithPassword(data: {
 
 /** 初始化默认超级管理员（如果不存在） */
 export async function ensureDefaultSuperAdmin() {
-  const dbStatus = await getDatabaseStatus();
-  if (!dbStatus.available) return dbStatus.reason;
-
   const db = await getDb();
-  if (!db) return "invalid_database_url" as const;
+  if (!db) return;
 
   const existing = await db.select().from(users).where(eq(users.role, "super_admin")).limit(1);
-  if (existing.length > 0) return "existing" as const;
+  if (existing.length > 0) return;
 
   console.log("[Init] Creating default super admin: admin / admin123");
   await createUserWithPassword({
@@ -138,7 +106,6 @@ export async function ensureDefaultSuperAdmin() {
     createdById: null,
   });
   console.log("[Init] Default super admin created successfully");
-  return "created" as const;
 }
 
 /** 修改密码 */

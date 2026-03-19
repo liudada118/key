@@ -40,8 +40,10 @@ type SensorGroup = {
 
 /** 快捷预设 */
 const PRESETS = [
-  { label: "精密全套", types: ["hand0205", "handGlove115200", "smallSample", "robot1", "robotSY", "robotLCF", "footVideo", "daliegu", "fast256", "fast1024"] },
-  { label: "全部选择", types: ["hand", "jqbed", "hand0205", "handGlove115200", "smallSample", "robot1", "robotSY", "robotLCF", "footVideo", "daliegu", "fast256", "fast1024"] },
+  { label: "触觉全套", types: ["hand0205", "robot1", "robotSY", "robotLCF", "footVideo"] },
+  { label: "汽车全套", types: ["car", "car10", "volvo", "carQX", "yanfeng10", "sofa"] },
+  { label: "高速矩阵", types: ["fast256", "fast1024", "fast1024sit", "daliegu"] },
+  { label: "床垫全套", types: ["bigBed", "jqbed", "smallBed", "xiyueReal1"] },
 ];
 
 /** 时间预设 */
@@ -55,7 +57,7 @@ const TIME_PRESETS = [
 ];
 
 export default function GenerateKey() {
-  const { data: sensorGroups } = trpc.sensors.groups.useQuery();
+  const { data: sensorGroups, isLoading: sensorGroupsLoading } = trpc.sensors.groups.useQuery();
 
   return (
     <div className="space-y-6">
@@ -68,25 +70,31 @@ export default function GenerateKey() {
         </p>
       </div>
 
-      <Tabs defaultValue="single" className="space-y-4">
-        <TabsList className="bg-secondary">
-          <TabsTrigger value="single">
-            <KeyRound className="h-3.5 w-3.5 mr-1.5" />
-            单个生成
-          </TabsTrigger>
-          <TabsTrigger value="batch">
-            <Zap className="h-3.5 w-3.5 mr-1.5" />
-            批量生成
-          </TabsTrigger>
-        </TabsList>
+      {sensorGroupsLoading ? (
+        <div className="flex items-center justify-center h-64">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        </div>
+      ) : (
+        <Tabs defaultValue="single" className="space-y-4">
+          <TabsList className="bg-secondary">
+            <TabsTrigger value="single">
+              <KeyRound className="h-3.5 w-3.5 mr-1.5" />
+              单个生成
+            </TabsTrigger>
+            <TabsTrigger value="batch">
+              <Zap className="h-3.5 w-3.5 mr-1.5" />
+              批量生成
+            </TabsTrigger>
+          </TabsList>
 
-        <TabsContent value="single">
-          <KeyGenerator sensorGroups={sensorGroups || []} mode="single" />
-        </TabsContent>
-        <TabsContent value="batch">
-          <KeyGenerator sensorGroups={sensorGroups || []} mode="batch" />
-        </TabsContent>
-      </Tabs>
+          <TabsContent value="single">
+            <KeyGenerator sensorGroups={sensorGroups || []} mode="single" />
+          </TabsContent>
+          <TabsContent value="batch">
+            <KeyGenerator sensorGroups={sensorGroups || []} mode="batch" />
+          </TabsContent>
+        </Tabs>
+      )}
     </div>
   );
 }
@@ -115,6 +123,7 @@ function KeyGenerator({
   const [newCustomerName, setNewCustomerName] = useState("");
   const [newCustomerPhone, setNewCustomerPhone] = useState("");
 
+  const utils = trpc.useUtils();
   const { data: customerList } = trpc.customers.all.useQuery();
   const createCustomerMutation = trpc.customers.create.useMutation({
     onSuccess: (data) => {
@@ -125,6 +134,9 @@ function KeyGenerator({
       setShowNewCustomer(false);
       setNewCustomerName("");
       setNewCustomerPhone("");
+      // 刷新客户列表缓存，确保新创建的客户出现在下拉列表中
+      utils.customers.all.invalidate();
+      utils.customers.list.invalidate();
       toast.success("客户创建成功");
     },
     onError: (err) => toast.error(err.message),
@@ -313,10 +325,10 @@ function KeyGenerator({
                   <Switch
                     checked={isAll}
                     onCheckedChange={handleToggleAll}
-                    id="all-switch"
+                    id={`all-switch-${mode}`}
                   />
                   <Label
-                    htmlFor="all-switch"
+                    htmlFor={`all-switch-${mode}`}
                     className="text-sm cursor-pointer text-foreground"
                   >
                     全部授权

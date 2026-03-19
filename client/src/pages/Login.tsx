@@ -101,10 +101,10 @@ export default function Login() {
 
             <div className="mt-6 pt-4 border-t border-border">
               <p className="text-xs text-muted-foreground text-center">
-                首次使用前请先配置数据库并重启服务
+                首次使用请联系超级管理员创建账号
               </p>
               <p className="text-xs text-muted-foreground text-center mt-1">
-                数据库初始化完成后会自动创建默认管理员：admin / admin123
+                默认管理员：admin / admin123
               </p>
             </div>
           </CardContent>
