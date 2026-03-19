@@ -18,6 +18,12 @@ export function registerOAuthRoutes(app: Express) {
         return;
       }
 
+      const dbStatus = await db.getDatabaseStatus();
+      if (!dbStatus.available) {
+        res.status(503).json({ error: dbStatus.message });
+        return;
+      }
+
       const user = await db.verifyUserCredentials(username, password);
       if (!user) {
         res.status(401).json({ error: "用户名或密码错误" });

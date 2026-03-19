@@ -37,8 +37,14 @@ async function startServer() {
 
   // 初始化数据库：确保默认超级管理员存在
   try {
-    await ensureDefaultSuperAdmin();
-    console.log("[Init] Database initialization complete");
+    const initStatus = await ensureDefaultSuperAdmin();
+    if (initStatus === "missing_database_url") {
+      console.warn("[Init] DATABASE_URL is not configured. Login and data APIs will not work until the database is configured.");
+    } else if (initStatus === "invalid_database_url") {
+      console.warn("[Init] Database initialization skipped because DATABASE_URL is invalid.");
+    } else {
+      console.log("[Init] Database initialization complete");
+    }
   } catch (error) {
     console.warn("[Init] Database initialization failed (will retry on first request):", error);
   }
