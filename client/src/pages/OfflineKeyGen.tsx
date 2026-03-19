@@ -59,13 +59,135 @@ const TIME_PRESETS = [
   { label: "3年", days: 1095 },
 ];
 
+/* ============ 生成结果弹窗（独立组件避免 DOM 协调问题） ============ */
+function ResultDialog({
+  open,
+  onOpenChange,
+  result,
+  sensorLabelMap,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  result: {
+    activationCode: string;
+    machineId: string;
+    sensorTypes: string[] | "all";
+    expireDate: number;
+    days: number;
+  } | null;
+  sensorLabelMap: Record<string, string>;
+}) {
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    toast.success("已复制到剪贴板");
+  };
+
+  const downloadAsFile = (code: string, mid: string) => {
+    const blob = new Blob([code], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `license_${mid}_${new Date().toISOString().slice(0, 10)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success("激活码文件已下载");
+  };
+
+  if (!result) return null;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Shield className="h-5 w-5 text-green-600" />
+            离线激活码生成成功
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <div>
+              <span className="text-muted-foreground">机器码：</span>
+              <span className="font-mono ml-1">{result.machineId}</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground">有效天数：</span>
+              <span className="ml-1">{result.days} 天</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground">到期时间：</span>
+              <span className="ml-1">{new Date(result.expireDate).toLocaleDateString("zh-CN")}</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground">授权类型：</span>
+              <span className="ml-1">
+                {result.sensorTypes === "all"
+                  ? "全部授权"
+                  : `${result.sensorTypes.length} 个传感器`}
+              </span>
+            </div>
+          </div>
+
+          <div>
+            <Label className="text-sm font-medium mb-1.5 block">激活码</Label>
+            <div className="bg-muted rounded-lg p-3 relative">
+              <pre className="text-xs font-mono whitespace-pre-wrap break-all max-h-40 overflow-auto">
+                {result.activationCode}
+              </pre>
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <Button
+              className="flex-1"
+              onClick={() => copyToClipboard(result.activationCode)}
+            >
+              <Copy className="h-4 w-4 mr-2" />
+              复制激活码
+            </Button>
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={() => downloadAsFile(result.activationCode, result.machineId)}
+            >
+              <Download className="h-4 w-4 mr-2" />
+              下载文件
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ============ 传感器类型标签列表（独立组件） ============ */
+function SelectedSensorTags({
+  types,
+  labelMap,
+}: {
+  types: string[];
+  labelMap: Record<string, string>;
+}) {
+  if (types.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1">
+      {types.map((t) => (
+        <Badge key={t} variant="secondary" className="text-xs">
+          {labelMap[t] || t}
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
+/* ============ 主页面 ============ */
 export default function OfflineKeyGen() {
   const { user } = useAuth();
   const utils = trpc.useUtils();
 
   // 传感器数据
   const { data: sensorGroupsRaw, isLoading: sensorsLoading } = trpc.sensors.groups.useQuery();
-  const sensorGroups: SensorGroup[] = sensorGroupsRaw ?? [];
+  const sensorGroups: SensorGroup[] = useMemo(() => sensorGroupsRaw ?? [], [sensorGroupsRaw]);
 
   // 客户列表
   const { data: customerList } = trpc.customers.all.useQuery();
@@ -169,12 +291,12 @@ export default function OfflineKeyGen() {
     toast.success("已复制到剪贴板");
   };
 
-  const downloadAsFile = (code: string, machineId: string) => {
+  const downloadAsFile = (code: string, mid: string) => {
     const blob = new Blob([code], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `license_${machineId}_${new Date().toISOString().slice(0, 10)}.txt`;
+    a.download = `license_${mid}_${new Date().toISOString().slice(0, 10)}.txt`;
     a.click();
     URL.revokeObjectURL(url);
     toast.success("激活码文件已下载");
@@ -367,7 +489,7 @@ export default function OfflineKeyGen() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">不关联客户</SelectItem>
-                    {customerList?.map((c) => (
+                    {(customerList ?? []).map((c) => (
                       <SelectItem key={c.id} value={c.id.toString()}>
                         {c.name}
                       </SelectItem>
@@ -404,15 +526,10 @@ export default function OfflineKeyGen() {
               </div>
 
               {/* 已选传感器标签 */}
-              {!isAll && selectedTypes.length > 0 && (
-                <div className="flex flex-wrap gap-1">
-                  {selectedTypes.map((t) => (
-                    <Badge key={t} variant="secondary" className="text-xs">
-                      {sensorLabelMap[t] || t}
-                    </Badge>
-                  ))}
-                </div>
-              )}
+              <SelectedSensorTags
+                types={isAll ? [] : selectedTypes}
+                labelMap={sensorLabelMap}
+              />
 
               {/* 生成按钮 */}
               <Button
@@ -452,185 +569,171 @@ export default function OfflineKeyGen() {
           </div>
         </CardHeader>
         <CardContent>
-          {listLoading ? (
-            <div className="flex items-center justify-center h-32">
-              <Loader2 className="h-6 w-6 animate-spin text-primary" />
-            </div>
-          ) : !offlineKeyList?.items.length ? (
-            <div className="text-center py-8 text-muted-foreground">
-              暂无离线密钥记录
-            </div>
-          ) : (
-            <>
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-40">机器码</TableHead>
-                      <TableHead>传感器类型</TableHead>
-                      <TableHead className="w-24">有效天数</TableHead>
-                      <TableHead className="w-32">到期时间</TableHead>
-                      <TableHead className="w-24">客户</TableHead>
-                      <TableHead className="w-32">创建时间</TableHead>
-                      <TableHead className="w-20 text-right">操作</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {offlineKeyList.items.map((item) => (
-                      <TableRow key={item.id}>
-                        <TableCell className="font-mono text-xs">{item.machineId}</TableCell>
-                        <TableCell>
-                          <div className="flex flex-wrap gap-1">
-                            {item.sensorTypes === "all" ? (
-                              <Badge variant="default" className="text-[10px]">全部授权</Badge>
-                            ) : (
-                              item.sensorTypes.split(",").slice(0, 3).map((t) => (
-                                <Badge key={t} variant="secondary" className="text-[10px]">
-                                  {sensorLabelMap[t] || t}
-                                </Badge>
-                              ))
-                            )}
-                            {item.sensorTypes !== "all" && item.sensorTypes.split(",").length > 3 && (
-                              <Badge variant="outline" className="text-[10px]">
-                                +{item.sensorTypes.split(",").length - 3}
-                              </Badge>
-                            )}
-                          </div>
-                        </TableCell>
-                        <TableCell>{item.days}天</TableCell>
-                        <TableCell className="text-xs">
-                          {new Date(item.expireDate).toLocaleDateString("zh-CN")}
-                        </TableCell>
-                        <TableCell className="text-sm">{item.customerName || "-"}</TableCell>
-                        <TableCell className="text-xs">
-                          {new Date(item.createdAt).toLocaleDateString("zh-CN")}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-1">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 w-7 p-0"
-                              onClick={() => copyToClipboard(item.activationCode)}
-                              title="复制激活码"
-                            >
-                              <Copy className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 w-7 p-0"
-                              onClick={() => downloadAsFile(item.activationCode, item.machineId)}
-                              title="下载激活码"
-                            >
-                              <Download className="h-3.5 w-3.5" />
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-
-              {/* 分页 */}
-              {offlineKeyList.total > offlineKeyList.pageSize && (
-                <div className="flex items-center justify-between mt-4">
-                  <span className="text-sm text-muted-foreground">
-                    共 {offlineKeyList.total} 条记录
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={listPage <= 1}
-                      onClick={() => setListPage((p) => p - 1)}
-                    >
-                      <ChevronLeft className="h-4 w-4" />
-                    </Button>
-                    <span className="text-sm">
-                      {listPage}/{Math.ceil(offlineKeyList.total / offlineKeyList.pageSize)}
-                    </span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={listPage >= Math.ceil(offlineKeyList.total / offlineKeyList.pageSize)}
-                      onClick={() => setListPage((p) => p + 1)}
-                    >
-                      <ChevronRight className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
+          <OfflineKeyTable
+            loading={listLoading}
+            data={offlineKeyList}
+            sensorLabelMap={sensorLabelMap}
+            page={listPage}
+            onPageChange={setListPage}
+            onCopy={copyToClipboard}
+            onDownload={downloadAsFile}
+          />
         </CardContent>
       </Card>
 
-      {/* 生成结果弹窗 */}
-      <Dialog open={showResult} onOpenChange={setShowResult}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Shield className="h-5 w-5 text-green-600" />
-              离线激活码生成成功
-            </DialogTitle>
-          </DialogHeader>
-          {result && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-3 text-sm">
-                <div>
-                  <span className="text-muted-foreground">机器码：</span>
-                  <span className="font-mono ml-1">{result.machineId}</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">有效天数：</span>
-                  <span className="ml-1">{result.days} 天</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">到期时间：</span>
-                  <span className="ml-1">{new Date(result.expireDate).toLocaleDateString("zh-CN")}</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">授权类型：</span>
-                  <span className="ml-1">
-                    {result.sensorTypes === "all"
-                      ? "全部授权"
-                      : `${result.sensorTypes.length} 个传感器`}
-                  </span>
-                </div>
-              </div>
+      {/* 生成结果弹窗 - 独立组件 */}
+      <ResultDialog
+        open={showResult}
+        onOpenChange={setShowResult}
+        result={result}
+        sensorLabelMap={sensorLabelMap}
+      />
+    </div>
+  );
+}
 
-              <div>
-                <Label className="text-sm font-medium mb-1.5 block">激活码</Label>
-                <div className="bg-muted rounded-lg p-3 relative">
-                  <pre className="text-xs font-mono whitespace-pre-wrap break-all max-h-40 overflow-auto">
-                    {result.activationCode}
-                  </pre>
-                </div>
-              </div>
+/* ============ 离线密钥表格（独立组件） ============ */
+function OfflineKeyTable({
+  loading,
+  data,
+  sensorLabelMap,
+  page,
+  onPageChange,
+  onCopy,
+  onDownload,
+}: {
+  loading: boolean;
+  data: { items: any[]; total: number; pageSize: number } | undefined;
+  sensorLabelMap: Record<string, string>;
+  page: number;
+  onPageChange: (p: number) => void;
+  onCopy: (text: string) => void;
+  onDownload: (code: string, machineId: string) => void;
+}) {
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-32">
+        <Loader2 className="h-6 w-6 animate-spin text-primary" />
+      </div>
+    );
+  }
 
-              <div className="flex gap-2">
-                <Button
-                  className="flex-1"
-                  onClick={() => copyToClipboard(result.activationCode)}
-                >
-                  <Copy className="h-4 w-4 mr-2" />
-                  复制激活码
-                </Button>
-                <Button
-                  variant="outline"
-                  className="flex-1"
-                  onClick={() => downloadAsFile(result.activationCode, result.machineId)}
-                >
-                  <Download className="h-4 w-4 mr-2" />
-                  下载文件
-                </Button>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+  if (!data || !data.items.length) {
+    return (
+      <div className="text-center py-8 text-muted-foreground">
+        暂无离线密钥记录
+      </div>
+    );
+  }
+
+  const totalPages = Math.ceil(data.total / data.pageSize);
+
+  return (
+    <div>
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-40">机器码</TableHead>
+              <TableHead>传感器类型</TableHead>
+              <TableHead className="w-24">有效天数</TableHead>
+              <TableHead className="w-32">到期时间</TableHead>
+              <TableHead className="w-24">客户</TableHead>
+              <TableHead className="w-32">创建时间</TableHead>
+              <TableHead className="w-20 text-right">操作</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {data.items.map((item) => {
+              const sensorTypesArr = item.sensorTypes === "all" ? [] : item.sensorTypes.split(",");
+              return (
+                <TableRow key={item.id}>
+                  <TableCell className="font-mono text-xs">{item.machineId}</TableCell>
+                  <TableCell>
+                    <div className="flex flex-wrap gap-1">
+                      {item.sensorTypes === "all" ? (
+                        <Badge variant="default" className="text-[10px]">全部授权</Badge>
+                      ) : (
+                        <>
+                          {sensorTypesArr.slice(0, 3).map((t: string) => (
+                            <Badge key={t} variant="secondary" className="text-[10px]">
+                              {sensorLabelMap[t] || t}
+                            </Badge>
+                          ))}
+                          {sensorTypesArr.length > 3 && (
+                            <Badge variant="outline" className="text-[10px]">
+                              +{sensorTypesArr.length - 3}
+                            </Badge>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell>{item.days}天</TableCell>
+                  <TableCell className="text-xs">
+                    {new Date(item.expireDate).toLocaleDateString("zh-CN")}
+                  </TableCell>
+                  <TableCell className="text-sm">{item.customerName || "-"}</TableCell>
+                  <TableCell className="text-xs">
+                    {new Date(item.createdAt).toLocaleDateString("zh-CN")}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 p-0"
+                        onClick={() => onCopy(item.activationCode)}
+                        title="复制激活码"
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 p-0"
+                        onClick={() => onDownload(item.activationCode, item.machineId)}
+                        title="下载激活码"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+
+      {data.total > data.pageSize && (
+        <div className="flex items-center justify-between mt-4">
+          <span className="text-sm text-muted-foreground">
+            共 {data.total} 条记录
+          </span>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page <= 1}
+              onClick={() => onPageChange(page - 1)}
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <span className="text-sm">
+              {page}/{totalPages}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page >= totalPages}
+              onClick={() => onPageChange(page + 1)}
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
