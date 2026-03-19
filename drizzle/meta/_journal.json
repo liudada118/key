@@ -22,6 +22,13 @@
       "when": 1772768761661,
       "tag": "0002_odd_ultimo",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1773893253793,
+      "tag": "0003_sturdy_chronomancer",
+      "breakpoints": true
     }
   ]
 }

@@ -12,8 +12,11 @@ import VerifyKey from "./pages/VerifyKey";
 import AccountManagement from "./pages/AccountManagement";
 import CustomerManagement from "./pages/CustomerManagement";
 import MacReader from "./pages/MacReader";
+import Login from "./pages/Login";
+import { useAuth } from "./_core/hooks/useAuth";
+import { Loader2 } from "lucide-react";
 
-function Router() {
+function AuthenticatedRouter() {
   return (
     <DashboardLayout>
       <Switch>
@@ -31,13 +34,37 @@ function Router() {
   );
 }
 
+function AppRouter() {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <Switch>
+        <Route path={"/login"} component={Login} />
+        {/* 未登录时所有路由都显示登录页 */}
+        <Route><Login /></Route>
+      </Switch>
+    );
+  }
+
+  return <AuthenticatedRouter />;
+}
+
 function App() {
   return (
     <ErrorBoundary>
       <ThemeProvider defaultTheme="dark">
         <TooltipProvider>
           <Toaster />
-          <Router />
+          <AppRouter />
         </TooltipProvider>
       </ThemeProvider>
     </ErrorBoundary>

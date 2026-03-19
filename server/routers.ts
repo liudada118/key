@@ -6,6 +6,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { adminProcedure, protectedProcedure, publicProcedure, router, superAdminProcedure } from "./_core/trpc";
 import {
   activateLicenseKey,
+  changePassword,
   createAccount,
   createCustomer,
   getAllCustomers,
@@ -19,10 +20,13 @@ import {
   getSubordinateUsers,
   getUserAndSubordinateIds,
   getUserById,
+  getUserByUsername,
   insertLicenseKey,
   insertLicenseKeys,
+  resetPassword,
   updateAccount,
   updateCustomer,
+  verifyUserCredentials,
 } from "./db";
 import {
   decodeLicenseKey,
@@ -40,12 +44,34 @@ export const appRouter = router({
   system: systemRouter,
 
   auth: router({
-    me: publicProcedure.query((opts) => opts.ctx.user),
+    me: publicProcedure.query((opts) => {
+      if (!opts.ctx.user) return null;
+      // 不返回密码字段
+      const { password, ...safeUser } = opts.ctx.user;
+      return safeUser;
+    }),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
       return { success: true } as const;
     }),
+    /** 修改自己的密码 */
+    changePassword: protectedProcedure
+      .input(
+        z.object({
+          oldPassword: z.string().min(1, "旧密码不能为空"),
+          newPassword: z.string().min(6, "新密码至少6位"),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        // 验证旧密码
+        const user = await verifyUserCredentials(ctx.user.username, input.oldPassword);
+        if (!user) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "旧密码错误" });
+        }
+        await changePassword(ctx.user.id, input.newPassword);
+        return { success: true };
+      }),
   }),
 
   // ===== 账号管理 =====
@@ -61,6 +87,8 @@ export const appRouter = router({
     create: adminProcedure
       .input(
         z.object({
+          username: z.string().min(2, "用户名至少2个字符").max(32),
+          password: z.string().min(6, "密码至少6位"),
           name: z.string().min(1, "名称不能为空"),
           role: z.enum(["admin", "user"]),
           remark: z.string().optional(),
@@ -70,7 +98,14 @@ export const appRouter = router({
         if (ctx.user.role === "admin" && input.role === "admin") {
           throw new TRPCError({ code: "FORBIDDEN", message: "管理员只能创建子账号" });
         }
+        // 检查用户名是否已存在
+        const existing = await getUserByUsername(input.username);
+        if (existing) {
+          throw new TRPCError({ code: "CONFLICT", message: "用户名已存在" });
+        }
         return createAccount({
+          username: input.username,
+          password: input.password,
           name: input.name,
           role: input.role,
           createdById: ctx.user.id,
@@ -106,11 +141,35 @@ export const appRouter = router({
           remark: input.remark,
         });
       }),
+
+    /** 重置下级账号密码（管理员操作） */
+    resetPassword: adminProcedure
+      .input(
+        z.object({
+          id: z.number(),
+          newPassword: z.string().min(6, "密码至少6位"),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const target = await getUserById(input.id);
+        if (!target) throw new TRPCError({ code: "NOT_FOUND", message: "账号不存在" });
+
+        if (ctx.user.role === "admin") {
+          if (target.createdById !== ctx.user.id) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "无权操作此账号" });
+          }
+        }
+        if (ctx.user.role !== "super_admin" && target.role === "super_admin") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "无权操作超级管理员" });
+        }
+
+        await resetPassword(input.id, input.newPassword);
+        return { success: true };
+      }),
   }),
 
   // ===== 客户管理 =====
   customers: router({
-    /** 获取客户列表（分页） */
     list: protectedProcedure
       .input(
         z.object({
@@ -131,13 +190,11 @@ export const appRouter = router({
         });
       }),
 
-    /** 获取所有活跃客户（用于下拉选择） */
     all: protectedProcedure.query(async ({ ctx }) => {
       const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
       return getAllCustomers(userIds);
     }),
 
-    /** 获取单个客户详情 */
     get: protectedProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ input }) => {
@@ -147,7 +204,6 @@ export const appRouter = router({
         return { ...customer, keyCount };
       }),
 
-    /** 创建客户 */
     create: protectedProcedure
       .input(
         z.object({
@@ -171,7 +227,6 @@ export const appRouter = router({
         });
       }),
 
-    /** 更新客户 */
     update: protectedProcedure
       .input(
         z.object({
@@ -206,7 +261,6 @@ export const appRouter = router({
     sensorGroups: publicProcedure.query(() => SENSOR_GROUPS),
     categories: publicProcedure.query(() => KEY_CATEGORIES),
 
-    /** 生成单个密钥（支持多选传感器类型 + 关联客户） */
     generate: protectedProcedure
       .input(
         z.object({
@@ -226,7 +280,6 @@ export const appRouter = router({
           ? input.sensorTypes.join(",")
           : input.sensorTypes;
 
-        // 获取客户名称
         let customerName = input.customerName || null;
         if (input.customerId && !customerName) {
           const customer = await getCustomerById(input.customerId);
@@ -249,7 +302,6 @@ export const appRouter = router({
         return { keyString, expireTimestamp };
       }),
 
-    /** 批量生成密钥（支持多选传感器类型 + 关联客户） */
     batchGenerate: protectedProcedure
       .input(
         z.object({
@@ -271,7 +323,6 @@ export const appRouter = router({
           ? input.sensorTypes.join(",")
           : input.sensorTypes;
 
-        // 获取客户名称
         let customerName = input.customerName || null;
         if (input.customerId && !customerName) {
           const customer = await getCustomerById(input.customerId);
@@ -301,7 +352,6 @@ export const appRouter = router({
         return { batchId, keys, count: keys.length };
       }),
 
-    /** 分级查询密钥列表 */
     list: protectedProcedure
       .input(
         z.object({
@@ -328,7 +378,6 @@ export const appRouter = router({
         });
       }),
 
-    /** 解密验证密钥 */
     verify: publicProcedure
       .input(z.object({ keyString: z.string().min(1) }))
       .mutation(async ({ input }) => {
@@ -347,7 +396,6 @@ export const appRouter = router({
         };
       }),
 
-    /** 激活密钥 */
     activate: publicProcedure
       .input(
         z.object({
@@ -363,13 +411,11 @@ export const appRouter = router({
         return activateLicenseKey(input.keyString.trim(), input.deviceInfo);
       }),
 
-    /** 密钥统计 */
     stats: protectedProcedure.query(async ({ ctx }) => {
       const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
       return getKeyStats(userIds);
     }),
 
-    /** 导出密钥数据 */
     export: protectedProcedure
       .input(
         z.object({

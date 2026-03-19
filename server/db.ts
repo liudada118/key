@@ -8,7 +8,7 @@ import {
   type InsertCustomer,
   type InsertLicenseKey,
 } from "../drizzle/schema";
-import { ENV } from "./_core/env";
+import bcrypt from "bcryptjs";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -24,54 +24,13 @@ export async function getDb() {
   return _db;
 }
 
-// ===== User Helpers =====
+// ===== User / Auth Helpers =====
 
-export async function upsertUser(user: InsertUser): Promise<void> {
-  if (!user.openId) throw new Error("User openId is required for upsert");
-  const db = await getDb();
-  if (!db) return;
-
-  try {
-    const values: InsertUser = { openId: user.openId };
-    const updateSet: Record<string, unknown> = {};
-
-    const textFields = ["name", "email", "loginMethod"] as const;
-    type TextField = (typeof textFields)[number];
-    const assignNullable = (field: TextField) => {
-      const value = user[field];
-      if (value === undefined) return;
-      const normalized = value ?? null;
-      values[field] = normalized;
-      updateSet[field] = normalized;
-    };
-    textFields.forEach(assignNullable);
-
-    if (user.lastSignedIn !== undefined) {
-      values.lastSignedIn = user.lastSignedIn;
-      updateSet.lastSignedIn = user.lastSignedIn;
-    }
-    if (user.role !== undefined) {
-      values.role = user.role;
-      updateSet.role = user.role;
-    } else if (user.openId === ENV.ownerOpenId) {
-      values.role = "super_admin";
-      updateSet.role = "super_admin";
-    }
-
-    if (!values.lastSignedIn) values.lastSignedIn = new Date();
-    if (Object.keys(updateSet).length === 0) updateSet.lastSignedIn = new Date();
-
-    await db.insert(users).values(values).onDuplicateKeyUpdate({ set: updateSet });
-  } catch (error) {
-    console.error("[Database] Failed to upsert user:", error);
-    throw error;
-  }
-}
-
-export async function getUserByOpenId(openId: string) {
+/** 通过用户名查找用户 */
+export async function getUserByUsername(username: string) {
   const db = await getDb();
   if (!db) return undefined;
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
+  const result = await db.select().from(users).where(eq(users.username, username)).limit(1);
   return result.length > 0 ? result[0] : undefined;
 }
 
@@ -82,17 +41,120 @@ export async function getUserById(id: number) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+/** 验证用户名密码 */
+export async function verifyUserCredentials(username: string, password: string) {
+  const user = await getUserByUsername(username);
+  if (!user) return null;
+  if (!user.isActive) return null;
+
+  const valid = await bcrypt.compare(password, user.password);
+  if (!valid) return null;
+
+  // 更新最后登录时间
+  const db = await getDb();
+  if (db) {
+    await db.update(users).set({ lastSignedIn: new Date() }).where(eq(users.id, user.id));
+  }
+
+  return user;
+}
+
+/** 创建用户（带密码哈希） */
+export async function createUserWithPassword(data: {
+  username: string;
+  password: string;
+  name: string;
+  role: "super_admin" | "admin" | "user";
+  createdById?: number | null;
+  remark?: string | null;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const hashedPassword = await bcrypt.hash(data.password, 10);
+
+  await db.insert(users).values({
+    username: data.username,
+    password: hashedPassword,
+    name: data.name,
+    role: data.role,
+    createdById: data.createdById ?? null,
+    remark: data.remark ?? null,
+    isActive: true,
+  });
+
+  const result = await db.select().from(users).where(eq(users.username, data.username)).limit(1);
+  return result[0];
+}
+
+/** 初始化默认超级管理员（如果不存在） */
+export async function ensureDefaultSuperAdmin() {
+  const db = await getDb();
+  if (!db) return;
+
+  const existing = await db.select().from(users).where(eq(users.role, "super_admin")).limit(1);
+  if (existing.length > 0) return;
+
+  console.log("[Init] Creating default super admin: admin / admin123");
+  await createUserWithPassword({
+    username: "admin",
+    password: "admin123",
+    name: "超级管理员",
+    role: "super_admin",
+    createdById: null,
+  });
+  console.log("[Init] Default super admin created successfully");
+}
+
+/** 修改密码 */
+export async function changePassword(userId: number, newPassword: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const hashedPassword = await bcrypt.hash(newPassword, 10);
+  await db.update(users).set({ password: hashedPassword }).where(eq(users.id, userId));
+}
+
+/** 重置密码（管理员操作） */
+export async function resetPassword(userId: number, newPassword: string) {
+  return changePassword(userId, newPassword);
+}
+
 /** 获取用户管理的下级账号 */
 export async function getSubordinateUsers(userId: number, role: string) {
   const db = await getDb();
   if (!db) return [];
 
   if (role === "super_admin") {
-    return db.select().from(users).where(
+    return db.select({
+      id: users.id,
+      username: users.username,
+      name: users.name,
+      email: users.email,
+      role: users.role,
+      createdById: users.createdById,
+      isActive: users.isActive,
+      remark: users.remark,
+      createdAt: users.createdAt,
+      updatedAt: users.updatedAt,
+      lastSignedIn: users.lastSignedIn,
+    }).from(users).where(
       or(eq(users.role, "admin"), eq(users.role, "user"))
     ).orderBy(desc(users.createdAt));
   } else if (role === "admin") {
-    return db.select().from(users).where(
+    return db.select({
+      id: users.id,
+      username: users.username,
+      name: users.name,
+      email: users.email,
+      role: users.role,
+      createdById: users.createdById,
+      isActive: users.isActive,
+      remark: users.remark,
+      createdAt: users.createdAt,
+      updatedAt: users.updatedAt,
+      lastSignedIn: users.lastSignedIn,
+    }).from(users).where(
       and(eq(users.createdById, userId), eq(users.role, "user"))
     ).orderBy(desc(users.createdAt));
   }
@@ -117,26 +179,21 @@ export async function getUserAndSubordinateIds(userId: number, role: string): Pr
 }
 
 export async function createAccount(data: {
+  username: string;
+  password: string;
   name: string;
   role: "admin" | "user";
   createdById: number;
   remark?: string;
 }) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-
-  const openId = `internal_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-  await db.insert(users).values({
-    openId,
+  return createUserWithPassword({
+    username: data.username,
+    password: data.password,
     name: data.name,
     role: data.role,
     createdById: data.createdById,
-    remark: data.remark || null,
-    isActive: true,
+    remark: data.remark,
   });
-
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
-  return result[0];
 }
 
 export async function updateAccount(id: number, data: {
@@ -183,7 +240,6 @@ export async function createCustomer(data: {
     isActive: true,
   });
 
-  // 返回刚创建的客户
   const result = await db.select().from(customers)
     .where(and(eq(customers.name, data.name), eq(customers.createdById, data.createdById)))
     .orderBy(desc(customers.id))
@@ -227,7 +283,6 @@ export async function getCustomerById(id: number) {
   return result.length > 0 ? result[0] : undefined;
 }
 
-/** 获取客户列表（分页 + 搜索） */
 export async function getCustomers(opts: {
   userIds: number[];
   page: number;
@@ -261,7 +316,6 @@ export async function getCustomers(opts: {
   return { items, total: totalResult[0]?.count ?? 0 };
 }
 
-/** 获取所有客户（用于下拉选择） */
 export async function getAllCustomers(userIds: number[]) {
   const db = await getDb();
   if (!db) return [];
@@ -275,7 +329,6 @@ export async function getAllCustomers(userIds: number[]) {
   ).orderBy(desc(customers.createdAt));
 }
 
-/** 获取客户的密钥数量统计 */
 export async function getCustomerKeyCount(customerId: number) {
   const db = await getDb();
   if (!db) return 0;
@@ -390,5 +443,17 @@ export async function getKeyStats(userIds: number[]) {
 export async function getAllUsers() {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(users).orderBy(desc(users.createdAt));
+  return db.select({
+    id: users.id,
+    username: users.username,
+    name: users.name,
+    email: users.email,
+    role: users.role,
+    createdById: users.createdById,
+    isActive: users.isActive,
+    remark: users.remark,
+    createdAt: users.createdAt,
+    updatedAt: users.updatedAt,
+    lastSignedIn: users.lastSignedIn,
+  }).from(users).orderBy(desc(users.createdAt));
 }

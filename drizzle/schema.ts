@@ -17,10 +17,13 @@ import {
  */
 export const users = mysqlTable("users", {
   id: int("id").autoincrement().primaryKey(),
-  openId: varchar("openId", { length: 64 }).notNull().unique(),
+  /** 用户名（登录用，唯一） */
+  username: varchar("username", { length: 64 }).notNull().unique(),
+  /** 密码（bcrypt 哈希） */
+  password: varchar("password", { length: 128 }).notNull(),
+  /** 显示名称 */
   name: text("name"),
   email: varchar("email", { length: 320 }),
-  loginMethod: varchar("loginMethod", { length: 64 }),
   role: mysqlEnum("role", ["user", "admin", "super_admin"]).default("user").notNull(),
   /** 创建者 ID，super_admin 为 null */
   createdById: int("createdById"),

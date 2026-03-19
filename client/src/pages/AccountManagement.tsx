@@ -30,7 +30,7 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
-import { Loader2, Pencil, Plus, ShieldCheck, Users } from "lucide-react";
+import { KeyRound, Loader2, Pencil, Plus, ShieldCheck, Users } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -52,14 +52,23 @@ export default function AccountManagement() {
   const { data: accounts, isLoading } = trpc.accounts.list.useQuery();
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [resetPwdOpen, setResetPwdOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<{
     id: number;
     name: string | null;
+    username: string;
     isActive: boolean;
     remark: string | null;
   } | null>(null);
+  const [resetTarget, setResetTarget] = useState<{
+    id: number;
+    name: string | null;
+    username: string;
+  } | null>(null);
 
   // Create form state
+  const [newUsername, setNewUsername] = useState("");
+  const [newPassword, setNewPassword] = useState("");
   const [newName, setNewName] = useState("");
   const [newRole, setNewRole] = useState<"admin" | "user">("user");
   const [newRemark, setNewRemark] = useState("");
@@ -69,10 +78,15 @@ export default function AccountManagement() {
   const [editActive, setEditActive] = useState(true);
   const [editRemark, setEditRemark] = useState("");
 
+  // Reset password state
+  const [resetNewPwd, setResetNewPwd] = useState("");
+
   const createMutation = trpc.accounts.create.useMutation({
     onSuccess: () => {
       toast.success("账号创建成功");
       setCreateOpen(false);
+      setNewUsername("");
+      setNewPassword("");
       setNewName("");
       setNewRemark("");
       utils.accounts.list.invalidate();
@@ -90,9 +104,24 @@ export default function AccountManagement() {
     onError: (err) => toast.error(err.message),
   });
 
+  const resetPwdMutation = trpc.accounts.resetPassword.useMutation({
+    onSuccess: () => {
+      toast.success("密码重置成功");
+      setResetPwdOpen(false);
+      setResetTarget(null);
+      setResetNewPwd("");
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
   const handleCreate = () => {
-    if (!newName.trim()) return toast.error("请输入账号名称");
+    if (!newUsername.trim()) return toast.error("请输入用户名");
+    if (!newPassword.trim()) return toast.error("请输入密码");
+    if (newPassword.length < 6) return toast.error("密码至少6位");
+    if (!newName.trim()) return toast.error("请输入显示名称");
     createMutation.mutate({
+      username: newUsername.trim(),
+      password: newPassword,
       name: newName.trim(),
       role: newRole,
       remark: newRemark || undefined,
@@ -109,9 +138,21 @@ export default function AccountManagement() {
     });
   };
 
+  const handleResetPwd = () => {
+    if (!resetTarget) return;
+    if (!resetNewPwd.trim() || resetNewPwd.length < 6) {
+      return toast.error("新密码至少6位");
+    }
+    resetPwdMutation.mutate({
+      id: resetTarget.id,
+      newPassword: resetNewPwd,
+    });
+  };
+
   const openEdit = (account: {
     id: number;
     name: string | null;
+    username: string;
     isActive: boolean;
     remark: string | null;
   }) => {
@@ -120,6 +161,16 @@ export default function AccountManagement() {
     setEditActive(account.isActive);
     setEditRemark(account.remark || "");
     setEditOpen(true);
+  };
+
+  const openResetPwd = (account: {
+    id: number;
+    name: string | null;
+    username: string;
+  }) => {
+    setResetTarget(account);
+    setResetNewPwd("");
+    setResetPwdOpen(true);
   };
 
   const canCreateAdmin = user?.role === "super_admin";
@@ -148,11 +199,32 @@ export default function AccountManagement() {
             </DialogHeader>
             <div className="space-y-4 py-2">
               <div className="space-y-2">
-                <Label className="text-foreground">账号名称</Label>
+                <Label className="text-foreground">用户名（登录用）</Label>
+                <Input
+                  value={newUsername}
+                  onChange={(e) => setNewUsername(e.target.value)}
+                  placeholder="输入用户名"
+                  className="bg-secondary/50"
+                  autoComplete="off"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-foreground">密码</Label>
+                <Input
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="至少6位"
+                  className="bg-secondary/50"
+                  autoComplete="new-password"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-foreground">显示名称</Label>
                 <Input
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
-                  placeholder="输入账号名称"
+                  placeholder="输入显示名称"
                   className="bg-secondary/50"
                 />
               </div>
@@ -221,18 +293,22 @@ export default function AccountManagement() {
               <Table>
                 <TableHeader>
                   <TableRow className="border-border/50">
+                    <TableHead className="text-muted-foreground">用户名</TableHead>
                     <TableHead className="text-muted-foreground">名称</TableHead>
                     <TableHead className="text-muted-foreground">角色</TableHead>
                     <TableHead className="text-muted-foreground">状态</TableHead>
                     <TableHead className="text-muted-foreground">备注</TableHead>
                     <TableHead className="text-muted-foreground">创建时间</TableHead>
                     <TableHead className="text-muted-foreground">最后登录</TableHead>
-                    <TableHead className="text-muted-foreground w-10"></TableHead>
+                    <TableHead className="text-muted-foreground w-24">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {accounts.map((acc) => (
                     <TableRow key={acc.id} className="border-border/30">
+                      <TableCell className="font-mono text-sm text-foreground">
+                        {acc.username}
+                      </TableCell>
                       <TableCell className="font-medium text-foreground">
                         {acc.name || "-"}
                       </TableCell>
@@ -266,14 +342,26 @@ export default function AccountManagement() {
                         {new Date(acc.lastSignedIn).toLocaleDateString("zh-CN")}
                       </TableCell>
                       <TableCell>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 w-7 p-0"
-                          onClick={() => openEdit(acc)}
-                        >
-                          <Pencil className="h-3 w-3" />
-                        </Button>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 w-7 p-0"
+                            onClick={() => openEdit(acc)}
+                            title="编辑"
+                          >
+                            <Pencil className="h-3 w-3" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 w-7 p-0"
+                            onClick={() => openResetPwd(acc)}
+                            title="重置密码"
+                          >
+                            <KeyRound className="h-3 w-3" />
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -288,14 +376,17 @@ export default function AccountManagement() {
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
         <DialogContent className="bg-card border-border">
           <DialogHeader>
-            <DialogTitle className="text-foreground">编辑账号</DialogTitle>
+            <DialogTitle className="text-foreground">
+              编辑账号 - {editTarget?.username}
+            </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <Label className="text-foreground">账号名称</Label>
+              <Label className="text-foreground">显示名称</Label>
               <Input
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
+                placeholder="输入名称"
                 className="bg-secondary/50"
               />
             </div>
@@ -308,6 +399,7 @@ export default function AccountManagement() {
               <Textarea
                 value={editRemark}
                 onChange={(e) => setEditRemark(e.target.value)}
+                placeholder="输入备注"
                 className="bg-secondary/50 resize-none"
                 rows={2}
               />
@@ -322,6 +414,44 @@ export default function AccountManagement() {
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />
               )}
               保存
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reset Password Dialog */}
+      <Dialog open={resetPwdOpen} onOpenChange={setResetPwdOpen}>
+        <DialogContent className="bg-card border-border">
+          <DialogHeader>
+            <DialogTitle className="text-foreground">
+              重置密码 - {resetTarget?.name || resetTarget?.username}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-muted-foreground">
+              为用户 <span className="font-mono text-foreground">{resetTarget?.username}</span> 设置新密码
+            </p>
+            <div className="space-y-2">
+              <Label className="text-foreground">新密码</Label>
+              <Input
+                type="password"
+                value={resetNewPwd}
+                onChange={(e) => setResetNewPwd(e.target.value)}
+                placeholder="至少6位"
+                className="bg-secondary/50"
+                autoComplete="new-password"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setResetPwdOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={handleResetPwd} disabled={resetPwdMutation.isPending}>
+              {resetPwdMutation.isPending && (
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              )}
+              确认重置
             </Button>
           </DialogFooter>
         </DialogContent>

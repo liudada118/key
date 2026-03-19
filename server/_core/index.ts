@@ -7,6 +7,7 @@ import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { ensureDefaultSuperAdmin } from "../db";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -33,7 +34,16 @@ async function startServer() {
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
-  // OAuth callback under /api/oauth/callback
+
+  // 初始化数据库：确保默认超级管理员存在
+  try {
+    await ensureDefaultSuperAdmin();
+    console.log("[Init] Database initialization complete");
+  } catch (error) {
+    console.warn("[Init] Database initialization failed (will retry on first request):", error);
+  }
+
+  // 本地登录路由
   registerOAuthRoutes(app);
   // tRPC API
   app.use(
