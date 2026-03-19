@@ -1,0 +1,106 @@
+{
+  "query": "SELECT id, label, value, groupName, groupIcon, sortOrder FROM sensorTypes ORDER BY sortOrder;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user uEiJ7Pi2fij4L3s.root --database CxbGMJzuhHB3si38TZmHn4 --execute SELECT id, label, value, groupName, groupIcon, sortOrder FROM sensorTypes ORDER BY sortOrder;",
+  "rows": [
+    {
+      "id": "55",
+      "label": "手部检测",
+      "value": "hand",
+      "groupName": "常用",
+      "groupIcon": "🖐️",
+      "sortOrder": "1"
+    },
+    {
+      "id": "56",
+      "label": "小床监测",
+      "value": "jqbed",
+      "groupName": "关怀",
+      "groupIcon": "🛏️",
+      "sortOrder": "2"
+    },
+    {
+      "id": "57",
+      "label": "触觉手套",
+      "value": "hand0205",
+      "groupName": "精密",
+      "groupIcon": "🧤",
+      "sortOrder": "3"
+    },
+    {
+      "id": "58",
+      "label": "触觉手套(115200)",
+      "value": "handGlove115200",
+      "groupName": "精密",
+      "groupIcon": "🧤",
+      "sortOrder": "4"
+    },
+    {
+      "id": "59",
+      "label": "小型样品",
+      "value": "smallSample",
+      "groupName": "精密",
+      "groupIcon": "🧤",
+      "sortOrder": "5"
+    },
+    {
+      "id": "60",
+      "label": "宇树G1触觉上衣",
+      "value": "robot1",
+      "groupName": "精密",
+      "groupIcon": "🧤",
+      "sortOrder": "6"
+    },
+    {
+      "id": "61",
+      "label": "松延N2触觉上衣",
+      "value": "robotSY",
+      "groupName": "精密",
+      "groupIcon": "🧤",
+      "sortOrder": "7"
+    },
+    {
+      "id": "62",
+      "label": "零次方H1触觉上衣",
+      "value": "robotLCF",
+      "groupName": "精密",
+      "groupIcon": "🧤",
+      "sortOrder": "8"
+    },
+    {
+      "id": "63",
+      "label": "触觉足底",
+      "value": "footVideo",
+      "groupName": "精密",
+      "groupIcon": "🧤",
+      "sortOrder": "9"
+    },
+    {
+      "id": "64",
+      "label": "14x20高速",
+      "value": "daliegu",
+      "groupName": "精密",
+      "groupIcon": "🧤",
+      "sortOrder": "10"
+    },
+    {
+      "id": "65",
+      "label": "16x16高速",
+      "value": "fast256",
+      "groupName": "精密",
+      "groupIcon": "🧤",
+      "sortOrder": "11"
+    },
+    {
+      "id": "66",
+      "label": "32x32高速",
+      "value": "fast1024",
+      "groupName": "精密",
+      "groupIcon": "🧤",
+      "sortOrder": "12"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tlabel\tvalue\tgroupName\tgroupIcon\tsortOrder\n55\t手部检测\thand\t常用\t🖐️\t1\n56\t小床监测\tjqbed\t关怀\t🛏️\t2\n57\t触觉手套\thand0205\t精密\t🧤\t3\n58\t触觉手套(115200)\thandGlove115200\t精密\t🧤\t4\n59\t小型样品\tsmallSample\t精密\t🧤\t5\n60\t宇树G1触觉上衣\trobot1\t精密\t🧤\t6\n61\t松延N2触觉上衣\trobotSY\t精密\t🧤\t7\n62\t零次方H1触觉上衣\trobotLCF\t精密\t🧤\t8\n63\t触觉足底\tfootVideo\t精密\t🧤\t9\n64\t14x20高速\tdaliegu\t精密\t🧤\t10\n65\t16x16高速\tfast256\t精密\t🧤\t11\n66\t32x32高速\tfast1024\t精密\t🧤\t12\n",
+  "stderr": "",
+  "execution_time_ms": 55
+}

@@ -1,0 +1,31 @@
+{
+  "query": "SELECT id, username, openId, name, role FROM users;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user uEiJ7Pi2fij4L3s.root --database CxbGMJzuhHB3si38TZmHn4 --execute SELECT id, username, openId, name, role FROM users;",
+  "rows": [
+    {
+      "id": "1",
+      "username": "",
+      "openId": "gRakyqrSyRu8oYHuHXDUdv",
+      "name": "刘富贵",
+      "role": "super_admin"
+    },
+    {
+      "id": "49",
+      "username": "",
+      "openId": "AWEyqpyBZMHwfdUevHiNNS",
+      "name": "达 刘",
+      "role": "user"
+    },
+    {
+      "id": "79",
+      "username": "",
+      "openId": "internal_1772766805027_g7lk5t",
+      "name": "王一琴",
+      "role": "admin"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tusername\topenId\tname\trole\n1\t\tgRakyqrSyRu8oYHuHXDUdv\t刘富贵\tsuper_admin\n49\t\tAWEyqpyBZMHwfdUevHiNNS\t达 刘\tuser\n79\t\tinternal_1772766805027_g7lk5t\t王一琴\tadmin\n",
+  "stderr": "",
+  "execution_time_ms": 56
+}

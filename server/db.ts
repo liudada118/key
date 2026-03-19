@@ -3,12 +3,14 @@ import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
   customers,
+  keyDevices,
   licenseKeys,
   offlineKeys,
   rsaKeyPairs,
   sensorTypes,
   users,
   type InsertCustomer,
+  type InsertKeyDevice,
   type InsertLicenseKey,
   type InsertOfflineKey,
   type InsertSensorType,
@@ -437,21 +439,145 @@ export async function getLicenseKeyByString(keyString: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
-export async function activateLicenseKey(keyString: string, deviceInfo?: string) {
+/**
+ * 客户自助激活密钥（绑定设备）
+ * 流程：验证密钥有效性 → 检查设备是否已绑定 → 检查设备数量上限 → 绑定设备
+ */
+export async function activateLicenseKey(keyString: string, deviceCode?: string, deviceName?: string, clientIp?: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
   const existing = await getLicenseKeyByString(keyString);
   if (!existing) return { success: false, error: "密钥不存在" };
-  if (existing.isActivated) return { success: false, error: "密钥已被激活，不可重复使用" };
 
-  await db.update(licenseKeys).set({
-    isActivated: true,
-    activatedAt: new Date(),
-    activatedDevice: deviceInfo || null,
-  }).where(eq(licenseKeys.keyString, keyString));
+  // 检查密钥是否过期
+  if (existing.expireTimestamp < Date.now()) {
+    return { success: false, error: "密钥已过期" };
+  }
 
-  return { success: true };
+  if (!deviceCode) {
+    return { success: false, error: "设备码不能为空" };
+  }
+
+  const trimmedDeviceCode = deviceCode.trim();
+
+  // 检查该设备是否已绑定此密钥
+  const existingDevice = await db.select().from(keyDevices)
+    .where(and(eq(keyDevices.keyId, existing.id), eq(keyDevices.deviceCode, trimmedDeviceCode)))
+    .limit(1);
+  if (existingDevice.length > 0) {
+    return { success: true, message: "该设备已绑定此密钥，无需重复激活", alreadyBound: true };
+  }
+
+  // 检查设备数量上限
+  const boundDevices = await db.select({ count: count() }).from(keyDevices)
+    .where(eq(keyDevices.keyId, existing.id));
+  const currentCount = boundDevices[0]?.count ?? 0;
+
+  if (existing.maxDevices > 0 && currentCount >= existing.maxDevices) {
+    return {
+      success: false,
+      error: `设备绑定数量已达上限（${existing.maxDevices}台）`,
+      currentDevices: currentCount,
+      maxDevices: existing.maxDevices,
+    };
+  }
+
+  // 绑定设备
+  await db.insert(keyDevices).values({
+    keyId: existing.id,
+    deviceCode: trimmedDeviceCode,
+    deviceName: deviceName || null,
+    boundIp: clientIp || null,
+  });
+
+  // 更新密钥激活状态（首次绑定时设置）
+  if (!existing.isActivated) {
+    await db.update(licenseKeys).set({
+      isActivated: true,
+      activatedAt: new Date(),
+      activatedDevice: trimmedDeviceCode,
+    }).where(eq(licenseKeys.id, existing.id));
+  }
+
+  return {
+    success: true,
+    message: "设备绑定成功",
+    currentDevices: currentCount + 1,
+    maxDevices: existing.maxDevices,
+  };
+}
+
+/** 获取密钥已绑定的设备列表 */
+export async function getKeyDevices(keyId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(keyDevices)
+    .where(eq(keyDevices.keyId, keyId))
+    .orderBy(desc(keyDevices.boundAt));
+}
+
+/** 获取密钥已绑定设备数量 */
+export async function getKeyDeviceCount(keyId: number) {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db.select({ count: count() }).from(keyDevices)
+    .where(eq(keyDevices.keyId, keyId));
+  return result[0]?.count ?? 0;
+}
+
+/** 解绑设备 */
+export async function unbindKeyDevice(keyId: number, deviceId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(keyDevices).where(
+    and(eq(keyDevices.keyId, keyId), eq(keyDevices.id, deviceId))
+  );
+  // 检查是否还有绑定设备，如果没有则重置激活状态
+  const remaining = await getKeyDeviceCount(keyId);
+  if (remaining === 0) {
+    await db.update(licenseKeys).set({
+      isActivated: false,
+      activatedAt: null,
+      activatedDevice: null,
+    }).where(eq(licenseKeys.id, keyId));
+  }
+  return { success: true, remainingDevices: remaining };
+}
+
+/** 检查密钥在指定设备上是否有效 */
+export async function verifyKeyOnDevice(keyString: string, deviceCode: string) {
+  const db = await getDb();
+  if (!db) return { valid: false, error: "Database not available" };
+
+  const key = await getLicenseKeyByString(keyString.trim());
+  if (!key) return { valid: false, error: "密钥不存在" };
+
+  // 检查过期
+  if (key.expireTimestamp < Date.now()) {
+    return { valid: false, error: "密钥已过期", expired: true };
+  }
+
+  // 检查设备是否已绑定
+  const device = await db.select().from(keyDevices)
+    .where(and(eq(keyDevices.keyId, key.id), eq(keyDevices.deviceCode, deviceCode.trim())))
+    .limit(1);
+
+  if (device.length === 0) {
+    // 设备未绑定，检查是否可以绑定
+    const deviceCount = await getKeyDeviceCount(key.id);
+    const canBind = key.maxDevices === 0 || deviceCount < key.maxDevices;
+    return {
+      valid: false,
+      error: "该设备未绑定此密钥",
+      notBound: true,
+      canBind,
+      currentDevices: deviceCount,
+      maxDevices: key.maxDevices,
+    };
+  }
+
+  return { valid: true, boundAt: device[0].boundAt };
 }
 
 export async function getKeyStats(userIds: number[]) {

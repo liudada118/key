@@ -1,0 +1,31 @@
+{
+  "query": "SELECT id, username, password, name, role FROM users;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user uEiJ7Pi2fij4L3s.root --database CxbGMJzuhHB3si38TZmHn4 --execute SELECT id, username, password, name, role FROM users;",
+  "rows": [
+    {
+      "id": "1",
+      "username": "admin",
+      "password": "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy",
+      "name": "刘富贵",
+      "role": "super_admin"
+    },
+    {
+      "id": "49",
+      "username": "liuda",
+      "password": "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy",
+      "name": "达 刘",
+      "role": "user"
+    },
+    {
+      "id": "79",
+      "username": "wangyiqin",
+      "password": "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy",
+      "name": "王一琴",
+      "role": "admin"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tusername\tpassword\tname\trole\n1\tadmin\t$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy\t刘富贵\tsuper_admin\n49\tliuda\t$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy\t达 刘\tuser\n79\twangyiqin\t$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy\t王一琴\tadmin\n",
+  "stderr": "",
+  "execution_time_ms": 53
+}

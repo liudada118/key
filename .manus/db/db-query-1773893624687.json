@@ -1,0 +1,16 @@
+{
+  "query": "SELECT id, username, LEFT(password, 20) as pwd_prefix, LENGTH(password) as pwd_len FROM users WHERE username = 'admin';",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user uEiJ7Pi2fij4L3s.root --database CxbGMJzuhHB3si38TZmHn4 --execute SELECT id, username, LEFT(password, 20) as pwd_prefix, LENGTH(password) as pwd_len FROM users WHERE username = 'admin';",
+  "rows": [
+    {
+      "id": "1",
+      "username": "admin",
+      "pwd_prefix": "$2a$10$N9qo8uLOickgx",
+      "pwd_len": "60"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tusername\tpwd_prefix\tpwd_len\n1\tadmin\t$2a$10$N9qo8uLOickgx\t60\n",
+  "stderr": "",
+  "execution_time_ms": 67
+}

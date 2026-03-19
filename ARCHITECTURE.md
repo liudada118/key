@@ -1,28 +1,28 @@
 # 架构文档
 
-> 本文档由 Manus 自动生成和维护。最后更新于：2026-03-19 16:57
+> 本文档由 Manus 自动生成和维护。最后更新于：2026-03-19 19:25
 
 ## 1. 项目概述
 
-**密钥管理系统（Key Manager）** 是一个基于 Shroom1.0 传感器项目衍生的独立 Web 应用，用于管理传感器设备的授权密钥。系统采用**三级权限体系**（超级管理员 → 管理员 → 子账号），支持两种密钥类型（**量产密钥**和**在线租赁密钥**），每个密钥仅可激活一次。核心加密算法使用 **AES-256-GCM** 模式，比原 Shroom1.0 的 AES-ECB 更安全，旧密钥不再兼容。
+**密钥管理系统（Key Manager）** 是一个基于 Shroom1.0 传感器项目衍生的独立 Web 应用，用于管理传感器设备的授权密钥。系统采用**三级权限体系**（超级管理员 → 管理员 → 子账号），支持两种密钥类型（**量产密钥**和**在线租赁密钥**）。核心加密算法使用 **AES-256-GCM** 模式，比原 Shroom1.0 的 AES-ECB 更安全，旧密钥不再兼容。
 
-系统的主要功能包括密钥生成（单个/批量）、密钥解密验证、分级密钥管理、密钥导出（CSV/JSON）、账号层级管理以及使用统计等。加密模块独立可导出，支持 ESM 和 CJS 双格式，可直接在 Electron 项目中通过 `require()` 引入。
+系统支持**在线密钥**和**离线密钥**两种模式。在线密钥采用"客户自助激活绑定"模式：后台生成密钥时设置最大设备数，客户通过密钥和设备码自助绑定设备，达到上限后不可再绑定新设备。离线密钥使用 RSA-SHA256 签名，支持机器码绑定的离线激活。
 
 ## 2. 技术栈
 
 | 分类 | 技术 | 版本/说明 |
 | :--- | :--- | :--- |
-| **前端框架** | React 19 + Tailwind CSS 4 | SPA 单页应用，暗色主题 |
+| **前端框架** | React 19 + Tailwind CSS 4 | SPA 单页应用，浅色主题 |
 | **后端框架** | Express 4 + tRPC 11 | 类型安全的 RPC 通信 |
 | **数据库** | MySQL / TiDB | 通过 Drizzle ORM 管理 |
 | **编程语言** | TypeScript 5.9 | 前后端统一类型 |
 | **包管理器** | pnpm 10 | 高效依赖管理 |
 | **部署环境** | Manus Platform | 内置 OAuth 认证与托管 |
 | **UI 组件库** | shadcn/ui + Radix UI | 无障碍组件体系 |
-| **加密算法** | AES-256-GCM (CryptoJS) | HMAC-SHA256 认证标签，随机 IV |
+| **加密算法** | AES-256-GCM (CryptoJS) + RSA-SHA256 | HMAC-SHA256 认证标签，随机 IV |
 | **路由** | wouter | 轻量前端路由 |
 | **数据序列化** | Superjson | tRPC 数据传输 |
-| **测试** | Vitest | 16 个测试用例全部通过 |
+| **测试** | Vitest | 31 个测试用例全部通过 |
 
 ## 3. 目录结构
 
@@ -40,27 +40,33 @@ key-manager/
 │   │   ├── lib/                # 工具库（trpc 客户端、utils）
 │   │   ├── pages/              # 页面级组件
 │   │   │   ├── Home.tsx        # 仪表盘（统计卡片 + 快速操作）
-│   │   │   ├── GenerateKey.tsx # 密钥生成（单个 + 批量）
-│   │   │   ├── KeyList.tsx     # 密钥管理列表（筛选 + 分页 + 导出）
-│   │   │   ├── VerifyKey.tsx   # 密钥验证（解密 + 详情展示）
-│   │   │   ├── AccountManagement.tsx # 账号管理（创建/编辑/禁用）
+│   │   │   ├── GenerateKey.tsx # 在线密钥生成（单个 + 批量 + 设备数量限制）
+│   │   │   ├── KeyList.tsx     # 在线密钥管理列表（筛选 + 分页 + 导出 + 设备管理）
+│   │   │   ├── VerifyKey.tsx   # 密钥验证（在线 + 离线 Tab）
+│   │   │   ├── OfflineKeyGenerate.tsx # 离线密钥生成
+│   │   │   ├── OfflineKeyList.tsx     # 离线密钥管理
+│   │   │   ├── AccountManagement.tsx  # 账号管理
+│   │   │   ├── CustomerManagement.tsx # 客户管理
+│   │   │   ├── SensorManagement.tsx   # 传感器类型管理
+│   │   │   ├── MacReader.tsx          # MAC 地址读取
 │   │   │   └── NotFound.tsx    # 404 页面
 │   │   ├── App.tsx             # 路由配置与布局
 │   │   ├── const.ts            # 前端常量
-│   │   ├── index.css           # 全局样式与暗色主题变量
+│   │   ├── index.css           # 全局样式与主题变量
 │   │   └── main.tsx            # 应用入口
 │   └── public/                 # 静态资源（favicon 等）
 ├── server/                     # 后端逻辑
 │   ├── _core/                  # 框架核心（OAuth、上下文、Vite 桥接）
 │   │   ├── trpc.ts             # tRPC 初始化 + 三级权限中间件
 │   │   └── ...                 # 其他核心模块
-│   ├── db.ts                   # 数据库查询 helpers（账号 + 密钥 CRUD）
-│   ├── routers.ts              # tRPC 路由定义（keys + accounts + auth）
+│   ├── db.ts                   # 数据库查询 helpers（账号 + 密钥 + 设备 CRUD）
+│   ├── routers.ts              # tRPC 路由定义（keys + accounts + auth + sensors + customers + offline）
 │   ├── storage.ts              # S3 文件存储
-│   ├── crypto.test.ts          # 加密模块测试（15 个用例）
-│   └── auth.logout.test.ts     # 登出测试（1 个用例）
+│   ├── crypto.test.ts          # 加密模块测试（24 个用例）
+│   ├── auth.logout.test.ts     # 登出测试（1 个用例）
+│   └── device-binding.test.ts  # 设备绑定功能测试（6 个用例）
 ├── drizzle/                    # 数据库 schema 与迁移
-│   └── schema.ts               # users 表（三级角色）+ licenseKeys 表
+│   └── schema.ts               # users + licenseKeys + keyDevices + customers + sensorTypes + offlineKeys + rsaKeyPairs
 ├── shared/                     # 前后端共享
 │   ├── crypto.ts               # AES-256-GCM 加密模块（ESM）
 │   ├── crypto-lib.cjs          # AES-256-GCM 加密模块（CJS，Electron 可用）
@@ -75,14 +81,13 @@ key-manager/
 
 | 目录/文件 | 主要功能 |
 | :--- | :--- |
-| `client/src/pages/` | 5 个页面组件，对应 5 个路由 |
-| `client/src/components/DashboardLayout.tsx` | 侧边栏布局，根据角色动态显示菜单 |
-| `server/routers.ts` | tRPC 路由，包含 keys、accounts、auth 三组 |
-| `server/db.ts` | 数据库查询函数，含分级权限过滤逻辑 |
-| `drizzle/schema.ts` | users 表（三级角色 + 层级关系）+ licenseKeys 表 |
+| `client/src/pages/` | 10+ 个页面组件，对应多个路由 |
+| `client/src/components/DashboardLayout.tsx` | 侧边栏布局，根据角色动态显示菜单，分在线/离线密钥板块 |
+| `server/routers.ts` | tRPC 路由，包含 keys、accounts、auth、sensors、customers、offline 多组 |
+| `server/db.ts` | 数据库查询函数，含分级权限过滤、设备绑定管理逻辑 |
+| `drizzle/schema.ts` | 7 张表：users、licenseKeys、keyDevices、customers、sensorTypes、offlineKeys、rsaKeyPairs |
 | `shared/crypto.ts` | AES-256-GCM 加密核心，ESM 格式 |
 | `shared/crypto-lib.cjs` | 同上，CJS 格式，供 Electron 项目 `require()` |
-| `scripts/` | 跨平台启动包装脚本，为开发和生产入口设置 `NODE_ENV` |
 
 ## 4. 核心模块与数据流
 
@@ -93,34 +98,44 @@ graph TD
     subgraph 前端
         A[App.tsx 路由] --> B[DashboardLayout 布局]
         B --> C[Home 仪表盘]
-        B --> D[GenerateKey 密钥生成]
-        B --> E[KeyList 密钥管理]
+        B --> D[GenerateKey 在线密钥生成]
+        B --> E[KeyList 在线密钥管理]
         B --> F[VerifyKey 密钥验证]
         B --> G[AccountManagement 账号管理]
+        B --> H1[OfflineKeyGenerate 离线密钥生成]
+        B --> H2[OfflineKeyList 离线密钥管理]
+        B --> I1[CustomerManagement 客户管理]
+        B --> I2[SensorManagement 传感器管理]
     end
 
     subgraph tRPC 通信层
-        C --> H[keys.stats]
-        D --> I[keys.generate / keys.batchGenerate]
-        E --> J[keys.list / keys.export]
-        F --> K[keys.verify]
-        G --> L[accounts.list / accounts.create / accounts.update]
+        C --> J1[keys.stats]
+        D --> J2[keys.generate / keys.batchGenerate]
+        E --> J3[keys.list / keys.export / keys.devices / keys.unbindDevice]
+        F --> J4[keys.verify / keys.activate / keys.verifyOnDevice]
+        G --> J5[accounts.*]
+        H1 --> J6[offline.generate]
+        I1 --> J7[customers.*]
+        I2 --> J8[sensors.*]
     end
 
     subgraph 后端
-        H --> M[server/routers.ts]
-        I --> M
-        J --> M
-        K --> M
-        L --> M
+        J1 --> M[server/routers.ts]
+        J2 --> M
+        J3 --> M
+        J4 --> M
+        J5 --> M
+        J6 --> M
+        J7 --> M
+        J8 --> M
         M --> N[server/db.ts]
         M --> O[shared/crypto.ts AES-256-GCM]
         N --> P[(MySQL / TiDB)]
+        N --> Q[keyDevices 设备绑定表]
     end
 
     subgraph 认证与权限
-        Q[Manus OAuth] --> R[server/_core/oauth.ts]
-        R --> S[Session Cookie]
+        R[Manus OAuth / 本地登录] --> S[Session Cookie]
         S --> T[protectedProcedure]
         T --> U[adminProcedure]
         T --> V[superAdminProcedure]
@@ -130,15 +145,19 @@ graph TD
 
 ### 4.2. 主要数据流
 
-**用户认证流程**：用户通过 Manus OAuth 登录，系统根据 `openId` 匹配用户记录。首次登录的 Owner 自动设为 `super_admin` 角色，后续用户由上级创建并分配角色。被禁用的账号无法登录。
+**用户认证流程**：用户通过 Manus OAuth 或本地账号密码登录，系统根据 `openId` 或用户名匹配用户记录。首次登录的 Owner 自动设为 `super_admin` 角色，后续用户由上级创建并分配角色。被禁用的账号无法登录。
 
-**密钥生成流程**：用户选择传感器类型（14 种）、有效期天数和密钥类型（量产/租赁），后端使用 AES-256-GCM 加密生成 hex 格式密钥字符串。加密载荷为 JSON 格式 `{date, file, cat, v}`，每次加密使用随机 IV 确保唯一性。密钥元数据同步写入数据库。
+**在线密钥生成流程**：用户选择传感器类型、有效期天数、密钥类型（量产/租赁）和**设备数量限制**，后端使用 AES-256-GCM 加密生成 hex 格式密钥字符串。密钥元数据（含 maxDevices）同步写入数据库。生成时不绑定设备，密钥可直接发给客户。
 
-**密钥激活流程**：通过 `keys.activate` API 激活密钥，每个密钥仅可激活一次。激活后记录激活时间，状态变为已激活，不可重复使用。
+**客户自助激活绑定流程**：客户收到密钥后，通过 `keys.activate` API 提交密钥和设备码进行绑定。系统检查密钥有效性、设备数量上限，若未达上限则绑定设备。首次绑定时密钥状态变为"已激活"。同一设备码重复绑定会返回"已绑定"提示。
+
+**设备验证流程**：通过 `keys.verifyOnDevice` API 验证密钥在指定设备上是否有效。系统检查密钥有效性、过期状态和设备绑定状态。
+
+**设备解绑流程**：管理员可通过 `keys.unbindDevice` API 解绑设备。如果所有设备都被解绑，密钥状态重置为"未激活"。
+
+**离线密钥流程**：通过机器码 + RSA-SHA256 签名生成离线激活码，客户端使用公钥验证签名。
 
 **分级查看流程**：超级管理员可查看所有密钥；管理员可查看自己及其下属子账号的密钥；子账号仅可查看自己创建的密钥。
-
-**密钥验证流程**：输入密钥字符串，后端先解密验证（HMAC 认证标签校验 + JSON 解析），再查询数据库获取激活状态、创建者等附加信息。
 
 ## 5. API 端点 (Endpoints)
 
@@ -146,22 +165,39 @@ graph TD
 | :--- | :--- | :--- | :--- |
 | `tRPC` | `auth.me` | 公开 | 获取当前登录用户信息 |
 | `tRPC` | `auth.logout` | 公开 | 用户登出 |
-| `tRPC` | `keys.sensorTypes` | 登录 | 获取传感器类型列表 |
-| `tRPC` | `keys.generate` | 登录 | 生成单个密钥 |
-| `tRPC` | `keys.batchGenerate` | 登录 | 批量生成密钥 |
+| `tRPC` | `auth.login` | 公开 | 本地账号密码登录 |
+| `tRPC` | `keys.generate` | 登录 | 生成单个密钥（含 maxDevices） |
+| `tRPC` | `keys.batchGenerate` | 登录 | 批量生成密钥（含 maxDevices） |
 | `tRPC` | `keys.list` | 登录 | 分页查询密钥列表（分级过滤） |
-| `tRPC` | `keys.verify` | 登录 | 验证/解密密钥 |
-| `tRPC` | `keys.activate` | 登录 | 激活密钥（仅一次） |
+| `tRPC` | `keys.verify` | 登录 | 验证/解密密钥（含设备绑定信息） |
+| `tRPC` | `keys.activate` | **公开** | 客户自助激活绑定设备码 |
+| `tRPC` | `keys.verifyOnDevice` | **公开** | 验证密钥在指定设备上是否有效 |
+| `tRPC` | `keys.devices` | 登录 | 获取密钥已绑定设备列表 |
+| `tRPC` | `keys.unbindDevice` | 管理员+ | 解绑设备 |
+| `tRPC` | `keys.changeCategory` | 超级管理员 | 更改密钥类型 |
 | `tRPC` | `keys.stats` | 登录 | 获取密钥统计数据 |
 | `tRPC` | `keys.export` | 登录 | 导出密钥（CSV/JSON） |
-| `tRPC` | `accounts.list` | 管理员+ | 查询下级账号列表 |
-| `tRPC` | `accounts.create` | 管理员+ | 创建下级账号 |
-| `tRPC` | `accounts.update` | 管理员+ | 编辑账号（名称/状态/备注） |
+| `tRPC` | `accounts.*` | 管理员+ | 账号管理 CRUD |
+| `tRPC` | `customers.*` | 登录 | 客户管理 CRUD |
+| `tRPC` | `sensors.*` | 超级管理员 | 传感器类型管理 |
+| `tRPC` | `offline.*` | 登录 | 离线密钥生成与管理 |
 | `tRPC` | `system.notifyOwner` | 登录 | 向 Owner 发送通知 |
 
-## 6. 加密模块
+## 6. 数据库表结构
 
-### 6.1. 算法说明
+| 表名 | 主要字段 | 说明 |
+| :--- | :--- | :--- |
+| `users` | id, openId, username, password, role, parentId, isActive | 三级角色用户表 |
+| `license_keys` | id, keyString, sensorType, days, category, maxDevices, isActivated, customerId | 在线密钥表（含设备数量限制） |
+| `key_devices` | id, keyId, deviceCode, deviceName, boundAt, boundIp | 设备绑定记录表 |
+| `customers` | id, name, contactPerson, phone, isActive | 客户表 |
+| `sensor_types` | id, value, label, groupName, groupIcon, sortOrder | 传感器类型表 |
+| `offline_keys` | id, machineId, activationCode, sensorType, days | 离线密钥表 |
+| `rsa_key_pairs` | id, publicKey, privateKey, isActive | RSA 密钥对表 |
+
+## 7. 加密模块
+
+### 7.1. 算法说明
 
 系统使用 **AES-256-GCM** 加密模式（通过 CryptoJS CTR 模式 + HMAC-SHA256 认证标签模拟），相比原 Shroom1.0 的 AES-ECB 具有以下优势：
 
@@ -172,17 +208,17 @@ graph TD
 | 相同明文 | 相同密文 | 不同密文 |
 | 篡改检测 | 不支持 | 支持 |
 
-### 6.2. 密钥格式
+### 7.2. 密钥格式
 
 密钥字符串为 hex 编码，结构为：`IV(24字符) + AuthTag(32字符) + Ciphertext(hex)`。
 
 加密载荷 JSON 格式：`{"date": <到期时间戳>, "file": "<传感器类型>", "cat": "<production|rental>", "v": 2}`。
 
-### 6.3. Electron 集成
+### 7.3. Electron 集成
 
 将 `shared/crypto-lib.cjs` 复制到 Electron 项目中，通过 `require('./crypto-lib.cjs')` 引入即可使用 `decodeLicenseKey()` 函数验证密钥。依赖 `crypto-js` npm 包。
 
-## 7. 环境变量
+## 8. 环境变量
 
 | 变量名 | 描述 |
 | :--- | :--- |
@@ -196,7 +232,7 @@ graph TD
 | `BUILT_IN_FORGE_API_URL` | Manus 内置 API 地址 |
 | `BUILT_IN_FORGE_API_KEY` | Manus 内置 API 密钥 |
 
-## 8. 项目进度
+## 9. 项目进度
 
 | 完成时间 | 分支 | 完成的功能/工作 | 说明 |
 | :--- | :--- | :--- | :--- |
@@ -210,15 +246,18 @@ graph TD
 | 2026-03-06 21:50 | main | 前端全部页面 | 仪表盘、密钥生成、密钥管理、密钥验证、账号管理 5 个页面 |
 | 2026-03-06 21:50 | main | 暗色主题 | 专业暗色配色方案，OKLCH 色彩空间 |
 | 2026-03-06 21:50 | main | Vitest 测试 | 16 个测试用例全部通过（加密/解密/生成/解码/篡改检测） |
-| 2026-03-19 16:57 | main | 跨平台启动脚本 | 恢复 `pnpm dev` / `pnpm start` 的 Windows 兼容入口，避免 `NODE_ENV=...` 在 PowerShell 下启动失败 |
+| 2026-03-19 19:25 | main | 在线密钥设备绑定重构 | 新增 keyDevices 表、maxDevices 字段，客户自助激活绑定模式 |
+| 2026-03-19 19:25 | main | 设备管理 API | activate（公开）、devices、unbindDevice、verifyOnDevice 四个新端点 |
+| 2026-03-19 19:25 | main | 前端设备管理 | 生成页面添加设备数量限制，列表页面显示设备绑定信息和解绑功能 |
+| 2026-03-19 19:25 | main | 设备绑定测试 | 新增 6 个测试用例，总计 31 个测试全部通过 |
 
-## 9. 更新日志
+## 10. 更新日志
 
 | 时间 | 分支 | 变更类型 | 描述 |
 | :--- | :--- | :--- | :--- |
 | 2026-03-06 10:31 | main | 初始化 | 创建项目架构文档 |
 | 2026-03-06 21:50 | main | 新增功能 | 完成全部核心功能：三级权限、密钥生成/验证/管理、账号管理、AES-256-GCM 加密、暗色主题 |
-| 2026-03-19 16:57 | main | 配置变更 | 恢复跨平台启动脚本并补回 `scripts/dev.mjs`、`scripts/start.mjs`，使 `pnpm dev` 在 Windows 可直接运行 |
+| 2026-03-19 19:25 | main | 优化重构 | 在线密钥从"后台绑定设备"改为"客户自助激活绑定"模式：新增 keyDevices 设备绑定表、maxDevices 设备数量限制、公开激活 API、设备验证 API、管理员解绑功能 |
 
 *变更类型：`新增功能` / `优化重构` / `修复缺陷` / `配置变更` / `文档更新` / `依赖升级` / `初始化`*
 

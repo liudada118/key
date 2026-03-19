@@ -22,6 +22,7 @@ import {
   Download,
   KeyRound,
   Loader2,
+  Monitor,
   Plus,
   Zap,
   X,
@@ -115,6 +116,7 @@ function KeyGenerator({
   const [days, setDays] = useState("365");
   const [count, setCount] = useState("10");
   const [remark, setRemark] = useState("");
+  const [maxDevices, setMaxDevices] = useState("1");
 
   // 客户选择状态
   const [selectedCustomerId, setSelectedCustomerId] = useState<number | undefined>(undefined);
@@ -243,11 +245,14 @@ function KeyGenerator({
 
     const sensorTypes = getSensorTypesParam();
 
+    const maxDev = parseInt(maxDevices) || 1;
+
     if (mode === "single") {
       generateMutation.mutate({
         sensorTypes,
         days: parseInt(days),
         category,
+        maxDevices: maxDev,
         customerId: selectedCustomerId,
         customerName: selectedCustomerName || undefined,
         remark: remark || undefined,
@@ -259,6 +264,7 @@ function KeyGenerator({
         days: parseInt(days),
         category,
         count: parseInt(count),
+        maxDevices: maxDev,
         customerId: selectedCustomerId,
         customerName: selectedCustomerName || undefined,
         remark: remark || undefined,
@@ -507,6 +513,38 @@ function KeyGenerator({
               </div>
             )}
 
+            {/* 设备数量限制 */}
+            <div className="space-y-1.5">
+              <Label className="text-foreground text-sm flex items-center gap-1">
+                <Monitor className="h-3.5 w-3.5" />
+                设备数量限制
+              </Label>
+              <Input
+                type="number"
+                min={0}
+                max={9999}
+                value={maxDevices}
+                onChange={(e) => setMaxDevices(e.target.value)}
+                className="bg-secondary/50"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                客户可自助绑定设备，达到上限后不可再绑定新设备。0 表示不限制
+              </p>
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                {[1, 3, 5, 10, 0].map((n) => (
+                  <Button
+                    key={n}
+                    size="sm"
+                    variant={parseInt(maxDevices) === n ? "default" : "outline"}
+                    className="h-6 text-xs px-2"
+                    onClick={() => setMaxDevices(String(n))}
+                  >
+                    {n === 0 ? "不限" : `${n}台`}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
             {/* 客户选择 */}
             <div className="space-y-1.5">
               <Label className="text-foreground text-sm flex items-center gap-1">
@@ -646,6 +684,12 @@ function KeyGenerator({
               <div className="flex justify-between text-xs">
                 <span className="text-muted-foreground">有效天数：</span>
                 <span className="text-foreground font-medium">{days} 天</span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-muted-foreground">设备限制：</span>
+                <span className="text-foreground font-medium">
+                  {parseInt(maxDevices) === 0 ? "不限制" : `${maxDevices} 台`}
+                </span>
               </div>
             </div>
 

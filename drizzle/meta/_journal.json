@@ -43,6 +43,13 @@
       "when": 1773913305136,
       "tag": "0005_blushing_metal_master",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1773919034176,
+      "tag": "0006_fearless_spyke",
+      "breakpoints": true
     }
   ]
 }

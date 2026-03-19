@@ -14,12 +14,15 @@ import {
   getCustomerById,
   getCustomerKeyCount,
   getCustomers,
+  getKeyDeviceCount,
+  getKeyDevices,
   getKeyStats,
   getLicenseKeyById,
   getLicenseKeyByString,
   getLicenseKeys,
   getSubordinateUsers,
   getUserAndSubordinateIds,
+  unbindKeyDevice,
   updateLicenseKeyCategory,
   getUserById,
   getUserByUsername,
@@ -28,6 +31,7 @@ import {
   resetPassword,
   updateAccount,
   updateCustomer,
+  verifyKeyOnDevice,
   verifyUserCredentials,
   getSensorTypesGrouped,
   getAllSensorTypes,
@@ -426,6 +430,7 @@ export const appRouter = router({
           sensorTypes: z.union([z.string(), z.array(z.string())]),
           days: z.number().min(1).max(36500),
           category: z.enum(["production", "rental"]),
+          maxDevices: z.number().min(0).max(9999).default(1),
           customerId: z.number().optional(),
           customerName: z.string().optional(),
           remark: z.string().optional(),
@@ -451,6 +456,7 @@ export const appRouter = router({
           category: input.category,
           days: input.days,
           expireTimestamp,
+          maxDevices: input.maxDevices,
           createdById: ctx.user.id,
           createdByName: ctx.user.name || "未知",
           customerId: input.customerId || null,
@@ -458,7 +464,7 @@ export const appRouter = router({
           remark: input.remark || null,
         });
 
-        return { keyString, expireTimestamp };
+        return { keyString, expireTimestamp, maxDevices: input.maxDevices };
       }),
 
     batchGenerate: protectedProcedure
@@ -468,6 +474,7 @@ export const appRouter = router({
           days: z.number().min(1).max(36500),
           category: z.enum(["production", "rental"]),
           count: z.number().min(1).max(500),
+          maxDevices: z.number().min(0).max(9999).default(1),
           customerId: z.number().optional(),
           customerName: z.string().optional(),
           remark: z.string().optional(),
@@ -498,6 +505,7 @@ export const appRouter = router({
             category: input.category,
             days: input.days,
             expireTimestamp,
+            maxDevices: input.maxDevices,
             createdById: ctx.user.id,
             createdByName: ctx.user.name || "未知",
             customerId: input.customerId || null,
@@ -538,10 +546,26 @@ export const appRouter = router({
       }),
 
     verify: publicProcedure
-      .input(z.object({ keyString: z.string().min(1) }))
+      .input(z.object({
+        keyString: z.string().min(1),
+        deviceCode: z.string().optional(),
+      }))
       .mutation(async ({ input }) => {
         const decoded = decodeLicenseKey(input.keyString);
         const dbRecord = await getLicenseKeyByString(input.keyString.trim());
+
+        // 获取设备绑定信息
+        let devices: Awaited<ReturnType<typeof getKeyDevices>> = [];
+        let deviceCount = 0;
+        let deviceBound = false;
+        if (dbRecord) {
+          devices = await getKeyDevices(dbRecord.id);
+          deviceCount = devices.length;
+          if (input.deviceCode) {
+            deviceBound = devices.some(d => d.deviceCode === input.deviceCode!.trim());
+          }
+        }
+
         return {
           ...decoded,
           isActivated: dbRecord?.isActivated ?? false,
@@ -552,22 +576,57 @@ export const appRouter = router({
           createdAt: dbRecord?.createdAt ?? null,
           category: dbRecord?.category ?? decoded.category,
           dbRemark: dbRecord?.remark ?? null,
+          maxDevices: dbRecord?.maxDevices ?? 1,
+          deviceCount,
+          devices,
+          deviceBound,
         };
       }),
 
+    /** 客户自助激活（绑定设备） */
     activate: publicProcedure
       .input(
         z.object({
           keyString: z.string().min(1),
-          deviceInfo: z.string().optional(),
+          deviceCode: z.string().min(1, "设备码不能为空"),
+          deviceName: z.string().optional(),
         })
       )
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const decoded = decodeLicenseKey(input.keyString);
         if (!decoded.valid) {
           return { success: false, error: decoded.error || "密钥已过期" };
         }
-        return activateLicenseKey(input.keyString.trim(), input.deviceInfo);
+        // 获取客户端 IP
+        const clientIp = ctx.req?.headers?.['x-forwarded-for'] as string || ctx.req?.socket?.remoteAddress || undefined;
+        return activateLicenseKey(input.keyString.trim(), input.deviceCode, input.deviceName, clientIp);
+      }),
+
+    /** 获取密钥的已绑定设备列表 */
+    devices: protectedProcedure
+      .input(z.object({ keyId: z.number() }))
+      .query(async ({ input }) => {
+        return getKeyDevices(input.keyId);
+      }),
+
+    /** 解绑设备（管理员操作） */
+    unbindDevice: adminProcedure
+      .input(z.object({
+        keyId: z.number(),
+        deviceId: z.number(),
+      }))
+      .mutation(async ({ input }) => {
+        return unbindKeyDevice(input.keyId, input.deviceId);
+      }),
+
+    /** 验证密钥在指定设备上是否有效 */
+    verifyOnDevice: publicProcedure
+      .input(z.object({
+        keyString: z.string().min(1),
+        deviceCode: z.string().min(1),
+      }))
+      .mutation(async ({ input }) => {
+        return verifyKeyOnDevice(input.keyString, input.deviceCode);
       }),
 
     stats: protectedProcedure.query(async ({ ctx }) => {

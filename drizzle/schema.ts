@@ -92,11 +92,13 @@ export const licenseKeys = mysqlTable("licenseKeys", {
   customerId: int("customerId"),
   /** 客户名称（冗余存储，方便查询） */
   customerName: varchar("customerName", { length: 256 }),
-  /** 是否已激活 */
+  /** 最大可绑定设备数量（0 表示不限制） */
+  maxDevices: int("maxDevices").default(1).notNull(),
+  /** 是否已激活（至少绑定了一台设备） */
   isActivated: boolean("isActivated").default(false).notNull(),
-  /** 激活时间 */
+  /** 首次激活时间 */
   activatedAt: timestamp("activatedAt"),
-  /** 激活设备信息（可选） */
+  /** 激活设备信息（兼容旧字段，新流程使用 keyDevices 表） */
   activatedDevice: text("activatedDevice"),
   /** 批次号（批量生成时标识同一批） */
   batchId: varchar("batchId", { length: 64 }),
@@ -108,6 +110,27 @@ export const licenseKeys = mysqlTable("licenseKeys", {
 
 export type LicenseKey = typeof licenseKeys.$inferSelect;
 export type InsertLicenseKey = typeof licenseKeys.$inferInsert;
+
+/**
+ * 密钥-设备绑定表
+ * 记录每个密钥绑定的设备信息（客户自助激活时写入）
+ */
+export const keyDevices = mysqlTable("keyDevices", {
+  id: int("id").autoincrement().primaryKey(),
+  /** 关联的密钥 ID */
+  keyId: int("keyId").notNull(),
+  /** 设备码（如 MAC 地址、机器码等） */
+  deviceCode: varchar("deviceCode", { length: 256 }).notNull(),
+  /** 设备名称/备注（可选） */
+  deviceName: varchar("deviceName", { length: 256 }),
+  /** 绑定时间 */
+  boundAt: timestamp("boundAt").defaultNow().notNull(),
+  /** 绑定时的 IP 地址（可选） */
+  boundIp: varchar("boundIp", { length: 64 }),
+});
+
+export type KeyDevice = typeof keyDevices.$inferSelect;
+export type InsertKeyDevice = typeof keyDevices.$inferInsert;
 
 /**
  * 传感器类型表

@@ -44,6 +44,10 @@ type OnlineVerifyResult = {
   createdAt: Date | null;
   dbRemark: string | null;
   customerName: string | null;
+  maxDevices?: number;
+  deviceCount?: number;
+  devices?: { id: number; deviceCode: string; deviceName?: string | null; boundAt: Date; boundIp?: string | null }[];
+  deviceBound?: boolean;
 };
 
 /* ============ 离线密钥验证结果类型 ============ */
@@ -116,7 +120,7 @@ function OnlineVerifyPanel() {
 
   const verifyMutation = trpc.keys.verify.useMutation({
     onSuccess: (data) => {
-      setResult(data);
+      setResult(data as any);
       if (data.valid) {
         toast.success("密钥验证成功");
       } else {
@@ -230,6 +234,11 @@ function OnlineVerifyPanel() {
                       : "bg-muted text-muted-foreground"
                   }
                 />
+                <InfoItem
+                  icon={Monitor}
+                  label="设备绑定"
+                  value={`${result.deviceCount ?? 0} / ${result.maxDevices === 0 ? "∞" : result.maxDevices ?? 1}`}
+                />
                 <InfoItem icon={User} label="创建者" value={result.createdByName || "未知"} />
                 {result.customerName && (
                   <InfoItem icon={Building2} label="关联客户" value={result.customerName} />
@@ -257,6 +266,29 @@ function OnlineVerifyPanel() {
                   types={sensorDisplay.types}
                   labelMap={sensorLabelMap}
                 />
+              )}
+
+              {/* 已绑定设备列表 */}
+              {result.devices && result.devices.length > 0 && (
+                <div className="p-3 bg-secondary/30 rounded-lg space-y-2">
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <Monitor className="h-3 w-3 text-muted-foreground" />
+                    <p className="text-xs text-muted-foreground">已绑定设备</p>
+                    <Badge variant="secondary" className="text-[10px] h-4 ml-1">
+                      {result.devices.length} 台
+                    </Badge>
+                  </div>
+                  <div className="space-y-1">
+                    {result.devices.map((d: any) => (
+                      <div key={d.id} className="flex items-center gap-2 text-xs p-1.5 bg-background/50 rounded">
+                        <Monitor className="h-3 w-3 text-muted-foreground shrink-0" />
+                        <span className="font-mono font-medium text-foreground">{d.deviceCode}</span>
+                        {d.deviceName && <span className="text-muted-foreground">({d.deviceName})</span>}
+                        <span className="text-muted-foreground ml-auto">{new Date(d.boundAt).toLocaleDateString("zh-CN")}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
 
               {result.dbRemark && (

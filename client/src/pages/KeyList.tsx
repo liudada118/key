@@ -33,13 +33,14 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { trpc } from "@/lib/trpc";
-import { BarChart3, Copy, Download, Loader2, Pencil, Search } from "lucide-react";
+import { BarChart3, Copy, Download, Loader2, Monitor, Pencil, Search, Trash2, Unplug } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
 export default function KeyList() {
   const { user } = useAuth();
   const isSuperAdmin = user?.role === "super_admin";
+  const isAdmin = user?.role === "super_admin" || user?.role === "admin";
 
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
@@ -56,6 +57,12 @@ export default function KeyList() {
     category: string;
   } | null>(null);
   const [newCategory, setNewCategory] = useState<string>("");
+
+  // 设备详情弹窗状态
+  const [devicesDialogOpen, setDevicesDialogOpen] = useState(false);
+  const [devicesKeyId, setDevicesKeyId] = useState<number | null>(null);
+  const [devicesKeyString, setDevicesKeyString] = useState("");
+  const [devicesMaxDevices, setDevicesMaxDevices] = useState(0);
 
   // 获取传感器分组用于 label 映射和筛选
   const { data: sensorGroups } = trpc.sensors.groups.useQuery();
@@ -84,6 +91,12 @@ export default function KeyList() {
 
   const utils = trpc.useUtils();
   const { data, isLoading } = trpc.keys.list.useQuery(queryInput);
+
+  // 设备列表查询
+  const { data: devicesList, isLoading: devicesLoading } = trpc.keys.devices.useQuery(
+    { keyId: devicesKeyId! },
+    { enabled: devicesKeyId !== null && devicesDialogOpen }
+  );
 
   const exportMutation = trpc.keys.export.useMutation({
     onSuccess: (result) => {
@@ -122,6 +135,17 @@ export default function KeyList() {
     onError: (err) => toast.error(err.message),
   });
 
+  const unbindDeviceMutation = trpc.keys.unbindDevice.useMutation({
+    onSuccess: () => {
+      toast.success("设备已解绑");
+      if (devicesKeyId) {
+        utils.keys.devices.invalidate({ keyId: devicesKeyId });
+      }
+      utils.keys.list.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
   const totalPages = data ? Math.ceil(data.total / 20) : 0;
 
   const handleOpenChangeCategory = (key: { id: number; keyString: string; category: string }) => {
@@ -136,6 +160,13 @@ export default function KeyList() {
       keyId: changeCategoryKey.id,
       category: newCategory as "production" | "rental",
     });
+  };
+
+  const handleOpenDevices = (key: { id: number; keyString: string; maxDevices: number }) => {
+    setDevicesKeyId(key.id);
+    setDevicesKeyString(key.keyString);
+    setDevicesMaxDevices(key.maxDevices);
+    setDevicesDialogOpen(true);
   };
 
   /** 将逗号分隔的传感器类型转为标签显示 */
@@ -322,15 +353,16 @@ export default function KeyList() {
                       <TableHead className="text-muted-foreground">传感器</TableHead>
                       <TableHead className="text-muted-foreground">有效期</TableHead>
                       <TableHead className="text-muted-foreground">到期时间</TableHead>
+                      <TableHead className="text-muted-foreground">设备</TableHead>
                       <TableHead className="text-muted-foreground">状态</TableHead>
                       <TableHead className="text-muted-foreground">客户</TableHead>
                       <TableHead className="text-muted-foreground">创建者</TableHead>
                       <TableHead className="text-muted-foreground">创建时间</TableHead>
-                      <TableHead className="text-muted-foreground w-16">操作</TableHead>
+                      <TableHead className="text-muted-foreground w-20">操作</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {data.items.map((key) => {
+                    {data.items.map((key: any) => {
                       const isExpired = key.expireTimestamp < Date.now();
                       return (
                         <TableRow key={key.id} className="border-border/30">
@@ -355,6 +387,22 @@ export default function KeyList() {
                           <TableCell className="text-sm text-foreground">{key.days}天</TableCell>
                           <TableCell className="text-sm text-foreground">
                             {new Date(key.expireTimestamp).toLocaleDateString("zh-CN")}
+                          </TableCell>
+                          <TableCell>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  onClick={() => handleOpenDevices({ id: key.id, keyString: key.keyString, maxDevices: key.maxDevices ?? 1 })}
+                                  className="flex items-center gap-1 text-xs cursor-pointer hover:text-primary transition-colors"
+                                >
+                                  <Monitor className="h-3 w-3" />
+                                  <span className="font-medium">
+                                    {key.isActivated ? "已绑定" : "0"}/{key.maxDevices === 0 ? "∞" : key.maxDevices ?? 1}
+                                  </span>
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent>点击查看已绑定设备</TooltipContent>
+                            </Tooltip>
                           </TableCell>
                           <TableCell>
                             {key.isActivated ? (
@@ -507,6 +555,92 @@ export default function KeyList() {
               ) : null}
               确认更改
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 设备绑定详情弹窗 */}
+      <Dialog open={devicesDialogOpen} onOpenChange={setDevicesDialogOpen}>
+        <DialogContent className="sm:max-w-[550px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Monitor className="h-4 w-4" />
+              已绑定设备
+            </DialogTitle>
+            <DialogDescription>
+              密钥：<span className="font-mono text-xs">{devicesKeyString.slice(0, 30)}...</span>
+              <br />
+              设备限制：{devicesMaxDevices === 0 ? "不限制" : `最多 ${devicesMaxDevices} 台`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-2">
+            {devicesLoading ? (
+              <div className="flex items-center justify-center h-32">
+                <Loader2 className="h-5 w-5 animate-spin text-primary" />
+              </div>
+            ) : !devicesList?.length ? (
+              <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
+                <Unplug className="h-10 w-10 mb-2 opacity-20" />
+                <p className="text-sm">暂无绑定设备</p>
+                <p className="text-xs mt-1">客户可通过密钥自助绑定设备</p>
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-[400px] overflow-y-auto">
+                {devicesList.map((device: any) => (
+                  <div
+                    key={device.id}
+                    className="flex items-center justify-between p-3 bg-secondary/30 rounded-lg border border-border/50"
+                  >
+                    <div className="space-y-1 min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <Monitor className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                        <span className="font-mono text-sm font-medium text-foreground truncate">
+                          {device.deviceCode}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-3 text-xs text-muted-foreground pl-5">
+                        {device.deviceName && <span>{device.deviceName}</span>}
+                        <span>绑定时间：{new Date(device.boundAt).toLocaleString("zh-CN")}</span>
+                        {device.boundIp && <span>IP：{device.boundIp}</span>}
+                      </div>
+                    </div>
+                    {isAdmin && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 w-7 p-0 text-destructive hover:text-destructive shrink-0 ml-2"
+                            onClick={() => {
+                              if (devicesKeyId) {
+                                unbindDeviceMutation.mutate({
+                                  keyId: devicesKeyId,
+                                  deviceId: device.id,
+                                });
+                              }
+                            }}
+                            disabled={unbindDeviceMutation.isPending}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>解绑设备</TooltipContent>
+                      </Tooltip>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <div className="flex items-center justify-between w-full">
+              <p className="text-xs text-muted-foreground">
+                已绑定 {devicesList?.length ?? 0} / {devicesMaxDevices === 0 ? "∞" : devicesMaxDevices} 台
+              </p>
+              <Button variant="outline" onClick={() => setDevicesDialogOpen(false)}>
+                关闭
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
