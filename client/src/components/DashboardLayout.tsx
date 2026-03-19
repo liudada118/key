@@ -27,14 +27,18 @@ import {
   BarChart3,
   Building2,
   Cpu,
+  Globe,
   KeyRound,
   LayoutDashboard,
   LogOut,
   PanelLeft,
   Search,
   Settings2,
+  Shield,
   ShieldCheck,
   Users,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
@@ -53,17 +57,63 @@ const ROLE_COLORS: Record<string, string> = {
   user: "bg-chart-3/20 text-chart-3 border-chart-3/30",
 };
 
-const menuItems = [
-  { icon: LayoutDashboard, label: "仪表盘", path: "/" },
-  { icon: KeyRound, label: "生成密钥", path: "/generate" },
-  { icon: BarChart3, label: "密钥管理", path: "/keys" },
-  { icon: Search, label: "密钥验证", path: "/verify" },
-  { icon: Building2, label: "客户管理", path: "/customers" },
-  { icon: Users, label: "账号管理", path: "/accounts", roles: ["super_admin", "admin"] },
-  { icon: Settings2, label: "传感器管理", path: "/sensor-types", roles: ["super_admin"] },
-  { icon: ShieldCheck, label: "离线密钥", path: "/offline-keys" },
-  { icon: Cpu, label: "MAC 读取", path: "/mac-reader" },
+type MenuItem = {
+  icon: React.ElementType;
+  label: string;
+  path: string;
+  roles?: string[];
+};
+
+type MenuSection = {
+  title: string;
+  icon: React.ElementType;
+  items: MenuItem[];
+};
+
+const menuSections: MenuSection[] = [
+  {
+    title: "",
+    icon: LayoutDashboard,
+    items: [
+      { icon: LayoutDashboard, label: "仪表盘", path: "/" },
+    ],
+  },
+  {
+    title: "在线密钥",
+    icon: Wifi,
+    items: [
+      { icon: KeyRound, label: "生成密钥", path: "/generate" },
+      { icon: BarChart3, label: "密钥管理", path: "/keys" },
+    ],
+  },
+  {
+    title: "离线密钥",
+    icon: WifiOff,
+    items: [
+      { icon: Shield, label: "生成离线密钥", path: "/offline-keys" },
+    ],
+  },
+  {
+    title: "验证",
+    icon: Search,
+    items: [
+      { icon: Search, label: "密钥验证", path: "/verify" },
+    ],
+  },
+  {
+    title: "管理",
+    icon: Settings2,
+    items: [
+      { icon: Building2, label: "客户管理", path: "/customers" },
+      { icon: Users, label: "账号管理", path: "/accounts", roles: ["super_admin", "admin"] },
+      { icon: Settings2, label: "传感器管理", path: "/sensor-types", roles: ["super_admin"] },
+      { icon: Cpu, label: "MAC 读取", path: "/mac-reader" },
+    ],
+  },
 ];
+
+// 扁平化所有菜单项用于路由匹配
+const allMenuItems = menuSections.flatMap((s) => s.items);
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
 const DEFAULT_WIDTH = 260;
@@ -148,12 +198,8 @@ function DashboardLayoutContent({
   const isCollapsed = state === "collapsed";
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
-  const activeMenuItem = menuItems.find((item) => item.path === location);
+  const activeMenuItem = allMenuItems.find((item) => item.path === location);
   const isMobile = useIsMobile();
-
-  const visibleMenuItems = menuItems.filter(
-    (item) => !item.roles || (user?.role && item.roles.includes(user.role))
-  );
 
   useEffect(() => {
     if (isCollapsed) setIsResizing(false);
@@ -213,26 +259,52 @@ function DashboardLayoutContent({
           </SidebarHeader>
 
           <SidebarContent className="gap-0">
-            <SidebarMenu className="px-2 py-1">
-              {visibleMenuItems.map((item) => {
-                const isActive = location === item.path;
-                return (
-                  <SidebarMenuItem key={item.path}>
-                    <SidebarMenuButton
-                      isActive={isActive}
-                      onClick={() => setLocation(item.path)}
-                      tooltip={item.label}
-                      className="h-10 transition-all font-normal"
-                    >
-                      <item.icon
-                        className={`h-4 w-4 ${isActive ? "text-primary" : ""}`}
-                      />
-                      <span>{item.label}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                );
-              })}
-            </SidebarMenu>
+            {menuSections.map((section, sIdx) => {
+              // 过滤掉没有权限的菜单项
+              const visibleItems = section.items.filter(
+                (item) => !item.roles || (user?.role && item.roles.includes(user.role))
+              );
+              if (visibleItems.length === 0) return null;
+
+              return (
+                <div key={sIdx} className={section.title ? "mt-2" : ""}>
+                  {/* 分组标题 */}
+                  {section.title && !isCollapsed && (
+                    <div className="px-4 py-2">
+                      <div className="flex items-center gap-1.5">
+                        <section.icon className="h-3 w-3 text-muted-foreground/60" />
+                        <span className="text-[11px] font-medium text-muted-foreground/60 uppercase tracking-wider">
+                          {section.title}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  {section.title && isCollapsed && (
+                    <div className="mx-auto my-2 w-6 border-t border-border/50" />
+                  )}
+                  <SidebarMenu className="px-2 py-0">
+                    {visibleItems.map((item) => {
+                      const isActive = location === item.path;
+                      return (
+                        <SidebarMenuItem key={item.path}>
+                          <SidebarMenuButton
+                            isActive={isActive}
+                            onClick={() => setLocation(item.path)}
+                            tooltip={item.label}
+                            className="h-10 transition-all font-normal"
+                          >
+                            <item.icon
+                              className={`h-4 w-4 ${isActive ? "text-primary" : ""}`}
+                            />
+                            <span>{item.label}</span>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      );
+                    })}
+                  </SidebarMenu>
+                </div>
+              );
+            })}
           </SidebarContent>
 
           <SidebarFooter className="p-3">
