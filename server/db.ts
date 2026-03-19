@@ -662,12 +662,82 @@ export async function getActiveRsaKeyPair() {
   return result.length > 0 ? result[0] : null;
 }
 
-/** 确保至少存在一个 RSA 密钥对 */
+/** 导入已有的 RSA 密钥对到数据库 */
+export async function importRsaKeyPair(name: string, privateKeyPem: string, publicKeyPem: string, keySize: number = 2048) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  // 将其他密钥对设为非活跃
+  await db.update(rsaKeyPairs).set({ isActive: false });
+
+  await db.insert(rsaKeyPairs).values({
+    name,
+    privateKey: privateKeyPem,
+    publicKey: publicKeyPem,
+    keySize,
+    isActive: true,
+  });
+
+  const result = await db.select().from(rsaKeyPairs).where(eq(rsaKeyPairs.isActive, true)).limit(1);
+  return result[0];
+}
+
+// 预置的 RSA 密钥对（与客户端公钥匹配）
+const DEFAULT_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
+MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDTGXL4aD/wu+hZ
+XRVE7+SXV0RBG3s3rKKULbKLNr5bVXZpdYqiIuWQ9wlr0pCY0CuNwerycEuUSmke
+PASba7lKuAAM/9+t/WfwZmlF6NmjoBvWmymlSb+d5VyjGwr7TPprTQH2zK/wAQi3
+aOs3hlnPPnUyAmrOBeao9qJu3MaXxEWvWNgnYmlc16zoGoWmNCeDVLyG7hWBYEiW
+OQTeMoV8fBM/0o+0Rygf+5I+Zblfsi7CkNbZA7qw7rW6/+W4sjhbHi6lfgIhR6nA
+jMPIboF9jHYABknWg0QFbbzAhR/uLmxVPQWxZGxHnlDcpRyyKoBRV24qIpNA3d2e
+ZvILUWABAgMBAAECggEAUx98RBBYzSRQ049xppmHu4gjWjfGByA1TH/KBENkJXa7
+j782/a0cFD8SOKDLS0D9RW6MYzaQrC24wq0Da2e5qJBXhMbkfxB/cwwAfAS6XlHX
+ZGPovCsUBsqf9aHaayXenY3PLi1fQfRGSGJJ7K08g/ymDTEieUmdj/6960WH9Y4d
+up9E7kQ1MzEv/gGOZGFRUYpMq4mnhAa4G1UqYd90gQTwlA7c530FA15CA0RpQ18S
+7DyI4BAPyo/LQkXrKPuAgxoVd9Z63q1n3XnW0VMneYM+d/weZB5HL4i3EWNH4abI
+nlOZWUHMhP4q+0bLSj8cQLORI/MJuspggy9KMoh0mQKBgQDTw2PPkn9f4Yyl/lYI
+2xoTELDjVzHc5eqzBHD2e356DCZHuXLy67VCCVCzhbEHZKC7qBgRqeF5PVWd5FES
+V2oDrTXFgEcVQxaWvtMzTjLjd4MDD4a3uzK1sHZ0qp+SQzKXPKrYvTHKr/hUi28g
+jm3oZ8VIcJIbdb+DBQaQplTD2wKBgQD/Mo8eO2VGPRwNm3tkRXXOBqIKc6AtH3Ru
+pGYgh3gVWrHgyKpmp9BzTuwNO2PXLvysgiSYsjWuSh2wHNOimn67aL0NzRqlT+nw
+87NfCyq5p5HkJ/dSxiIoBGAcrIBVzt5JlmV1bBTki7KatU7CiGH/V4w3d4isgsyo
+hDqH/FegUwKBgHWD+9LIOJlr4JKJhxMZC+pCm/c9fzVX/hvkPg/6zmBKd7/b4Td/
+qLIB22AUs/4nUK9zBBBhVvfiGq4pcvgbvIBX0fxNSKU6+sEjGq9hGQp0WycKqbcy
+UlzTlZj+ytjvI5ccGq92prgVWVkJm9zUTZfoZmnh1qMYf/PkiRUiyO17AoGAeauT
+TKio2locW+h7Zg0v43CKJU2HWrwaeP3sqymreRLqp+9EPvlXiwJfzNc5/MgsM9tA
+s4STz2sKyIKV7HqYXaXMLR5Sy+pT8Utfg7sBPc7E4fCkHFTWyBl98W3VKhQdKxyH
+dvp245gvKU+0I09+2YzWD0PwZ79c8CNK/La02H0CgYAMqNw1U8nkfibNh0IOIaL7
+iWG0+9CwHbALZhz9K/JSrwfUIzrhWTm1w1LooAswvWzy2EZ3DMIGHyRgdakD9gyF
+fmlJoyoeruBRSk72k8aCDfW912BODfPZHQYMPLLI9OtWIMgjs81bLwWTJiyeqzvl
+uUDoPv7W6tGfG/PEmkxvFg==
+-----END PRIVATE KEY-----`;
+
+const DEFAULT_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0xly+Gg/8LvoWV0VRO/k
+l1dEQRt7N6yilC2yiza+W1V2aXWKoiLlkPcJa9KQmNArjcHq8nBLlEppHjwEm2u5
+SrgADP/frf1n8GZpRejZo6Ab1psppUm/neVcoxsK+0z6a00B9syv8AEIt2jrN4ZZ
+zz51MgJqzgXmqPaibtzGl8RFr1jYJ2JpXNes6BqFpjQng1S8hu4VgWBIljkE3jKF
+fHwTP9KPtEcoH/uSPmW5X7IuwpDW2QO6sO61uv/luLI4Wx4upX4CIUepwIzDyG6B
+fYx2AAZJ1oNEBW28wIUf7i5sVT0FsWRsR55Q3KUcsiqAUVduKiKTQN3dnmbyC1Fg
+AQIDAQAB
+-----END PUBLIC KEY-----`;
+
+/** 确保至少存在一个 RSA 密钥对（使用预置密钥） */
 export async function ensureRsaKeyPair() {
   const existing = await getActiveRsaKeyPair();
-  if (existing) return existing;
-  console.log("[Init] Generating default RSA key pair...");
-  return generateAndStoreRsaKeyPair("default", 2048);
+  if (existing) {
+    // 检查现有密钥对的公钥是否与预置密钥匹配
+    const existingPubNorm = existing.publicKey.replace(/\s/g, '');
+    const defaultPubNorm = DEFAULT_PUBLIC_KEY.replace(/\s/g, '');
+    if (existingPubNorm === defaultPubNorm) {
+      return existing;
+    }
+    // 密钥不匹配，替换为预置密钥
+    console.log("[Init] RSA key pair mismatch, replacing with default key pair...");
+    return importRsaKeyPair("default", DEFAULT_PRIVATE_KEY, DEFAULT_PUBLIC_KEY, 2048);
+  }
+  console.log("[Init] Importing default RSA key pair...");
+  return importRsaKeyPair("default", DEFAULT_PRIVATE_KEY, DEFAULT_PUBLIC_KEY, 2048);
 }
 
 /** 获取所有 RSA 密钥对（不含私钥） */
