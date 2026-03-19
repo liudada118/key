@@ -7,7 +7,7 @@ import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { ensureDefaultSuperAdmin } from "../db";
+import { ensureDefaultSuperAdmin, ensureDefaultSensorTypes } from "../db";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -38,6 +38,7 @@ async function startServer() {
   // 初始化数据库：确保默认超级管理员存在
   try {
     await ensureDefaultSuperAdmin();
+    await ensureDefaultSensorTypes();
     console.log("[Init] Database initialization complete");
   } catch (error) {
     console.warn("[Init] Database initialization failed (will retry on first request):", error);

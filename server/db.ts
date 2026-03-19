@@ -108,6 +108,40 @@ export async function ensureDefaultSuperAdmin() {
   console.log("[Init] Default super admin created successfully");
 }
 
+/** 确保默认传感器类型存在 */
+export async function ensureDefaultSensorTypes() {
+  const db = await getDb();
+  if (!db) return;
+
+  // 检查是否已有传感器数据
+  const existing = await db.select().from(sensorTypes).limit(1);
+  if (existing.length > 0) return;
+
+  console.log("[Init] Creating default sensor types...");
+  const defaultSensors: InsertSensorType[] = [
+    // 常用
+    { label: "手部检测", value: "hand", groupName: "常用", groupIcon: "🖐️", sortOrder: 1, isActive: true },
+    // 关怀
+    { label: "小床监测", value: "jqbed", groupName: "关怀", groupIcon: "🛏️", sortOrder: 10, isActive: true },
+    // 精密
+    { label: "触觉手套", value: "hand0205", groupName: "精密", groupIcon: "🧤", sortOrder: 20, isActive: true },
+    { label: "触觉手套(115200)", value: "handGlove115200", groupName: "精密", groupIcon: "🧤", sortOrder: 21, isActive: true },
+    { label: "小型样品", value: "smallSample", groupName: "精密", groupIcon: "🧤", sortOrder: 22, isActive: true },
+    { label: "宇树G1触觉上衣", value: "robot1", groupName: "精密", groupIcon: "🧤", sortOrder: 23, isActive: true },
+    { label: "松延N2触觉上衣", value: "robotSY", groupName: "精密", groupIcon: "🧤", sortOrder: 24, isActive: true },
+    { label: "零次方H1触觉上衣", value: "robotLCF", groupName: "精密", groupIcon: "🧤", sortOrder: 25, isActive: true },
+    { label: "触觉足底", value: "footVideo", groupName: "精密", groupIcon: "🧤", sortOrder: 26, isActive: true },
+    { label: "14x20高速", value: "daliegu", groupName: "精密", groupIcon: "🧤", sortOrder: 27, isActive: true },
+    { label: "16x16高速", value: "fast256", groupName: "精密", groupIcon: "🧤", sortOrder: 28, isActive: true },
+    { label: "32x32高速", value: "fast1024", groupName: "精密", groupIcon: "🧤", sortOrder: 29, isActive: true },
+  ];
+
+  for (const sensor of defaultSensors) {
+    await db.insert(sensorTypes).values(sensor);
+  }
+  console.log(`[Init] Created ${defaultSensors.length} default sensor types`);
+}
+
 /** 修改密码 */
 export async function changePassword(userId: number, newPassword: string) {
   const db = await getDb();
