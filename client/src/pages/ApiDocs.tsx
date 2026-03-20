@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Collapsible,
   CollapsibleContent,
@@ -12,7 +13,9 @@ import {
   FileText,
   Globe,
   Lock,
+  Monitor,
   Search,
+  Server,
   Shield,
   ShieldAlert,
 } from "lucide-react";
@@ -50,8 +53,214 @@ type ApiGroup = {
   endpoints: ApiEndpoint[];
 };
 
-// ===== API 数据 =====
-const apiGroups: ApiGroup[] = [
+// ===== 客户端接口数据 =====
+const clientApiGroups: ApiGroup[] = [
+  {
+    title: "密钥激活与绑定",
+    desc: "客户端通过密钥+设备码完成自助激活绑定",
+    endpoints: [
+      {
+        name: "keys.activate",
+        method: "mutation",
+        auth: "public",
+        desc: "客户自助激活 -- 将设备码绑定到密钥",
+        params: [
+          { name: "keyString", type: "string", required: true, desc: "密钥字符串（由管理员提供）" },
+          { name: "deviceCode", type: "string", required: true, desc: "设备码（如 MAC 地址、机器码等）" },
+          { name: "deviceName", type: "string", required: false, desc: "设备名称/备注（可选）" },
+        ],
+        response: [
+          { name: "success", type: "boolean", desc: "是否成功" },
+          { name: "message", type: "string", desc: "结果消息" },
+          { name: "currentDevices", type: "number", desc: "当前已绑定设备数" },
+          { name: "maxDevices", type: "number", desc: "最大设备数" },
+          { name: "alreadyBound", type: "boolean", desc: "是否已经绑定过（重复激活时）" },
+          { name: "error", type: "string", desc: "错误信息（失败时）" },
+        ],
+        responseExample: `// 绑定成功
+{
+  "success": true,
+  "message": "设备绑定成功",
+  "currentDevices": 2,
+  "maxDevices": 3
+}
+
+// 已绑定（重复激活）
+{
+  "success": true,
+  "message": "该设备已绑定此密钥，无需重复激活",
+  "alreadyBound": true
+}
+
+// 达到设备上限
+{
+  "success": false,
+  "error": "设备绑定数量已达上限（3台）",
+  "currentDevices": 3,
+  "maxDevices": 3
+}
+
+// 密钥已过期
+{
+  "success": false,
+  "error": "密钥已过期"
+}`,
+        notes: "公开接口，无需登录。客户端首次启动时调用此接口完成激活。系统自动记录绑定 IP 地址。",
+      },
+    ],
+  },
+  {
+    title: "密钥验证",
+    desc: "客户端验证密钥有效性和设备授权状态",
+    endpoints: [
+      {
+        name: "keys.verifyOnDevice",
+        method: "mutation",
+        auth: "public",
+        desc: "验证密钥在指定设备上是否有效",
+        params: [
+          { name: "keyString", type: "string", required: true, desc: "密钥字符串" },
+          { name: "deviceCode", type: "string", required: true, desc: "当前设备码" },
+        ],
+        response: [
+          { name: "valid", type: "boolean", desc: "是否有效（密钥有效且设备已绑定）" },
+          { name: "error", type: "string", desc: "错误原因（无效时）" },
+          { name: "expired", type: "boolean", desc: "密钥是否已过期" },
+          { name: "notBound", type: "boolean", desc: "设备是否未绑定" },
+          { name: "canBind", type: "boolean", desc: "是否还可以绑定新设备（未达上限）" },
+        ],
+        responseExample: `// 验证通过
+{ "valid": true }
+
+// 设备未绑定，但还可以绑定
+{
+  "valid": false,
+  "error": "该设备未绑定此密钥",
+  "notBound": true,
+  "canBind": true
+}
+
+// 设备未绑定，且已达设备上限
+{
+  "valid": false,
+  "error": "该设备未绑定此密钥，且设备数已达上限",
+  "notBound": true,
+  "canBind": false
+}
+
+// 密钥已过期
+{
+  "valid": false,
+  "error": "密钥已过期",
+  "expired": true
+}
+
+// 密钥无效
+{
+  "valid": false,
+  "error": "密钥无效或不存在"
+}`,
+        notes: "公开接口。建议客户端每次启动时调用此接口验证授权状态。",
+      },
+      {
+        name: "keys.verify",
+        method: "mutation",
+        auth: "public",
+        desc: "解密并查询密钥完整信息（含设备绑定列表）",
+        params: [
+          { name: "keyString", type: "string", required: true, desc: "密钥字符串" },
+          { name: "deviceCode", type: "string", required: false, desc: "设备码（可选，检查是否已绑定）" },
+        ],
+        response: [
+          { name: "valid", type: "boolean", desc: "密钥是否有效" },
+          { name: "sensorType", type: "string", desc: "授权的传感器类型（逗号分隔）" },
+          { name: "expireDate", type: "number", desc: "到期时间戳（毫秒）" },
+          { name: "category", type: "string", desc: "密钥类型：production / rental" },
+          { name: "isActivated", type: "boolean", desc: "是否已激活" },
+          { name: "maxDevices", type: "number", desc: "最大可绑定设备数" },
+          { name: "deviceCount", type: "number", desc: "已绑定设备数" },
+          { name: "devices", type: "array", desc: "已绑定设备列表" },
+          { name: "deviceBound", type: "boolean", desc: "指定设备码是否已绑定" },
+        ],
+        responseExample: `{
+  "valid": true,
+  "sensorType": "hand0205,car_seat",
+  "expireDate": 1743465600000,
+  "category": "rental",
+  "isActivated": true,
+  "maxDevices": 3,
+  "deviceCount": 2,
+  "devices": [
+    { "id": 1, "deviceCode": "AA:BB:CC:DD:EE:FF", "deviceName": null, "boundAt": "2026-03-10T08:00:00.000Z" },
+    { "id": 2, "deviceCode": "11:22:33:44:55:66", "deviceName": "工位2", "boundAt": "2026-03-12T10:30:00.000Z" }
+  ],
+  "deviceBound": false
+}`,
+      },
+    ],
+  },
+  {
+    title: "离线密钥验证",
+    desc: "获取 RSA 公钥用于离线激活码验证",
+    endpoints: [
+      {
+        name: "offlineKeys.publicKey",
+        method: "query",
+        auth: "public",
+        desc: "获取当前活跃的 RSA 公钥",
+        response: [
+          { name: "publicKey", type: "string", desc: "PEM 格式公钥" },
+          { name: "keySize", type: "number", desc: "密钥位数" },
+          { name: "name", type: "string", desc: "密钥对名称" },
+        ],
+        responseExample: `{
+  "publicKey": "-----BEGIN PUBLIC KEY-----\\nMIIBIjANBgkqhki...\\n-----END PUBLIC KEY-----",
+  "keySize": 2048,
+  "name": "default"
+}`,
+        notes: "客户端下载此公钥后，用于本地验证离线激活码的 RSA-SHA256 签名。",
+      },
+    ],
+  },
+  {
+    title: "传感器类型查询",
+    desc: "获取系统支持的传感器类型列表",
+    endpoints: [
+      {
+        name: "sensors.groups",
+        method: "query",
+        auth: "public",
+        desc: "获取分组传感器类型列表（仅启用的）",
+        responseExample: `[
+  {
+    "groupName": "触觉手套",
+    "groupIcon": "🖐",
+    "items": [
+      { "id": 1, "value": "hand0205", "label": "触觉手套" }
+    ]
+  },
+  {
+    "groupName": "汽车座椅",
+    "groupIcon": "🚗",
+    "items": [
+      { "id": 2, "value": "car_seat", "label": "汽车座椅" }
+    ]
+  }
+]`,
+      },
+      {
+        name: "sensors.groupNames",
+        method: "query",
+        auth: "public",
+        desc: "获取所有分组名称列表",
+        responseExample: `["触觉手套", "汽车座椅", "其他"]`,
+      },
+    ],
+  },
+];
+
+// ===== 管理系统接口数据 =====
+const adminApiGroups: ApiGroup[] = [
   {
     title: "认证 (auth)",
     desc: "用户登录、登出和密码管理",
@@ -100,8 +309,8 @@ const apiGroups: ApiGroup[] = [
     ],
   },
   {
-    title: "在线密钥 (keys)",
-    desc: "在线密钥的生成、验证、激活绑定和设备管理",
+    title: "在线密钥管理 (keys)",
+    desc: "密钥的生成、查询、导出和设备管理",
     endpoints: [
       {
         name: "keys.categories",
@@ -182,119 +391,16 @@ const apiGroups: ApiGroup[] = [
         notes: "超级管理员查看所有；管理员查看自己及下属的；子账号仅查看自己的",
       },
       {
-        name: "keys.verify",
-        method: "mutation",
-        auth: "public",
-        desc: "验证/解密密钥，返回详细信息和设备绑定状态",
-        params: [
-          { name: "keyString", type: "string", required: true, desc: "密钥字符串" },
-          { name: "deviceCode", type: "string", required: false, desc: "设备码（可选，检查是否已绑定）" },
-        ],
+        name: "keys.stats",
+        method: "query",
+        auth: "protected",
+        desc: "获取密钥统计数据",
         response: [
-          { name: "valid", type: "boolean", desc: "密钥是否有效" },
-          { name: "sensorType", type: "string", desc: "传感器类型" },
-          { name: "expireDate", type: "number", desc: "到期时间戳" },
-          { name: "category", type: "string", desc: "密钥类型" },
-          { name: "isActivated", type: "boolean", desc: "是否已激活" },
-          { name: "maxDevices", type: "number", desc: "最大设备数" },
-          { name: "deviceCount", type: "number", desc: "已绑定设备数" },
-          { name: "devices", type: "array", desc: "已绑定设备列表" },
-          { name: "deviceBound", type: "boolean", desc: "指定设备码是否已绑定" },
-          { name: "customerName", type: "string | null", desc: "客户名称" },
-          { name: "createdByName", type: "string | null", desc: "创建者名称" },
+          { name: "total", type: "number", desc: "密钥总数" },
+          { name: "activated", type: "number", desc: "已激活数" },
+          { name: "production", type: "number", desc: "量产密钥数" },
+          { name: "rental", type: "number", desc: "租赁密钥数" },
         ],
-        responseExample: `{
-  "valid": true,
-  "sensorType": "hand0205,car_seat",
-  "expireDate": 1743465600000,
-  "category": "rental",
-  "isActivated": true,
-  "maxDevices": 3,
-  "deviceCount": 2,
-  "devices": [
-    { "id": 1, "deviceCode": "AA:BB:CC:DD:EE:FF", "deviceName": "设备1", "boundAt": "..." }
-  ],
-  "deviceBound": false,
-  "customerName": "某公司",
-  "createdByName": "admin"
-}`,
-      },
-      {
-        name: "keys.activate",
-        method: "mutation",
-        auth: "public",
-        desc: "客户自助激活 — 将设备码绑定到密钥",
-        params: [
-          { name: "keyString", type: "string", required: true, desc: "密钥字符串" },
-          { name: "deviceCode", type: "string", required: true, desc: "设备码（如 MAC 地址）" },
-          { name: "deviceName", type: "string", required: false, desc: "设备名称/备注" },
-        ],
-        response: [
-          { name: "success", type: "boolean", desc: "是否成功" },
-          { name: "message", type: "string", desc: "结果消息" },
-          { name: "currentDevices", type: "number", desc: "当前已绑定设备数" },
-          { name: "maxDevices", type: "number", desc: "最大设备数" },
-          { name: "error", type: "string", desc: "错误信息（失败时）" },
-        ],
-        responseExample: `// 成功
-{
-  "success": true,
-  "message": "设备绑定成功",
-  "currentDevices": 2,
-  "maxDevices": 3
-}
-
-// 已绑定
-{
-  "success": true,
-  "message": "该设备已绑定此密钥，无需重复激活",
-  "alreadyBound": true
-}
-
-// 达到上限
-{
-  "success": false,
-  "error": "设备绑定数量已达上限（3台）",
-  "currentDevices": 3,
-  "maxDevices": 3
-}`,
-        notes: "公开接口，无需登录。客户端通过密钥+设备码调用此接口完成激活绑定。系统自动记录绑定 IP。",
-      },
-      {
-        name: "keys.verifyOnDevice",
-        method: "mutation",
-        auth: "public",
-        desc: "验证密钥在指定设备上是否有效",
-        params: [
-          { name: "keyString", type: "string", required: true, desc: "密钥字符串" },
-          { name: "deviceCode", type: "string", required: true, desc: "设备码" },
-        ],
-        response: [
-          { name: "valid", type: "boolean", desc: "是否有效" },
-          { name: "error", type: "string", desc: "错误信息（无效时）" },
-          { name: "expired", type: "boolean", desc: "是否已过期" },
-          { name: "notBound", type: "boolean", desc: "设备未绑定" },
-          { name: "canBind", type: "boolean", desc: "是否可以绑定（未达上限）" },
-        ],
-        responseExample: `// 有效
-{ "valid": true }
-
-// 设备未绑定但可绑定
-{
-  "valid": false,
-  "error": "该设备未绑定此密钥",
-  "notBound": true,
-  "canBind": true
-}
-
-// 设备未绑定且已达上限
-{
-  "valid": false,
-  "error": "该设备未绑定此密钥，且设备数已达上限",
-  "notBound": true,
-  "canBind": false
-}`,
-        notes: "公开接口。客户端启动时调用此接口验证当前设备是否已授权。",
       },
       {
         name: "keys.devices",
@@ -329,22 +435,10 @@ const apiGroups: ApiGroup[] = [
         notes: "如果所有设备都被解绑，密钥状态会重置为【未激活】",
       },
       {
-        name: "keys.stats",
-        method: "query",
-        auth: "protected",
-        desc: "获取密钥统计数据",
-        response: [
-          { name: "total", type: "number", desc: "密钥总数" },
-          { name: "activated", type: "number", desc: "已激活数" },
-          { name: "production", type: "number", desc: "量产密钥数" },
-          { name: "rental", type: "number", desc: "租赁密钥数" },
-        ],
-      },
-      {
         name: "keys.changeCategory",
         method: "mutation",
         auth: "superAdmin",
-        desc: "更改密钥类型（量产↔租赁）",
+        desc: "更改密钥类型（量产/租赁互转）",
         params: [
           { name: "keyId", type: "number", required: true, desc: "密钥 ID" },
           { name: "category", type: "enum", required: true, desc: "新类型：production / rental" },
@@ -370,8 +464,8 @@ const apiGroups: ApiGroup[] = [
     ],
   },
   {
-    title: "离线密钥 (offlineKeys)",
-    desc: "离线密钥生成、管理和 RSA 密钥对管理",
+    title: "离线密钥管理 (offlineKeys)",
+    desc: "离线密钥生成、查询和 RSA 密钥对管理",
     endpoints: [
       {
         name: "offlineKeys.generate",
@@ -380,7 +474,7 @@ const apiGroups: ApiGroup[] = [
         desc: "生成离线激活码（RSA-SHA256 签名）",
         params: [
           { name: "machineId", type: "string", required: true, desc: "机器码（16位十六进制）" },
-          { name: "sensorTypes", type: '"all" | string[]', required: true, desc: "传感器类型：\"all\" 或类型数组" },
+          { name: "sensorTypes", type: '"all" | string[]', required: true, desc: '传感器类型："all" 或类型数组' },
           { name: "days", type: "number", required: true, desc: "有效期天数（1-36500）" },
           { name: "customerId", type: "number", required: false, desc: "关联客户 ID" },
           { name: "customerName", type: "string", required: false, desc: "客户名称" },
@@ -410,18 +504,6 @@ const apiGroups: ApiGroup[] = [
         method: "query",
         auth: "protected",
         desc: "获取离线密钥统计数据",
-      },
-      {
-        name: "offlineKeys.publicKey",
-        method: "query",
-        auth: "public",
-        desc: "获取当前活跃的 RSA 公钥（供客户端下载）",
-        response: [
-          { name: "publicKey", type: "string", desc: "PEM 格式公钥" },
-          { name: "keySize", type: "number", desc: "密钥位数" },
-          { name: "name", type: "string", desc: "密钥对名称" },
-        ],
-        notes: "公开接口，客户端下载公钥用于验证离线激活码签名",
       },
       {
         name: "offlineKeys.rsaKeyPairs",
@@ -560,36 +642,14 @@ const apiGroups: ApiGroup[] = [
     ],
   },
   {
-    title: "传感器类型 (sensors)",
-    desc: "传感器类型的分组管理",
+    title: "传感器类型管理 (sensors)",
+    desc: "传感器类型的分组管理（超级管理员）",
     endpoints: [
-      {
-        name: "sensors.groups",
-        method: "query",
-        auth: "public",
-        desc: "获取分组传感器类型（仅启用的）",
-        responseExample: `[
-  {
-    "groupName": "常用",
-    "groupIcon": "🖐",
-    "items": [
-      { "id": 1, "value": "hand0205", "label": "触觉手套" },
-      { "id": 2, "value": "car_seat", "label": "汽车座椅" }
-    ]
-  }
-]`,
-      },
       {
         name: "sensors.all",
         method: "query",
         auth: "superAdmin",
         desc: "获取所有传感器类型（包括禁用的）",
-      },
-      {
-        name: "sensors.groupNames",
-        method: "query",
-        auth: "public",
-        desc: "获取所有分组名称列表",
       },
       {
         name: "sensors.add",
@@ -695,10 +755,8 @@ function EndpointCard({ endpoint }: { endpoint: ApiEndpoint }) {
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="ml-8 mr-4 mb-4 space-y-4 border-l-2 border-primary/20 pl-4">
-          {/* 描述 */}
           <p className="text-sm text-muted-foreground">{endpoint.desc}</p>
 
-          {/* 请求参数 */}
           {endpoint.params && endpoint.params.length > 0 && (
             <div>
               <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
@@ -743,7 +801,6 @@ function EndpointCard({ endpoint }: { endpoint: ApiEndpoint }) {
             </div>
           )}
 
-          {/* 响应字段 */}
           {endpoint.response && endpoint.response.length > 0 && (
             <div>
               <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
@@ -774,7 +831,6 @@ function EndpointCard({ endpoint }: { endpoint: ApiEndpoint }) {
             </div>
           )}
 
-          {/* 响应示例 */}
           {endpoint.responseExample && (
             <div>
               <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
@@ -786,7 +842,6 @@ function EndpointCard({ endpoint }: { endpoint: ApiEndpoint }) {
             </div>
           )}
 
-          {/* 备注 */}
           {endpoint.notes && (
             <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
               <span className="text-amber-600 text-xs font-medium shrink-0 mt-0.5">注意：</span>
@@ -799,11 +854,16 @@ function EndpointCard({ endpoint }: { endpoint: ApiEndpoint }) {
   );
 }
 
-// ===== 主页面 =====
-export default function ApiDocs() {
-  const [searchQuery, setSearchQuery] = useState("");
+// ===== 接口分组渲染 =====
+function ApiGroupList({
+  groups,
+  searchQuery,
+}: {
+  groups: ApiGroup[];
+  searchQuery: string;
+}) {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
-    new Set(apiGroups.map((g) => g.title))
+    new Set(groups.map((g) => g.title))
   );
 
   const toggleGroup = (title: string) => {
@@ -816,117 +876,34 @@ export default function ApiDocs() {
   };
 
   const filteredGroups = useMemo(() => {
-    if (!searchQuery.trim()) return apiGroups;
+    if (!searchQuery.trim()) return groups;
     const q = searchQuery.toLowerCase();
-    return apiGroups
+    return groups
       .map((group) => ({
         ...group,
         endpoints: group.endpoints.filter(
           (ep) =>
             ep.name.toLowerCase().includes(q) ||
             ep.desc.toLowerCase().includes(q) ||
-            ep.params?.some((p) => p.name.toLowerCase().includes(q) || p.desc.toLowerCase().includes(q))
+            ep.params?.some(
+              (p) => p.name.toLowerCase().includes(q) || p.desc.toLowerCase().includes(q)
+            )
         ),
       }))
       .filter((g) => g.endpoints.length > 0);
-  }, [searchQuery]);
+  }, [searchQuery, groups]);
 
-  const totalEndpoints = apiGroups.reduce((sum, g) => sum + g.endpoints.length, 0);
-  const publicCount = apiGroups.reduce(
-    (sum, g) => sum + g.endpoints.filter((e) => e.auth === "public").length,
-    0
-  );
+  if (filteredGroups.length === 0) {
+    return (
+      <div className="text-center py-12 text-muted-foreground">
+        <Search className="h-8 w-8 mx-auto mb-3 opacity-50" />
+        <p>未找到匹配的接口</p>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6 max-w-5xl">
-      {/* 页头 */}
-      <div>
-        <div className="flex items-center gap-3 mb-2">
-          <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center">
-            <FileText className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">API 接口文档</h1>
-            <p className="text-sm text-muted-foreground">
-              密钥管理系统 tRPC 接口参考
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* 概览统计 */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Card className="py-3">
-          <CardContent className="px-4 py-0">
-            <div className="text-2xl font-bold text-foreground">{totalEndpoints}</div>
-            <div className="text-xs text-muted-foreground">接口总数</div>
-          </CardContent>
-        </Card>
-        <Card className="py-3">
-          <CardContent className="px-4 py-0">
-            <div className="text-2xl font-bold text-emerald-600">{publicCount}</div>
-            <div className="text-xs text-muted-foreground">公开接口</div>
-          </CardContent>
-        </Card>
-        <Card className="py-3">
-          <CardContent className="px-4 py-0">
-            <div className="text-2xl font-bold text-blue-600">{apiGroups.length}</div>
-            <div className="text-xs text-muted-foreground">接口分组</div>
-          </CardContent>
-        </Card>
-        <Card className="py-3">
-          <CardContent className="px-4 py-0">
-            <div className="text-2xl font-bold text-violet-600">tRPC</div>
-            <div className="text-xs text-muted-foreground">通信协议</div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* 调用说明 */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm">调用方式</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="text-sm text-muted-foreground space-y-2">
-            <p>
-              所有接口通过 <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">/api/trpc</code> 路径访问，使用 tRPC 协议通信。
-            </p>
-            <p>
-              <strong>前端调用：</strong>使用 <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">trpc.&lt;name&gt;.useQuery()</code> 或{" "}
-              <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">trpc.&lt;name&gt;.useMutation()</code>
-            </p>
-            <p>
-              <strong>HTTP 调用（公开接口）：</strong>
-            </p>
-          </div>
-          <pre className="bg-slate-950 text-slate-50 rounded-lg p-4 text-xs overflow-x-auto font-mono leading-relaxed">{`# Query 请求（GET）
-GET /api/trpc/keys.categories
-
-# Mutation 请求（POST）
-POST /api/trpc/keys.activate
-Content-Type: application/json
-{
-  "json": {
-    "keyString": "a1b2c3d4...",
-    "deviceCode": "AA:BB:CC:DD:EE:FF"
-  }
-}`}</pre>
-        </CardContent>
-      </Card>
-
-      {/* 搜索 */}
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <Input
-          placeholder="搜索接口名称、描述或参数..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="pl-10"
-        />
-      </div>
-
-      {/* 接口分组 */}
+    <div className="space-y-4">
       {filteredGroups.map((group) => (
         <Card key={group.title}>
           <CardHeader
@@ -959,13 +936,152 @@ Content-Type: application/json
           )}
         </Card>
       ))}
+    </div>
+  );
+}
 
-      {filteredGroups.length === 0 && (
-        <div className="text-center py-12 text-muted-foreground">
-          <Search className="h-8 w-8 mx-auto mb-3 opacity-50" />
-          <p>未找到匹配的接口</p>
+// ===== 主页面 =====
+export default function ApiDocs() {
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeTab, setActiveTab] = useState("client");
+
+  const clientEndpointCount = clientApiGroups.reduce((sum, g) => sum + g.endpoints.length, 0);
+  const adminEndpointCount = adminApiGroups.reduce((sum, g) => sum + g.endpoints.length, 0);
+
+  return (
+    <div className="space-y-6 max-w-5xl">
+      {/* 页头 */}
+      <div>
+        <div className="flex items-center gap-3 mb-2">
+          <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center">
+            <FileText className="h-5 w-5 text-primary" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">API 接口文档</h1>
+            <p className="text-sm text-muted-foreground">
+              密钥管理系统 tRPC 接口参考
+            </p>
+          </div>
         </div>
-      )}
+      </div>
+
+      {/* Tab 切换 */}
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList className="grid w-full grid-cols-2 h-12">
+          <TabsTrigger value="client" className="gap-2 text-sm h-10">
+            <Monitor className="h-4 w-4" />
+            客户端接口
+            <Badge variant="secondary" className="text-[10px] px-1.5 ml-1">
+              {clientEndpointCount}
+            </Badge>
+          </TabsTrigger>
+          <TabsTrigger value="admin" className="gap-2 text-sm h-10">
+            <Server className="h-4 w-4" />
+            管理系统接口
+            <Badge variant="secondary" className="text-[10px] px-1.5 ml-1">
+              {adminEndpointCount}
+            </Badge>
+          </TabsTrigger>
+        </TabsList>
+
+        {/* 调用说明 */}
+        <Card className="mt-4">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm">
+              {activeTab === "client" ? "客户端调用说明" : "管理系统调用说明"}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {activeTab === "client" ? (
+              <>
+                <div className="text-sm text-muted-foreground space-y-2">
+                  <p>
+                    客户端接口均为<strong className="text-emerald-600">公开接口</strong>，无需登录即可调用。客户端软件通过 HTTP 请求直接调用。
+                  </p>
+                  <p>
+                    <strong>典型使用流程：</strong>管理员生成密钥 &rarr; 发送给客户 &rarr; 客户端调用 <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">activate</code> 绑定设备 &rarr; 每次启动调用 <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">verifyOnDevice</code> 验证授权
+                  </p>
+                </div>
+                <pre className="bg-slate-950 text-slate-50 rounded-lg p-4 text-xs overflow-x-auto font-mono leading-relaxed">{`# 1. 激活绑定设备
+POST /api/trpc/keys.activate
+Content-Type: application/json
+{
+  "json": {
+    "keyString": "a1b2c3d4e5f6...",
+    "deviceCode": "AA:BB:CC:DD:EE:FF",
+    "deviceName": "工位1"
+  }
+}
+
+# 2. 验证设备授权（每次启动时调用）
+POST /api/trpc/keys.verifyOnDevice
+Content-Type: application/json
+{
+  "json": {
+    "keyString": "a1b2c3d4e5f6...",
+    "deviceCode": "AA:BB:CC:DD:EE:FF"
+  }
+}
+
+# 3. 获取 RSA 公钥（离线密钥验证）
+GET /api/trpc/offlineKeys.publicKey
+
+# 4. 获取传感器类型列表
+GET /api/trpc/sensors.groups`}</pre>
+              </>
+            ) : (
+              <>
+                <div className="text-sm text-muted-foreground space-y-2">
+                  <p>
+                    管理系统接口需要<strong className="text-blue-600">登录认证</strong>，通过 Session Cookie 鉴权。部分接口需要管理员或超级管理员权限。
+                  </p>
+                  <p>
+                    <strong>前端调用：</strong>使用 <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">trpc.&lt;name&gt;.useQuery()</code> 或{" "}
+                    <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">trpc.&lt;name&gt;.useMutation()</code>
+                  </p>
+                </div>
+                <pre className="bg-slate-950 text-slate-50 rounded-lg p-4 text-xs overflow-x-auto font-mono leading-relaxed">{`# Query 请求（GET）
+GET /api/trpc/keys.list?input={"json":{"page":1,"pageSize":20}}
+Cookie: session=<token>
+
+# Mutation 请求（POST）
+POST /api/trpc/keys.generate
+Cookie: session=<token>
+Content-Type: application/json
+{
+  "json": {
+    "sensorTypes": ["hand0205"],
+    "days": 365,
+    "category": "rental",
+    "maxDevices": 3
+  }
+}`}</pre>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* 搜索 */}
+        <div className="relative mt-4">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="搜索接口名称、描述或参数..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-10"
+          />
+        </div>
+
+        {/* 客户端接口 */}
+        <TabsContent value="client" className="mt-4">
+          <ApiGroupList groups={clientApiGroups} searchQuery={searchQuery} />
+        </TabsContent>
+
+        {/* 管理系统接口 */}
+        <TabsContent value="admin" className="mt-4">
+          <ApiGroupList groups={adminApiGroups} searchQuery={searchQuery} />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
