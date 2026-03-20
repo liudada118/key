@@ -27,6 +27,7 @@ import {
   BarChart3,
   Building2,
   Cpu,
+  FileText,
   Globe,
   KeyRound,
   LayoutDashboard,
@@ -108,6 +109,7 @@ const menuSections: MenuSection[] = [
       { icon: Users, label: "账号管理", path: "/accounts", roles: ["super_admin", "admin"] },
       { icon: Settings2, label: "传感器管理", path: "/sensor-types", roles: ["super_admin"] },
       { icon: Cpu, label: "MAC 读取", path: "/mac-reader" },
+      { icon: FileText, label: "API 文档", path: "/api-docs", roles: ["super_admin"] },
     ],
   },
 ];

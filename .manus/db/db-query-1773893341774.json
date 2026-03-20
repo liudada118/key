@@ -1,9 +1,0 @@
-{
-  "query": "INSERT INTO __drizzle_migrations (hash, created_at) VALUES ('0003_sturdy_chronomancer', 1773893253793) ON DUPLICATE KEY UPDATE created_at = 1773893253793;",
-  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user uEiJ7Pi2fij4L3s.root --database CxbGMJzuhHB3si38TZmHn4 --execute INSERT INTO __drizzle_migrations (hash, created_at) VALUES ('0003_sturdy_chronomancer', 1773893253793) ON DUPLICATE KEY UPDATE created_at = 1773893253793;",
-  "rows": [],
-  "messages": [],
-  "stdout": "",
-  "stderr": "",
-  "execution_time_ms": 78
-}

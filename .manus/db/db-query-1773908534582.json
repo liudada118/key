@@ -1,9 +1,0 @@
-{
-  "query": "INSERT INTO sensorTypes (`label`, `value`, `groupName`, `groupIcon`, `sortOrder`, `isActive`) VALUES\n('手部检测', 'hand', '常用', '🖐️', 1, 1),\n('小床监测', 'jqbed', '关怀', '🛏️', 2, 1),\n('触觉手套', 'hand0205', '精密', '🧤', 3, 1),\n('触觉手套(115200)', 'handGlove115200', '精密', '🧤', 4, 1),\n('小型样品', 'smallSample', '精密', '🧤', 5, 1),\n('宇树G1触觉上衣', 'robot1', '精密', '🧤', 6, 1),\n('松延N2触觉上衣', 'robotSY', '精密', '🧤', 7, 1),\n('零次方H1触觉上衣', 'robotLCF', '精密', '🧤', 8, 1),\n('触觉足底', 'footVideo', '精密', '🧤', 9, 1),\n('14x20高速', 'daliegu', '精密', '🧤', 10, 1),\n('16x16高速', 'fast256', '精密', '🧤', 11, 1),\n('32x32高速', 'fast1024', '精密', '🧤', 12, 1);",
-  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user uEiJ7Pi2fij4L3s.root --database CxbGMJzuhHB3si38TZmHn4 --execute INSERT INTO sensorTypes (`label`, `value`, `groupName`, `groupIcon`, `sortOrder`, `isActive`) VALUES\n('手部检测', 'hand', '常用', '🖐️', 1, 1),\n('小床监测', 'jqbed', '关怀', '🛏️', 2, 1),\n('触觉手套', 'hand0205', '精密', '🧤', 3, 1),\n('触觉手套(115200)', 'handGlove115200', '精密', '🧤', 4, 1),\n('小型样品', 'smallSample', '精密', '🧤', 5, 1),\n('宇树G1触觉上衣', 'robot1', '精密', '🧤', 6, 1),\n('松延N2触觉上衣', 'robotSY', '精密', '🧤', 7, 1),\n('零次方H1触觉上衣', 'robotLCF', '精密', '🧤', 8, 1),\n('触觉足底', 'footVideo', '精密', '🧤', 9, 1),\n('14x20高速', 'daliegu', '精密', '🧤', 10, 1),\n('16x16高速', 'fast256', '精密', '🧤', 11, 1),\n('32x32高速', 'fast1024', '精密', '🧤', 12, 1);",
-  "rows": [],
-  "messages": [],
-  "stdout": "",
-  "stderr": "",
-  "execution_time_ms": 68
-}
