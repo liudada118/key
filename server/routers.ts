@@ -31,7 +31,6 @@ import {
   resetPassword,
   updateAccount,
   updateCustomer,
-  verifyKeyOnDevice,
   verifyUserCredentials,
   getSensorTypesGrouped,
   getAllSensorTypes,
@@ -583,7 +582,7 @@ export const appRouter = router({
         };
       }),
 
-    /** 客户自助激活（绑定设备） */
+    /** 客户端统一接口：激活绑定 + 验证 + 返回授权信息 */
     activate: publicProcedure
       .input(
         z.object({
@@ -593,13 +592,40 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ ctx, input }) => {
+        // 1. 解密密钥获取授权信息
         const decoded = decodeLicenseKey(input.keyString);
         if (!decoded.valid) {
-          return { success: false, error: decoded.error || "密钥已过期" };
+          return {
+            success: false,
+            error: decoded.error || "密钥无效或已过期",
+            // 仍然返回部分信息方便客户端展示
+            sensorType: decoded.sensorType || null,
+            sensorTypes: decoded.sensorTypes || [],
+            isAllTypes: decoded.isAllTypes || false,
+            expireDate: decoded.expireDate || null,
+            remainingDays: decoded.remainingDays || 0,
+            category: decoded.category || null,
+          };
         }
-        // 获取客户端 IP
+
+        // 2. 获取客户端 IP
         const clientIp = ctx.req?.headers?.['x-forwarded-for'] as string || ctx.req?.socket?.remoteAddress || undefined;
-        return activateLicenseKey(input.keyString.trim(), input.deviceCode, input.deviceName, clientIp);
+
+        // 3. 尝试激活绑定
+        const activateResult = await activateLicenseKey(input.keyString.trim(), input.deviceCode, input.deviceName, clientIp);
+
+        // 4. 无论绑定成功还是失败，都返回完整的授权信息
+        return {
+          ...activateResult,
+          // 授权信息
+          sensorType: decoded.sensorType || null,
+          sensorTypes: decoded.sensorTypes || [],
+          isAllTypes: decoded.isAllTypes || false,
+          expireDate: decoded.expireDate || null,
+          expireTimestamp: decoded.expireTimestamp || null,
+          remainingDays: decoded.remainingDays || 0,
+          category: decoded.category || null,
+        };
       }),
 
     /** 获取密钥的已绑定设备列表 */
@@ -619,15 +645,7 @@ export const appRouter = router({
         return unbindKeyDevice(input.keyId, input.deviceId);
       }),
 
-    /** 验证密钥在指定设备上是否有效 */
-    verifyOnDevice: publicProcedure
-      .input(z.object({
-        keyString: z.string().min(1),
-        deviceCode: z.string().min(1),
-      }))
-      .mutation(async ({ input }) => {
-        return verifyKeyOnDevice(input.keyString, input.deviceCode);
-      }),
+    // verifyOnDevice 已合并到 activate 接口中
 
     stats: protectedProcedure.query(async ({ ctx }) => {
       const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);

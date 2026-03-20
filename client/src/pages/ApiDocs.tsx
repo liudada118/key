@@ -7,9 +7,12 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { Button } from "@/components/ui/button";
 import {
   ChevronDown,
   ChevronRight,
+  Check,
+  Copy,
   FileText,
   Globe,
   Lock,
@@ -19,7 +22,7 @@ import {
   Shield,
   ShieldAlert,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 // ===== 类型定义 =====
 type ParamField = {
@@ -45,6 +48,8 @@ type ApiEndpoint = {
   response?: ResponseField[];
   responseExample?: string;
   notes?: string;
+  /** 可复制的调用示例（curl / fetch 等） */
+  callExample?: string;
 };
 
 type ApiGroup = {
@@ -56,146 +61,106 @@ type ApiGroup = {
 // ===== 客户端接口数据 =====
 const clientApiGroups: ApiGroup[] = [
   {
-    title: "密钥激活与绑定",
-    desc: "客户端通过密钥+设备码完成自助激活绑定",
+    title: "密钥激活与验证（统一接口）",
+    desc: "客户端只需调用这一个接口，自动处理绑定、验证和授权信息返回",
     endpoints: [
       {
         name: "keys.activate",
         method: "mutation",
         auth: "public",
-        desc: "客户自助激活 -- 将设备码绑定到密钥",
+        desc: "客户端统一接口 —— 激活绑定 + 验证 + 返回授权信息",
         params: [
           { name: "keyString", type: "string", required: true, desc: "密钥字符串（由管理员提供）" },
           { name: "deviceCode", type: "string", required: true, desc: "设备码（如 MAC 地址、机器码等）" },
           { name: "deviceName", type: "string", required: false, desc: "设备名称/备注（可选）" },
         ],
         response: [
-          { name: "success", type: "boolean", desc: "是否成功" },
+          { name: "success", type: "boolean", desc: "是否成功（绑定成功或已绑定时为 true）" },
           { name: "message", type: "string", desc: "结果消息" },
+          { name: "error", type: "string", desc: "错误信息（失败时）" },
+          { name: "alreadyBound", type: "boolean", desc: "是否已经绑定过（重复调用时）" },
           { name: "currentDevices", type: "number", desc: "当前已绑定设备数" },
           { name: "maxDevices", type: "number", desc: "最大设备数" },
-          { name: "alreadyBound", type: "boolean", desc: "是否已经绑定过（重复激活时）" },
-          { name: "error", type: "string", desc: "错误信息（失败时）" },
+          { name: "sensorType", type: "string", desc: "授权的传感器类型（逗号分隔，或 all）" },
+          { name: "sensorTypes", type: "string[]", desc: "授权的传感器类型数组" },
+          { name: "isAllTypes", type: "boolean", desc: "是否全部授权" },
+          { name: "expireDate", type: "string", desc: "到期时间（ISO 格式）" },
+          { name: "expireTimestamp", type: "number", desc: "到期时间戳（毫秒）" },
+          { name: "remainingDays", type: "number", desc: "剩余天数" },
+          { name: "category", type: "string", desc: "密钥类型：production / rental" },
         ],
-        responseExample: `// 绑定成功
+        responseExample: `// ✅ 绑定成功（首次激活）
 {
   "success": true,
   "message": "设备绑定成功",
-  "currentDevices": 2,
-  "maxDevices": 3
+  "currentDevices": 1,
+  "maxDevices": 3,
+  "sensorType": "hand0205,car_seat",
+  "sensorTypes": ["hand0205", "car_seat"],
+  "isAllTypes": false,
+  "expireDate": "2027-03-20T00:00:00.000Z",
+  "expireTimestamp": 1805500800000,
+  "remainingDays": 365,
+  "category": "rental"
 }
 
-// 已绑定（重复激活）
+// ✅ 已绑定（重复调用，同样返回授权信息）
 {
   "success": true,
   "message": "该设备已绑定此密钥，无需重复激活",
-  "alreadyBound": true
+  "alreadyBound": true,
+  "sensorType": "all",
+  "sensorTypes": ["hand", "hand0205", ...],
+  "isAllTypes": true,
+  "expireDate": "2027-03-20T00:00:00.000Z",
+  "expireTimestamp": 1805500800000,
+  "remainingDays": 365,
+  "category": "production"
 }
 
-// 达到设备上限
+// ❌ 设备数已满
 {
   "success": false,
   "error": "设备绑定数量已达上限（3台）",
   "currentDevices": 3,
-  "maxDevices": 3
+  "maxDevices": 3,
+  "sensorType": "hand0205",
+  "sensorTypes": ["hand0205"],
+  "isAllTypes": false,
+  "expireDate": "2027-03-20T00:00:00.000Z",
+  "expireTimestamp": 1805500800000,
+  "remainingDays": 365,
+  "category": "rental"
 }
 
-// 密钥已过期
+// ❌ 密钥无效或已过期
 {
   "success": false,
-  "error": "密钥已过期"
+  "error": "密钥无效或已过期"
 }`,
-        notes: "公开接口，无需登录。客户端首次启动时调用此接口完成激活。系统自动记录绑定 IP 地址。",
-      },
-    ],
-  },
-  {
-    title: "密钥验证",
-    desc: "客户端验证密钥有效性和设备授权状态",
-    endpoints: [
-      {
-        name: "keys.verifyOnDevice",
-        method: "mutation",
-        auth: "public",
-        desc: "验证密钥在指定设备上是否有效",
-        params: [
-          { name: "keyString", type: "string", required: true, desc: "密钥字符串" },
-          { name: "deviceCode", type: "string", required: true, desc: "当前设备码" },
-        ],
-        response: [
-          { name: "valid", type: "boolean", desc: "是否有效（密钥有效且设备已绑定）" },
-          { name: "error", type: "string", desc: "错误原因（无效时）" },
-          { name: "expired", type: "boolean", desc: "密钥是否已过期" },
-          { name: "notBound", type: "boolean", desc: "设备是否未绑定" },
-          { name: "canBind", type: "boolean", desc: "是否还可以绑定新设备（未达上限）" },
-        ],
-        responseExample: `// 验证通过
-{ "valid": true }
+        notes: "公开接口，无需登录。客户端每次启动时调用此接口即可，系统自动处理：未绑定→自动绑定，已绑定→直接返回授权信息，设备满→拒绝。",
+        callExample: `// Python 调用示例
+import requests
 
-// 设备未绑定，但还可以绑定
-{
-  "valid": false,
-  "error": "该设备未绑定此密钥",
-  "notBound": true,
-  "canBind": true
+url = "https://your-domain.com/api/trpc/keys.activate"
+payload = {
+    "json": {
+        "keyString": "你的密钥字符串",
+        "deviceCode": "你的设备码",
+        "deviceName": "工位1"  # 可选
+    }
 }
+response = requests.post(url, json=payload)
+result = response.json()["result"]["data"]["json"]
 
-// 设备未绑定，且已达设备上限
-{
-  "valid": false,
-  "error": "该设备未绑定此密钥，且设备数已达上限",
-  "notBound": true,
-  "canBind": false
-}
-
-// 密钥已过期
-{
-  "valid": false,
-  "error": "密钥已过期",
-  "expired": true
-}
-
-// 密钥无效
-{
-  "valid": false,
-  "error": "密钥无效或不存在"
-}`,
-        notes: "公开接口。建议客户端每次启动时调用此接口验证授权状态。",
-      },
-      {
-        name: "keys.verify",
-        method: "mutation",
-        auth: "public",
-        desc: "解密并查询密钥完整信息（含设备绑定列表）",
-        params: [
-          { name: "keyString", type: "string", required: true, desc: "密钥字符串" },
-          { name: "deviceCode", type: "string", required: false, desc: "设备码（可选，检查是否已绑定）" },
-        ],
-        response: [
-          { name: "valid", type: "boolean", desc: "密钥是否有效" },
-          { name: "sensorType", type: "string", desc: "授权的传感器类型（逗号分隔）" },
-          { name: "expireDate", type: "number", desc: "到期时间戳（毫秒）" },
-          { name: "category", type: "string", desc: "密钥类型：production / rental" },
-          { name: "isActivated", type: "boolean", desc: "是否已激活" },
-          { name: "maxDevices", type: "number", desc: "最大可绑定设备数" },
-          { name: "deviceCount", type: "number", desc: "已绑定设备数" },
-          { name: "devices", type: "array", desc: "已绑定设备列表" },
-          { name: "deviceBound", type: "boolean", desc: "指定设备码是否已绑定" },
-        ],
-        responseExample: `{
-  "valid": true,
-  "sensorType": "hand0205,car_seat",
-  "expireDate": 1743465600000,
-  "category": "rental",
-  "isActivated": true,
-  "maxDevices": 3,
-  "deviceCount": 2,
-  "devices": [
-    { "id": 1, "deviceCode": "AA:BB:CC:DD:EE:FF", "deviceName": null, "boundAt": "2026-03-10T08:00:00.000Z" },
-    { "id": 2, "deviceCode": "11:22:33:44:55:66", "deviceName": "工位2", "boundAt": "2026-03-12T10:30:00.000Z" }
-  ],
-  "deviceBound": false
-}`,
+if result["success"]:
+    print("授权有效！")
+    print(f"传感器类型: {result['sensorType']}")
+    print(f"到期时间: {result['expireDate']}")
+    print(f"剩余天数: {result['remainingDays']}")
+    print(f"设备数: {result['currentDevices']}/{result['maxDevices']}")
+else:
+    print(f"失败: {result['error']}")`,
       },
     ],
   },
@@ -219,6 +184,15 @@ const clientApiGroups: ApiGroup[] = [
   "name": "default"
 }`,
         notes: "客户端下载此公钥后，用于本地验证离线激活码的 RSA-SHA256 签名。",
+        callExample: `// Python 调用示例
+import requests
+
+url = "https://your-domain.com/api/trpc/offlineKeys.publicKey"
+response = requests.get(url)
+result = response.json()["result"]["data"]["json"]
+public_key = result["publicKey"]
+print(f"公钥大小: {result['keySize']} bits")
+print(public_key)`,
       },
     ],
   },
@@ -247,6 +221,16 @@ const clientApiGroups: ApiGroup[] = [
     ]
   }
 ]`,
+        callExample: `// Python 调用示例
+import requests
+
+url = "https://your-domain.com/api/trpc/sensors.groups"
+response = requests.get(url)
+groups = response.json()["result"]["data"]["json"]
+for group in groups:
+    print(f"{group['groupIcon']} {group['groupName']}")
+    for item in group["items"]:
+        print(f"  - {item['value']}: {item['label']}")`,
       },
       {
         name: "sensors.groupNames",
@@ -732,9 +716,79 @@ function MethodBadge({ method }: { method: "query" | "mutation" }) {
   );
 }
 
+// ===== 复制按钮组件 =====
+function CopyButton({ text, label }: { text: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // fallback
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  }, [text]);
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={handleCopy}
+      className="h-7 gap-1.5 text-xs"
+    >
+      {copied ? (
+        <><Check className="h-3 w-3 text-emerald-500" />{label ? "已复制" : "已复制"}</>
+      ) : (
+        <><Copy className="h-3 w-3" />{label || "复制"}</>
+      )}
+    </Button>
+  );
+}
+
+/** 生成接口的 HTTP 调用示例（可复制） */
+function generateHttpExample(endpoint: ApiEndpoint): string {
+  const isQuery = endpoint.method === "query";
+  const needsAuth = endpoint.auth !== "public";
+  const path = `/api/trpc/${endpoint.name}`;
+
+  if (isQuery) {
+    const inputObj: Record<string, string> = {};
+    endpoint.params?.forEach((p) => {
+      inputObj[p.name] = p.type === "number" ? "1" : `<${p.name}>`;
+    });
+    const hasParams = endpoint.params && endpoint.params.length > 0;
+    const queryStr = hasParams
+      ? `?input=${encodeURIComponent(JSON.stringify({ json: inputObj }))}`
+      : "";
+    let example = `GET ${path}${queryStr}`;
+    if (needsAuth) example += `\nCookie: session=<your_session_token>`;
+    return example;
+  } else {
+    const bodyObj: Record<string, unknown> = {};
+    endpoint.params?.forEach((p) => {
+      if (p.type === "number") bodyObj[p.name] = 1;
+      else if (p.type === "boolean") bodyObj[p.name] = true;
+      else if (p.type.includes("[]")) bodyObj[p.name] = [`<${p.name}>`];
+      else bodyObj[p.name] = `<${p.name}>`;
+    });
+    let example = `POST ${path}\nContent-Type: application/json`;
+    if (needsAuth) example += `\nCookie: session=<your_session_token>`;
+    example += `\n\n${JSON.stringify({ json: bodyObj }, null, 2)}`;
+    return example;
+  }
+}
+
 // ===== 单个端点组件 =====
 function EndpointCard({ endpoint }: { endpoint: ApiEndpoint }) {
   const [open, setOpen] = useState(false);
+  const httpExample = useMemo(() => generateHttpExample(endpoint), [endpoint]);
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -838,6 +892,34 @@ function EndpointCard({ endpoint }: { endpoint: ApiEndpoint }) {
               </h4>
               <pre className="bg-slate-950 text-slate-50 rounded-lg p-4 text-xs overflow-x-auto font-mono leading-relaxed">
                 {endpoint.responseExample}
+              </pre>
+            </div>
+          )}
+
+          {/* HTTP 调用示例（可复制） */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                HTTP 调用示例
+              </h4>
+              <CopyButton text={httpExample} label="复制请求" />
+            </div>
+            <pre className="bg-slate-950 text-slate-50 rounded-lg p-4 text-xs overflow-x-auto font-mono leading-relaxed">
+              {httpExample}
+            </pre>
+          </div>
+
+          {/* 客户端代码示例（可复制） */}
+          {endpoint.callExample && (
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                  客户端代码示例
+                </h4>
+                <CopyButton text={endpoint.callExample} label="复制代码" />
+              </div>
+              <pre className="bg-slate-950 text-slate-50 rounded-lg p-4 text-xs overflow-x-auto font-mono leading-relaxed">
+                {endpoint.callExample}
               </pre>
             </div>
           )}
@@ -999,35 +1081,25 @@ export default function ApiDocs() {
                     客户端接口均为<strong className="text-emerald-600">公开接口</strong>，无需登录即可调用。客户端软件通过 HTTP 请求直接调用。
                   </p>
                   <p>
-                    <strong>典型使用流程：</strong>管理员生成密钥 &rarr; 发送给客户 &rarr; 客户端调用 <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">activate</code> 绑定设备 &rarr; 每次启动调用 <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">verifyOnDevice</code> 验证授权
+                    <strong>典型使用流程：</strong>管理员生成密钥 &rarr; 发送给客户 &rarr; 客户端每次启动调用 <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">keys.activate</code> 即可（自动绑定 + 验证 + 返回授权信息）
                   </p>
                 </div>
-                <pre className="bg-slate-950 text-slate-50 rounded-lg p-4 text-xs overflow-x-auto font-mono leading-relaxed">{`# 1. 激活绑定设备
+                <pre className="bg-slate-950 text-slate-50 rounded-lg p-4 text-xs overflow-x-auto font-mono leading-relaxed">{`# 客户端核心接口（只需这一个）
 POST /api/trpc/keys.activate
 Content-Type: application/json
 {
   "json": {
-    "keyString": "a1b2c3d4e5f6...",
-    "deviceCode": "AA:BB:CC:DD:EE:FF",
-    "deviceName": "工位1"
+    "keyString": "你的密钥字符串",
+    "deviceCode": "你的设备码",
+    "deviceName": "工位1"  // 可选
   }
 }
+# 返回: success + 授权信息(sensorType/expireDate/remainingDays...)
+# 未绑定 → 自动绑定，已绑定 → 直接返回授权信息
 
-# 2. 验证设备授权（每次启动时调用）
-POST /api/trpc/keys.verifyOnDevice
-Content-Type: application/json
-{
-  "json": {
-    "keyString": "a1b2c3d4e5f6...",
-    "deviceCode": "AA:BB:CC:DD:EE:FF"
-  }
-}
-
-# 3. 获取 RSA 公钥（离线密钥验证）
-GET /api/trpc/offlineKeys.publicKey
-
-# 4. 获取传感器类型列表
-GET /api/trpc/sensors.groups`}</pre>
+# 其他辅助接口
+GET /api/trpc/offlineKeys.publicKey   # RSA 公钥（离线密钥用）
+GET /api/trpc/sensors.groups          # 传感器类型列表`}</pre>
               </>
             ) : (
               <>

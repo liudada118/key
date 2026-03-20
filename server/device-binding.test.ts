@@ -87,15 +87,21 @@ describe("Device Binding - Input Validation", () => {
   });
 });
 
-describe("Device Binding - verifyOnDevice", () => {
-  it("verifyOnDevice rejects invalid key", async () => {
+describe("Device Binding - activate returns auth info", () => {
+  it("activate returns authorization info along with binding result", async () => {
     const caller = appRouter.createCaller(createPublicContext());
-    const result = await caller.keys.verifyOnDevice({
+    const result = await caller.keys.activate({
       keyString: "not-a-real-key",
       deviceCode: "DEV001",
     });
-    expect(result.valid).toBe(false);
+    expect(result.success).toBe(false);
     expect(result.error).toBeTruthy();
+    // 合并后的 activate 接口应返回授权信息字段
+    expect(result).toHaveProperty("sensorType");
+    expect(result).toHaveProperty("sensorTypes");
+    expect(result).toHaveProperty("expireDate");
+    expect(result).toHaveProperty("remainingDays");
+    expect(result).toHaveProperty("category");
   });
 });
 
