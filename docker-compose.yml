@@ -1,0 +1,44 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: key-manager-app
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: "mysql://${MYSQL_USER:-key_manager}:${MYSQL_PASSWORD:-change-me-app}@db:3306/${MYSQL_DATABASE:-key_manager}"
+      JWT_SECRET: "${JWT_SECRET:-change-me-jwt-secret}"
+      BUILT_IN_FORGE_API_URL: "${BUILT_IN_FORGE_API_URL:-}"
+      BUILT_IN_FORGE_API_KEY: "${BUILT_IN_FORGE_API_KEY:-}"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: mysql:8.0
+    container_name: key-manager-db
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "${DB_PORT:-3306}:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:-change-me-root}"
+      MYSQL_DATABASE: "${MYSQL_DATABASE:-key_manager}"
+      MYSQL_USER: "${MYSQL_USER:-key_manager}"
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:-change-me-app}"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD:-change-me-root}"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  mysql_data:

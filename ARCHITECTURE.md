@@ -1,6 +1,6 @@
 # 架构文档
 
-> 本文档由 Manus 自动生成和维护。最后更新于：2026-03-20 11:55
+> 本文档由 Manus 自动生成和维护。最后更新于：2026-03-20 14:17
 
 ## 1. 项目概述
 
@@ -85,6 +85,12 @@ key-manager/
 | `client/src/components/DashboardLayout.tsx` | 侧边栏布局，根据角色动态显示菜单，分在线/离线密钥板块 |
 | `server/routers.ts` | tRPC 路由，包含 keys、accounts、auth、sensors、customers、offline 多组 |
 | `server/db.ts` | 数据库查询函数，含分级权限过滤、设备绑定管理逻辑 |
+| `Dockerfile` | 容器镜像构建入口，安装依赖、执行生产构建并运行 `scripts/start.mjs` |
+| `docker-compose.yml` | 容器编排示例，提供 `app + mysql` 的一体化部署方式 |
+| `.env.docker.example` | 容器部署环境变量模板，包含端口、数据库和 JWT 配置 |
+| `vite.config.ts` | Vite 根配置，指定客户端根目录、别名和构建输出目录 |
+| `scripts/` | 启动包装脚本，为开发和生产入口设置 `NODE_ENV`，兼容 Windows PowerShell |
+| `drizzle.config.ts` | Drizzle CLI 配置，供容器和主机环境执行数据库迁移 |
 | `drizzle/schema.ts` | 7 张表：users、licenseKeys、keyDevices、customers、sensorTypes、offlineKeys、rsaKeyPairs |
 | `shared/crypto.ts` | AES-256-GCM 加密核心，ESM 格式 |
 | `shared/crypto-lib.cjs` | 同上，CJS 格式，供 Electron 项目 `require()` |
@@ -247,6 +253,8 @@ graph TD
 | 2026-03-19 19:25 | main | 设备管理 API | activate（公开）、devices、unbindDevice 三个新端点 |
 | 2026-03-19 19:25 | main | 前端设备管理 | 生成页面添加设备数量限制，列表页面显示设备绑定信息和解绑功能 |
 | 2026-03-19 19:25 | main | 设备绑定测试 | 新增 6 个测试用例，总计 31 个测试全部通过 |
+| 2026-03-20 14:10 | main | 启动与构建配置修复 | 恢复 Windows 兼容启动入口并补回 `vite.config.ts`，修复 `npm run start` 所需的生产构建链路 |
+| 2026-03-20 14:17 | main | 容器部署配置 | 新增 Dockerfile、docker-compose、容器环境变量模板和 Drizzle 配置，支持宝塔容器部署 |
 
 ## 10. 更新日志
 
@@ -257,6 +265,8 @@ graph TD
 | 2026-03-19 19:25 | main | 优化重构 | 在线密钥从“后台绑定设备”改为“客户自助激活绑定”模式：新增 keyDevices 设备绑定表、maxDevices 设备数量限制、公开激活 API、管理员解绑功能 |
 | 2026-03-20 11:55 | main | 优化重构 | 合并客户端 3 个接口为 1 个统一 activate 接口（自动绑定+验证+返回授权信息）；移除 verifyOnDevice 接口 |
 | 2026-03-20 11:55 | main | 新增功能 | API 文档页面添加一键复制功能（HTTP 调用示例 + Python 代码示例） |
+| 2026-03-20 14:10 | main | 配置变更 | 将 `start`/`dev` 脚本改为通过 `scripts/*.mjs` 设置 `NODE_ENV`，并补回 `vite.config.ts` 以恢复生产构建 |
+| 2026-03-20 14:17 | main | 配置变更 | 新增容器化部署文件（Dockerfile、docker-compose、.env.docker.example、drizzle.config.ts），支持宝塔容器构建与运行 |
 
 *变更类型：`新增功能` / `优化重构` / `修复缺陷` / `配置变更` / `文档更新` / `依赖升级` / `初始化`*
 

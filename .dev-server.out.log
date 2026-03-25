@@ -1,0 +1,6 @@
+
+> key-manager@1.0.0 dev E:\key
+> tsx watch scripts/dev.mjs
+
+[Init] Database initialization complete
+Server running on http://localhost:3000/

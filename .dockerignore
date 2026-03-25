@@ -1,0 +1,17 @@
+node_modules
+dist
+.git
+.gitignore
+.env
+.env.*
+!.env.docker.example
+.dev-server.out.log
+.dev-server.err.log
+.prod-server.out.log
+.prod-server.err.log
+.mysql.out.log
+.mysql.err.log
+npm-debug.log*
+pnpm-debug.log*
+*.tmp
+*.bak
