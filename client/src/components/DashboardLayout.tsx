@@ -40,6 +40,7 @@ import {
   Users,
   Wifi,
   WifiOff,
+  Footprints,
 } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
@@ -109,6 +110,9 @@ const menuSections: MenuSection[] = [
       { icon: Users, label: "账号管理", path: "/accounts", roles: ["super_admin", "admin"] },
       { icon: Settings2, label: "传感器管理", path: "/sensor-types", roles: ["super_admin"] },
       { icon: Cpu, label: "MAC 读取", path: "/mac-reader" },
+      { icon: Footprints, label: "脚垫设备码", path: "/foot-device-code" },
+      { icon: Cpu, label: "坐垫设备码", path: "/seat-device-code" },
+      { icon: Cpu, label: "假人设备码", path: "/dummy-device-code" },
       { icon: FileText, label: "API 文档", path: "/api-docs", roles: ["super_admin"] },
     ],
   },
