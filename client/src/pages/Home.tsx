@@ -1,7 +1,7 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { trpc } from "@/lib/trpc";
-import { BarChart3, Building2, Key, KeyRound, ShieldAlert, ShieldCheck, Zap } from "lucide-react";
+import { BarChart3, Building2, FileText, Key, KeyRound, Pause, ShieldAlert, ShieldCheck, ShieldX, Zap } from "lucide-react";
 
 export default function Home() {
   const { user } = useAuth();
@@ -43,6 +43,20 @@ export default function Home() {
       color: "text-chart-5",
       bg: "bg-chart-5/10",
     },
+    {
+      title: "已暂停",
+      value: stats?.suspended ?? 0,
+      icon: Pause,
+      color: "text-yellow-600",
+      bg: "bg-yellow-500/10",
+    },
+    {
+      title: "已吊销",
+      value: stats?.revoked ?? 0,
+      icon: ShieldX,
+      color: "text-red-600",
+      bg: "bg-red-500/10",
+    },
   ];
 
   return (
@@ -56,7 +70,7 @@ export default function Home() {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
         {cards.map((card) => (
           <Card key={card.title} className="shadow-sm hover:shadow-md transition-shadow">
             <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
@@ -101,6 +115,8 @@ export default function Home() {
                 <StatBar label="量产密钥" value={stats?.production ?? 0} total={stats?.total ?? 1} color="bg-chart-3" />
                 <StatBar label="租赁密钥" value={stats?.rental ?? 0} total={stats?.total ?? 1} color="bg-chart-4" />
                 <StatBar label="已过期" value={stats?.expired ?? 0} total={stats?.total ?? 1} color="bg-chart-5" />
+                <StatBar label="已暂停" value={stats?.suspended ?? 0} total={stats?.total ?? 1} color="bg-yellow-500" />
+                <StatBar label="已吊销" value={stats?.revoked ?? 0} total={stats?.total ?? 1} color="bg-red-500" />
               </div>
             )}
           </CardContent>
@@ -144,6 +160,12 @@ export default function Home() {
                 icon={Key}
                 label="账号管理"
                 desc="管理下级账号"
+              />
+              <QuickAction
+                href="/audit"
+                icon={FileText}
+                label="审计日志"
+                desc="查看操作记录"
               />
             </div>
           </CardContent>

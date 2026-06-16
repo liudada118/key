@@ -2,8 +2,10 @@ import { and, count, desc, eq, inArray, like, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
+  auditLogs,
   customers,
   keyDevices,
+  keyStatusHistory,
   licenseKeys,
   offlineKeys,
   rsaKeyPairs,
@@ -14,6 +16,9 @@ import {
   type InsertLicenseKey,
   type InsertOfflineKey,
   type InsertSensorType,
+  type InsertAuditLog,
+  type InsertKeyStatusHistory,
+  type KeyStatus,
 } from "../drizzle/schema";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
@@ -383,14 +388,21 @@ export async function getCustomerKeyCount(customerId: number) {
 export async function insertLicenseKey(data: InsertLicenseKey) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  await db.insert(licenseKeys).values(data);
+  // 生成密钥哈希用于安全比对
+  const keyHash = crypto.createHash("sha256").update(data.keyString as string).digest("hex");
+  await db.insert(licenseKeys).values({ ...data, keyHash, status: "ISSUED" });
 }
 
 export async function insertLicenseKeys(dataList: InsertLicenseKey[]) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   if (dataList.length === 0) return;
-  await db.insert(licenseKeys).values(dataList);
+  const dataWithHash = dataList.map((d) => ({
+    ...d,
+    keyHash: crypto.createHash("sha256").update(d.keyString as string).digest("hex"),
+    status: "ISSUED" as const,
+  }));
+  await db.insert(licenseKeys).values(dataWithHash);
 }
 
 export async function getLicenseKeys(opts: {
@@ -400,6 +412,7 @@ export async function getLicenseKeys(opts: {
   category?: string;
   sensorType?: string;
   isActivated?: boolean;
+  status?: string;
   search?: string;
   customerId?: number;
 }) {
@@ -411,6 +424,7 @@ export async function getLicenseKeys(opts: {
   if (opts.category) conditions.push(eq(licenseKeys.category, opts.category as "production" | "rental"));
   if (opts.sensorType) conditions.push(like(licenseKeys.sensorType, `%${opts.sensorType}%`));
   if (opts.isActivated !== undefined) conditions.push(eq(licenseKeys.isActivated, opts.isActivated));
+  if (opts.status) conditions.push(eq(licenseKeys.status, opts.status as any));
   if (opts.customerId) conditions.push(eq(licenseKeys.customerId, opts.customerId));
   if (opts.search) {
     conditions.push(
@@ -450,8 +464,20 @@ export async function activateLicenseKey(keyString: string, deviceCode?: string,
   const existing = await getLicenseKeyByString(keyString);
   if (!existing) return { success: false, error: "密钥不存在" };
 
+  // 检查密钥生命周期状态
+  if (existing.status === "REVOKED") {
+    return { success: false, error: "密钥已被吊销，无法使用" };
+  }
+  if (existing.status === "SUSPENDED") {
+    return { success: false, error: "密钥已被暂停，请联系管理员" };
+  }
+
   // 检查密钥是否过期
   if (existing.expireTimestamp < Date.now()) {
+    // 自动更新状态为过期
+    if (existing.status !== "EXPIRED") {
+      await db.update(licenseKeys).set({ status: "EXPIRED" }).where(eq(licenseKeys.id, existing.id));
+    }
     return { success: false, error: "密钥已过期" };
   }
 
@@ -495,9 +521,20 @@ export async function activateLicenseKey(keyString: string, deviceCode?: string,
   if (!existing.isActivated) {
     await db.update(licenseKeys).set({
       isActivated: true,
+      status: "ACTIVATED",
       activatedAt: new Date(),
       activatedDevice: trimmedDeviceCode,
     }).where(eq(licenseKeys.id, existing.id));
+    // 记录状态变更历史
+    await recordKeyStatusChange({
+      keyType: "online",
+      keyId: existing.id,
+      fromStatus: existing.status as KeyStatus,
+      toStatus: "ACTIVATED",
+      reason: `设备 ${trimmedDeviceCode} 首次激活`,
+      actorId: 0, // 客户端自助激活
+      actorName: "客户端",
+    });
   }
 
   return {
@@ -538,6 +575,7 @@ export async function unbindKeyDevice(keyId: number, deviceId: number) {
   if (remaining === 0) {
     await db.update(licenseKeys).set({
       isActivated: false,
+      status: "ISSUED",
       activatedAt: null,
       activatedDevice: null,
     }).where(eq(licenseKeys.id, keyId));
@@ -552,6 +590,14 @@ export async function verifyKeyOnDevice(keyString: string, deviceCode: string) {
 
   const key = await getLicenseKeyByString(keyString.trim());
   if (!key) return { valid: false, error: "密钥不存在" };
+
+  // 检查生命周期状态
+  if (key.status === "REVOKED") {
+    return { valid: false, error: "密钥已被吊销", revoked: true };
+  }
+  if (key.status === "SUSPENDED") {
+    return { valid: false, error: "密钥已被暂停", suspended: true };
+  }
 
   // 检查过期
   if (key.expireTimestamp < Date.now()) {
@@ -582,12 +628,12 @@ export async function verifyKeyOnDevice(keyString: string, deviceCode: string) {
 
 export async function getKeyStats(userIds: number[]) {
   const db = await getDb();
-  if (!db) return { total: 0, activated: 0, production: 0, rental: 0, expired: 0 };
+  if (!db) return { total: 0, activated: 0, production: 0, rental: 0, expired: 0, suspended: 0, revoked: 0 };
 
   const where = inArray(licenseKeys.createdById, userIds);
   const now = Date.now();
 
-  const [totalResult, activatedResult, productionResult, rentalResult, expiredResult] = await Promise.all([
+  const [totalResult, activatedResult, productionResult, rentalResult, expiredResult, suspendedResult, revokedResult] = await Promise.all([
     db.select({ count: count() }).from(licenseKeys).where(where),
     db.select({ count: count() }).from(licenseKeys).where(and(where, eq(licenseKeys.isActivated, true))),
     db.select({ count: count() }).from(licenseKeys).where(and(where, eq(licenseKeys.category, "production"))),
@@ -595,6 +641,8 @@ export async function getKeyStats(userIds: number[]) {
     db.select({ count: count() }).from(licenseKeys).where(
       and(where, sql`${licenseKeys.expireTimestamp} < ${now}`)
     ),
+    db.select({ count: count() }).from(licenseKeys).where(and(where, eq(licenseKeys.status, "SUSPENDED"))),
+    db.select({ count: count() }).from(licenseKeys).where(and(where, eq(licenseKeys.status, "REVOKED"))),
   ]);
 
   return {
@@ -603,6 +651,8 @@ export async function getKeyStats(userIds: number[]) {
     production: productionResult[0]?.count ?? 0,
     rental: rentalResult[0]?.count ?? 0,
     expired: expiredResult[0]?.count ?? 0,
+    suspended: suspendedResult[0]?.count ?? 0,
+    revoked: revokedResult[0]?.count ?? 0,
   };
 }
 
@@ -1009,4 +1059,236 @@ export async function getOfflineKeyStats(userIds: number[]) {
     .where(inArray(offlineKeys.createdById, userIds));
 
   return { total: result[0]?.count ?? 0 };
+}
+
+// ===== Key Lifecycle Management =====
+
+/** 记录密钥状态变更历史 */
+export async function recordKeyStatusChange(data: {
+  keyType: "online" | "offline";
+  keyId: number;
+  fromStatus: KeyStatus | null;
+  toStatus: KeyStatus;
+  reason?: string | null;
+  actorId: number;
+  actorName?: string | null;
+}) {
+  const db = await getDb();
+  if (!db) return;
+  await db.insert(keyStatusHistory).values({
+    keyType: data.keyType,
+    keyId: data.keyId,
+    fromStatus: data.fromStatus || undefined,
+    toStatus: data.toStatus,
+    reason: data.reason || null,
+    actorId: data.actorId,
+    actorName: data.actorName || null,
+  });
+}
+
+/** 暂停密钥 */
+export async function suspendLicenseKey(keyId: number, reason: string, actorId: number, actorName: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const key = await getLicenseKeyById(keyId);
+  if (!key) throw new Error("密钥不存在");
+  if (key.status === "REVOKED") throw new Error("已吊销的密钥无法暂停");
+  if (key.status === "SUSPENDED") throw new Error("密钥已处于暂停状态");
+
+  const fromStatus = key.status as KeyStatus;
+  await db.update(licenseKeys).set({
+    status: "SUSPENDED",
+    suspendedAt: new Date(),
+    suspendReason: reason,
+  }).where(eq(licenseKeys.id, keyId));
+
+  await recordKeyStatusChange({
+    keyType: "online",
+    keyId,
+    fromStatus,
+    toStatus: "SUSPENDED",
+    reason,
+    actorId,
+    actorName,
+  });
+
+  return getLicenseKeyById(keyId);
+}
+
+/** 恢复密钥（从暂停状态） */
+export async function restoreLicenseKey(keyId: number, reason: string, actorId: number, actorName: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const key = await getLicenseKeyById(keyId);
+  if (!key) throw new Error("密钥不存在");
+  if (key.status !== "SUSPENDED") throw new Error("只有暂停状态的密钥可以恢复");
+
+  // 恢复到暂停前的状态（如果已激活则恢复为 ACTIVATED，否则为 ISSUED）
+  const toStatus: KeyStatus = key.isActivated ? "ACTIVATED" : "ISSUED";
+  await db.update(licenseKeys).set({
+    status: toStatus,
+    suspendedAt: null,
+    suspendReason: null,
+  }).where(eq(licenseKeys.id, keyId));
+
+  await recordKeyStatusChange({
+    keyType: "online",
+    keyId,
+    fromStatus: "SUSPENDED",
+    toStatus,
+    reason,
+    actorId,
+    actorName,
+  });
+
+  return getLicenseKeyById(keyId);
+}
+
+/** 吊销密钥（永久作废） */
+export async function revokeLicenseKey(keyId: number, reason: string, actorId: number, actorName: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const key = await getLicenseKeyById(keyId);
+  if (!key) throw new Error("密钥不存在");
+  if (key.status === "REVOKED") throw new Error("密钥已处于吊销状态");
+
+  const fromStatus = key.status as KeyStatus;
+  await db.update(licenseKeys).set({
+    status: "REVOKED",
+    revokedAt: new Date(),
+    revokeReason: reason,
+  }).where(eq(licenseKeys.id, keyId));
+
+  await recordKeyStatusChange({
+    keyType: "online",
+    keyId,
+    fromStatus,
+    toStatus: "REVOKED",
+    reason,
+    actorId,
+    actorName,
+  });
+
+  return getLicenseKeyById(keyId);
+}
+
+/** 续期密钥 */
+export async function renewLicenseKey(keyId: number, additionalDays: number, actorId: number, actorName: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const key = await getLicenseKeyById(keyId);
+  if (!key) throw new Error("密钥不存在");
+  if (key.status === "REVOKED") throw new Error("已吊销的密钥无法续期");
+
+  const fromStatus = key.status as KeyStatus;
+  const previousExpire = key.expireTimestamp;
+  // 从当前时间或原到期时间（取较大值）开始计算新到期时间
+  const baseTime = Math.max(Date.now(), previousExpire);
+  const newExpire = baseTime + additionalDays * 24 * 60 * 60 * 1000;
+
+  await db.update(licenseKeys).set({
+    status: "RENEWED",
+    expireTimestamp: newExpire,
+    days: key.days + additionalDays,
+    renewedAt: new Date(),
+    previousExpireTimestamp: previousExpire,
+  }).where(eq(licenseKeys.id, keyId));
+
+  await recordKeyStatusChange({
+    keyType: "online",
+    keyId,
+    fromStatus,
+    toStatus: "RENEWED",
+    reason: `续期 ${additionalDays} 天，新到期时间: ${new Date(newExpire).toISOString()}`,
+    actorId,
+    actorName,
+  });
+
+  return getLicenseKeyById(keyId);
+}
+
+/** 获取密钥状态变更历史 */
+export async function getKeyStatusHistoryList(keyType: "online" | "offline", keyId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(keyStatusHistory)
+    .where(and(eq(keyStatusHistory.keyType, keyType), eq(keyStatusHistory.keyId, keyId)))
+    .orderBy(desc(keyStatusHistory.createdAt));
+}
+
+// ===== Audit Log Helpers =====
+
+/** 写入审计日志 */
+export async function createAuditLog(data: {
+  userId: number;
+  userName?: string | null;
+  action: InsertAuditLog["action"];
+  resourceType?: string | null;
+  resourceId?: number | null;
+  before?: unknown;
+  after?: unknown;
+  description?: string | null;
+  ip?: string | null;
+  userAgent?: string | null;
+}) {
+  const db = await getDb();
+  if (!db) return;
+  await db.insert(auditLogs).values({
+    userId: data.userId,
+    userName: data.userName || null,
+    action: data.action,
+    resourceType: data.resourceType || null,
+    resourceId: data.resourceId || null,
+    before: data.before ? JSON.stringify(data.before) : null,
+    after: data.after ? JSON.stringify(data.after) : null,
+    description: data.description || null,
+    ip: data.ip || null,
+    userAgent: data.userAgent || null,
+  });
+}
+
+/** 查询审计日志（分页） */
+export async function getAuditLogs(opts: {
+  page: number;
+  pageSize: number;
+  userId?: number;
+  action?: string;
+  resourceType?: string;
+  search?: string;
+}) {
+  const db = await getDb();
+  if (!db) return { items: [], total: 0 };
+
+  const conditions: any[] = [];
+  if (opts.userId) conditions.push(eq(auditLogs.userId, opts.userId));
+  if (opts.action) conditions.push(eq(auditLogs.action, opts.action as any));
+  if (opts.resourceType) conditions.push(eq(auditLogs.resourceType, opts.resourceType));
+  if (opts.search) {
+    conditions.push(
+      or(
+        like(auditLogs.userName, `%${opts.search}%`),
+        like(auditLogs.description, `%${opts.search}%`)
+      )!
+    );
+  }
+
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
+  const offset = (opts.page - 1) * opts.pageSize;
+
+  const [items, totalResult] = await Promise.all([
+    db.select().from(auditLogs).where(where).orderBy(desc(auditLogs.createdAt)).limit(opts.pageSize).offset(offset),
+    db.select({ count: count() }).from(auditLogs).where(where),
+  ]);
+
+  return { items, total: totalResult[0]?.count ?? 0 };
+}
+
+/** 密钥脱敏展示（只显示后6位） */
+export function maskKeyString(keyString: string): string {
+  if (keyString.length <= 6) return keyString;
+  return "****" + keyString.slice(-6);
 }

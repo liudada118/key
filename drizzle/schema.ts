@@ -69,6 +69,18 @@ export type Customer = typeof customers.$inferSelect;
 export type InsertCustomer = typeof customers.$inferInsert;
 
 /**
+ * 密钥生命周期状态枚举
+ * ISSUED: 已签发（生成后未激活）
+ * ACTIVATED: 已激活（至少绑定了一台设备）
+ * SUSPENDED: 已暂停（管理员手动暂停）
+ * EXPIRED: 已过期（超过有效期）
+ * RENEWED: 已续期（从过期状态续期）
+ * REVOKED: 已吊销（永久作废）
+ */
+export const KEY_STATUS = ["ISSUED", "ACTIVATED", "SUSPENDED", "EXPIRED", "RENEWED", "REVOKED"] as const;
+export type KeyStatus = typeof KEY_STATUS[number];
+
+/**
  * 密钥表
  * 记录所有生成的密钥，包含类型、状态、激活信息、关联客户
  */
@@ -76,6 +88,8 @@ export const licenseKeys = mysqlTable("licenseKeys", {
   id: int("id").autoincrement().primaryKey(),
   /** 加密后的密钥字符串 (hex) */
   keyString: text("keyString").notNull(),
+  /** 密钥哈希（SHA-256），用于激活时比对 */
+  keyHash: varchar("keyHash", { length: 64 }),
   /** 传感器类型（多选时逗号分隔，或 "all"） */
   sensorType: varchar("sensorType", { length: 512 }).notNull(),
   /** 密钥类型: production(量产) / rental(在线租赁) */
@@ -94,12 +108,26 @@ export const licenseKeys = mysqlTable("licenseKeys", {
   customerName: varchar("customerName", { length: 256 }),
   /** 最大可绑定设备数量（0 表示不限制） */
   maxDevices: int("maxDevices").default(1).notNull(),
-  /** 是否已激活（至少绑定了一台设备） */
+  /** 是否已激活（至少绑定了一台设备）— 兼容旧逻辑 */
   isActivated: boolean("isActivated").default(false).notNull(),
+  /** 密钥生命周期状态 */
+  status: mysqlEnum("status", ["ISSUED", "ACTIVATED", "SUSPENDED", "EXPIRED", "RENEWED", "REVOKED"]).default("ISSUED").notNull(),
   /** 首次激活时间 */
   activatedAt: timestamp("activatedAt"),
   /** 激活设备信息（兼容旧字段，新流程使用 keyDevices 表） */
   activatedDevice: text("activatedDevice"),
+  /** 暂停时间 */
+  suspendedAt: timestamp("suspendedAt"),
+  /** 暂停/吊销原因 */
+  suspendReason: text("suspendReason"),
+  /** 吊销时间 */
+  revokedAt: timestamp("revokedAt"),
+  /** 吊销原因 */
+  revokeReason: text("revokeReason"),
+  /** 续期时间 */
+  renewedAt: timestamp("renewedAt"),
+  /** 续期前的到期时间戳（用于记录历史） */
+  previousExpireTimestamp: bigint("previousExpireTimestamp", { mode: "number" }),
   /** 批次号（批量生成时标识同一批） */
   batchId: varchar("batchId", { length: 64 }),
   /** 备注 */
@@ -207,6 +235,8 @@ export const offlineKeys = mysqlTable("offlineKeys", {
   customerName: varchar("customerName", { length: 256 }),
   /** 备注 */
   remark: text("remark"),
+  /** 密钥生命周期状态 */
+  status: mysqlEnum("status", ["ISSUED", "ACTIVATED", "SUSPENDED", "EXPIRED", "RENEWED", "REVOKED"]).default("ISSUED").notNull(),
   /** 许可证版本 */
   licenseVersion: int("licenseVersion").notNull().default(2),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -214,3 +244,65 @@ export const offlineKeys = mysqlTable("offlineKeys", {
 
 export type OfflineKey = typeof offlineKeys.$inferSelect;
 export type InsertOfflineKey = typeof offlineKeys.$inferInsert;
+
+/**
+ * 密钥状态变更历史表
+ * 记录每次状态流转（谁、什么时候、从什么状态到什么状态、原因）
+ */
+export const keyStatusHistory = mysqlTable("keyStatusHistory", {
+  id: int("id").autoincrement().primaryKey(),
+  /** 密钥类型：online / offline */
+  keyType: mysqlEnum("keyType", ["online", "offline"]).notNull(),
+  /** 关联的密钥 ID */
+  keyId: int("keyId").notNull(),
+  /** 变更前状态 */
+  fromStatus: mysqlEnum("fromStatus", ["ISSUED", "ACTIVATED", "SUSPENDED", "EXPIRED", "RENEWED", "REVOKED"]),
+  /** 变更后状态 */
+  toStatus: mysqlEnum("toStatus", ["ISSUED", "ACTIVATED", "SUSPENDED", "EXPIRED", "RENEWED", "REVOKED"]).notNull(),
+  /** 变更原因 */
+  reason: text("reason"),
+  /** 操作人 ID */
+  actorId: int("actorId").notNull(),
+  /** 操作人名称 */
+  actorName: varchar("actorName", { length: 128 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type KeyStatusHistory = typeof keyStatusHistory.$inferSelect;
+export type InsertKeyStatusHistory = typeof keyStatusHistory.$inferInsert;
+
+/**
+ * 审计日志表
+ * 记录所有增删改查及敏感操作（人、时间、IP、操作前后数据）
+ */
+export const auditLogs = mysqlTable("auditLogs", {
+  id: int("id").autoincrement().primaryKey(),
+  /** 操作人 ID */
+  userId: int("userId").notNull(),
+  /** 操作人名称 */
+  userName: varchar("userName", { length: 128 }),
+  /** 操作类型 */
+  action: mysqlEnum("action", [
+    "CREATE", "UPDATE", "DELETE", "ACTIVATE",
+    "SUSPEND", "REVOKE", "RENEW", "RESTORE",
+    "EXPORT", "LOGIN", "LOGOUT", "UNBIND",
+  ]).notNull(),
+  /** 资源类型 */
+  resourceType: varchar("resourceType", { length: 64 }),
+  /** 资源 ID */
+  resourceId: int("resourceId"),
+  /** 操作前数据快照 (JSON) */
+  before: text("before"),
+  /** 操作后数据快照 (JSON) */
+  after: text("after"),
+  /** 操作描述 */
+  description: text("description"),
+  /** 客户端 IP */
+  ip: varchar("ip", { length: 64 }),
+  /** User Agent */
+  userAgent: varchar("userAgent", { length: 512 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type AuditLog = typeof auditLogs.$inferSelect;
+export type InsertAuditLog = typeof auditLogs.$inferInsert;

@@ -18,6 +18,7 @@ import ApiDocs from "./pages/ApiDocs";
 import FootDeviceCode from "./pages/FootDeviceCode";
 import SeatDeviceCode from "./pages/SeatDeviceCode";
 import DummyDeviceCode from "./pages/DummyDeviceCode";
+import AuditLog from "./pages/AuditLog";
 import Login from "./pages/Login";
 import { useAuth } from "./_core/hooks/useAuth";
 import { Loader2 } from "lucide-react";
@@ -39,6 +40,7 @@ function AuthenticatedRouter() {
         <Route path={"/foot-device-code"} component={FootDeviceCode} />
         <Route path={"/seat-device-code"} component={SeatDeviceCode} />
         <Route path={"/dummy-device-code"} component={DummyDeviceCode} />
+        <Route path={"/audit"} component={AuditLog} />
         <Route path={"/404"} component={NotFound} />
         <Route component={NotFound} />
       </Switch>

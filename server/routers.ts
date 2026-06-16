@@ -8,7 +8,9 @@ import {
   activateLicenseKey,
   changePassword,
   createAccount,
+  createAuditLog,
   createCustomer,
+  getAuditLogs,
   getAllCustomers,
   getAllUsers,
   getCustomerById,
@@ -17,11 +19,17 @@ import {
   getKeyDeviceCount,
   getKeyDevices,
   getKeyStats,
+  getKeyStatusHistoryList,
   getLicenseKeyById,
   getLicenseKeyByString,
   getLicenseKeys,
   getSubordinateUsers,
   getUserAndSubordinateIds,
+  maskKeyString,
+  renewLicenseKey,
+  restoreLicenseKey,
+  revokeLicenseKey,
+  suspendLicenseKey,
   unbindKeyDevice,
   updateLicenseKeyCategory,
   getUserById,
@@ -526,6 +534,7 @@ export const appRouter = router({
           category: z.string().optional(),
           sensorType: z.string().optional(),
           isActivated: z.boolean().optional(),
+          status: z.string().optional(),
           search: z.string().optional(),
           customerId: z.number().optional(),
         })
@@ -539,6 +548,7 @@ export const appRouter = router({
           category: input.category,
           sensorType: input.sensorType,
           isActivated: input.isActivated,
+          status: input.status,
           search: input.search,
           customerId: input.customerId,
         });
@@ -703,6 +713,17 @@ export const appRouter = router({
           }
         }
 
+        // 记录导出审计日志
+        await createAuditLog({
+          userId: ctx.user.id,
+          userName: ctx.user.name || ctx.user.username,
+          action: "EXPORT",
+          resourceType: "licenseKey",
+          description: `导出 ${items.length} 条密钥记录（${input.format} 格式）`,
+          ip: ctx.req?.headers?.['x-forwarded-for'] as string || ctx.req?.socket?.remoteAddress || null,
+          userAgent: ctx.req?.headers?.['user-agent'] || null,
+        });
+
         if (input.format === "json") {
           return items.map((k) => ({
             密钥: k.keyString,
@@ -710,6 +731,7 @@ export const appRouter = router({
             密钥类型: k.category === "production" ? "量产密钥" : "在线租赁密钥",
             有效期天数: k.days,
             到期时间: new Date(k.expireTimestamp).toLocaleString("zh-CN"),
+            状态: k.status,
             是否已激活: k.isActivated ? "是" : "否",
             激活时间: k.activatedAt ? new Date(k.activatedAt).toLocaleString("zh-CN") : "",
             客户: k.customerName || "",
@@ -719,7 +741,7 @@ export const appRouter = router({
           }));
         }
 
-        const header = "密钥,传感器类型,密钥类型,有效期天数,到期时间,是否已激活,激活时间,客户,创建者,创建时间,备注";
+        const header = "密钥,传感器类型,密钥类型,有效期天数,到期时间,状态,是否已激活,激活时间,客户,创建者,创建时间,备注";
         const rows = items.map((k) =>
           [
             k.keyString,
@@ -727,6 +749,7 @@ export const appRouter = router({
             k.category === "production" ? "量产密钥" : "在线租赁密钥",
             k.days,
             new Date(k.expireTimestamp).toLocaleString("zh-CN"),
+            k.status,
             k.isActivated ? "是" : "否",
             k.activatedAt ? new Date(k.activatedAt).toLocaleString("zh-CN") : "",
             k.customerName || "",
@@ -736,6 +759,127 @@ export const appRouter = router({
           ].join(",")
         );
         return header + "\n" + rows.join("\n");
+      }),
+
+    // ===== 密钥生命周期管理 =====
+
+    /** 暂停密钥 */
+    suspend: adminProcedure
+      .input(z.object({
+        keyId: z.number(),
+        reason: z.string().min(1, "暂停原因不能为空"),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const result = await suspendLicenseKey(input.keyId, input.reason, ctx.user.id, ctx.user.name || ctx.user.username);
+        await createAuditLog({
+          userId: ctx.user.id,
+          userName: ctx.user.name || ctx.user.username,
+          action: "SUSPEND",
+          resourceType: "licenseKey",
+          resourceId: input.keyId,
+          description: `暂停密钥 #${input.keyId}，原因: ${input.reason}`,
+          ip: ctx.req?.headers?.['x-forwarded-for'] as string || ctx.req?.socket?.remoteAddress || null,
+          userAgent: ctx.req?.headers?.['user-agent'] || null,
+        });
+        return { success: true, key: result };
+      }),
+
+    /** 恢复密钥（从暂停状态） */
+    restore: adminProcedure
+      .input(z.object({
+        keyId: z.number(),
+        reason: z.string().min(1, "恢复原因不能为空"),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const result = await restoreLicenseKey(input.keyId, input.reason, ctx.user.id, ctx.user.name || ctx.user.username);
+        await createAuditLog({
+          userId: ctx.user.id,
+          userName: ctx.user.name || ctx.user.username,
+          action: "RESTORE",
+          resourceType: "licenseKey",
+          resourceId: input.keyId,
+          description: `恢复密钥 #${input.keyId}，原因: ${input.reason}`,
+          ip: ctx.req?.headers?.['x-forwarded-for'] as string || ctx.req?.socket?.remoteAddress || null,
+          userAgent: ctx.req?.headers?.['user-agent'] || null,
+        });
+        return { success: true, key: result };
+      }),
+
+    /** 吊销密钥（永久作废） */
+    revoke: adminProcedure
+      .input(z.object({
+        keyId: z.number(),
+        reason: z.string().min(1, "吊销原因不能为空"),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const result = await revokeLicenseKey(input.keyId, input.reason, ctx.user.id, ctx.user.name || ctx.user.username);
+        await createAuditLog({
+          userId: ctx.user.id,
+          userName: ctx.user.name || ctx.user.username,
+          action: "REVOKE",
+          resourceType: "licenseKey",
+          resourceId: input.keyId,
+          description: `吊销密钥 #${input.keyId}，原因: ${input.reason}`,
+          ip: ctx.req?.headers?.['x-forwarded-for'] as string || ctx.req?.socket?.remoteAddress || null,
+          userAgent: ctx.req?.headers?.['user-agent'] || null,
+        });
+        return { success: true, key: result };
+      }),
+
+    /** 续期密钥 */
+    renew: adminProcedure
+      .input(z.object({
+        keyId: z.number(),
+        additionalDays: z.number().min(1).max(36500),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const result = await renewLicenseKey(input.keyId, input.additionalDays, ctx.user.id, ctx.user.name || ctx.user.username);
+        await createAuditLog({
+          userId: ctx.user.id,
+          userName: ctx.user.name || ctx.user.username,
+          action: "RENEW",
+          resourceType: "licenseKey",
+          resourceId: input.keyId,
+          description: `续期密钥 #${input.keyId}，增加 ${input.additionalDays} 天`,
+          ip: ctx.req?.headers?.['x-forwarded-for'] as string || ctx.req?.socket?.remoteAddress || null,
+          userAgent: ctx.req?.headers?.['user-agent'] || null,
+        });
+        return { success: true, key: result };
+      }),
+
+    /** 获取密钥状态变更历史 */
+    statusHistory: protectedProcedure
+      .input(z.object({
+        keyId: z.number(),
+        keyType: z.enum(["online", "offline"]).default("online"),
+      }))
+      .query(async ({ input }) => {
+        return getKeyStatusHistoryList(input.keyType, input.keyId);
+      }),
+  }),
+
+  // ===== 审计日志 =====
+  audit: router({
+    list: superAdminProcedure
+      .input(
+        z.object({
+          page: z.number().min(1).default(1),
+          pageSize: z.number().min(1).max(100).default(20),
+          userId: z.number().optional(),
+          action: z.string().optional(),
+          resourceType: z.string().optional(),
+          search: z.string().optional(),
+        })
+      )
+      .query(async ({ input }) => {
+        return getAuditLogs({
+          page: input.page,
+          pageSize: input.pageSize,
+          userId: input.userId,
+          action: input.action,
+          resourceType: input.resourceType,
+          search: input.search,
+        });
       }),
   }),
 });

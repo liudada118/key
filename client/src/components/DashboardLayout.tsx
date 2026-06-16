@@ -113,6 +113,7 @@ const menuSections: MenuSection[] = [
       { icon: Footprints, label: "脚垫设备码", path: "/foot-device-code" },
       { icon: Cpu, label: "坐垫设备码", path: "/seat-device-code" },
       { icon: Cpu, label: "假人设备码", path: "/dummy-device-code" },
+      { icon: FileText, label: "审计日志", path: "/audit", roles: ["super_admin"] },
       { icon: FileText, label: "API 文档", path: "/api-docs", roles: ["super_admin"] },
     ],
   },
