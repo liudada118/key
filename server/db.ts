@@ -1,15 +1,22 @@
-import { and, count, desc, eq, inArray, like, or, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, isNull, like, lte, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
+  alerts,
+  alertRules,
+  approvals,
   auditLogs,
+  contracts,
   customers,
+  deviceHeartbeats,
   keyDevices,
   keyStatusHistory,
   licenseKeys,
+  offlineBlacklist,
   offlineKeys,
   rsaKeyPairs,
   sensorTypes,
+  teams,
   users,
   type InsertCustomer,
   type InsertKeyDevice,
@@ -19,6 +26,9 @@ import {
   type InsertAuditLog,
   type InsertKeyStatusHistory,
   type KeyStatus,
+  type InsertContract,
+  type InsertAlert,
+  type InsertApproval,
 } from "../drizzle/schema";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
@@ -1291,4 +1301,546 @@ export async function getAuditLogs(opts: {
 export function maskKeyString(keyString: string): string {
   if (keyString.length <= 6) return keyString;
   return "****" + keyString.slice(-6);
+}
+
+
+// ===================================================================
+// 阶段二：心跳校验机制
+// ===================================================================
+
+/** 记录/更新设备心跳 */
+export async function recordHeartbeat(data: {
+  keyId: number;
+  keyType?: "online" | "offline";
+  deviceCode: string;
+  clientIp?: string;
+  clientVersion?: string;
+}) {
+  const db = await getDb();
+  if (!db) return null;
+
+  // 尝试更新已有记录
+  const existing = await db.select().from(deviceHeartbeats)
+    .where(and(
+      eq(deviceHeartbeats.keyId, data.keyId),
+      eq(deviceHeartbeats.keyType, data.keyType || "online"),
+      eq(deviceHeartbeats.deviceCode, data.deviceCode),
+    ))
+    .limit(1);
+
+  if (existing.length > 0) {
+    await db.update(deviceHeartbeats)
+      .set({
+        lastHeartbeatAt: new Date(),
+        heartbeatCount: sql`${deviceHeartbeats.heartbeatCount} + 1`,
+        clientIp: data.clientIp || null,
+        clientVersion: data.clientVersion || null,
+      })
+      .where(eq(deviceHeartbeats.id, existing[0].id));
+    return { ...existing[0], heartbeatCount: existing[0].heartbeatCount + 1, lastHeartbeatAt: new Date() };
+  }
+
+  // 新建心跳记录
+  const [result] = await db.insert(deviceHeartbeats).values({
+    keyId: data.keyId,
+    keyType: data.keyType || "online",
+    deviceCode: data.deviceCode,
+    clientIp: data.clientIp || null,
+    clientVersion: data.clientVersion || null,
+  });
+  return { id: result.insertId, ...data, heartbeatCount: 1, lastHeartbeatAt: new Date() };
+}
+
+/** 获取密钥的心跳记录 */
+export async function getKeyHeartbeats(keyId: number, keyType: "online" | "offline" = "online") {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(deviceHeartbeats)
+    .where(and(
+      eq(deviceHeartbeats.keyId, keyId),
+      eq(deviceHeartbeats.keyType, keyType),
+    ))
+    .orderBy(desc(deviceHeartbeats.lastHeartbeatAt));
+}
+
+/** 获取心跳丢失的设备（超过指定小时数未心跳） */
+export async function getLostHeartbeatDevices(hoursThreshold: number = 48) {
+  const db = await getDb();
+  if (!db) return [];
+  const threshold = new Date(Date.now() - hoursThreshold * 60 * 60 * 1000);
+  return db.select().from(deviceHeartbeats)
+    .where(lte(deviceHeartbeats.lastHeartbeatAt, threshold));
+}
+
+// ===================================================================
+// 阶段二：离线密钥黑名单
+// ===================================================================
+
+/** 添加机器码到黑名单 */
+export async function addToBlacklist(data: {
+  machineId: string;
+  offlineKeyId?: number;
+  reason?: string;
+  addedById: number;
+  addedByName?: string;
+}) {
+  const db = await getDb();
+  if (!db) return null;
+  const [result] = await db.insert(offlineBlacklist).values({
+    machineId: data.machineId,
+    offlineKeyId: data.offlineKeyId || null,
+    reason: data.reason || null,
+    addedById: data.addedById,
+    addedByName: data.addedByName || null,
+  });
+  return { id: result.insertId, ...data };
+}
+
+/** 从黑名单移除 */
+export async function removeFromBlacklist(id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(offlineBlacklist).set({ isActive: false }).where(eq(offlineBlacklist.id, id));
+}
+
+/** 获取黑名单列表 */
+export async function getBlacklist(opts?: { activeOnly?: boolean }) {
+  const db = await getDb();
+  if (!db) return [];
+  const conditions: any[] = [];
+  if (opts?.activeOnly !== false) {
+    conditions.push(eq(offlineBlacklist.isActive, true));
+  }
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
+  return db.select().from(offlineBlacklist).where(where).orderBy(desc(offlineBlacklist.createdAt));
+}
+
+/** 检查机器码是否在黑名单中 */
+export async function isInBlacklist(machineId: string): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const result = await db.select({ count: count() }).from(offlineBlacklist)
+    .where(and(
+      eq(offlineBlacklist.machineId, machineId),
+      eq(offlineBlacklist.isActive, true),
+    ));
+  return (result[0]?.count ?? 0) > 0;
+}
+
+/** 导出黑名单为 JSON（供客户端导入） */
+export async function exportBlacklistForClient() {
+  const db = await getDb();
+  if (!db) return { version: Date.now(), items: [] };
+  const items = await db.select({
+    machineId: offlineBlacklist.machineId,
+    offlineKeyId: offlineBlacklist.offlineKeyId,
+    reason: offlineBlacklist.reason,
+    addedAt: offlineBlacklist.createdAt,
+  }).from(offlineBlacklist).where(eq(offlineBlacklist.isActive, true));
+  return { version: Date.now(), items };
+}
+
+// ===================================================================
+// 阶段三：合同管理
+// ===================================================================
+
+/** 创建合同 */
+export async function createContract(data: {
+  contractNo: string;
+  title: string;
+  customerId?: number;
+  customerName?: string;
+  signDate?: string;
+  startDate?: string;
+  endDate?: string;
+  totalKeys?: number;
+  remark?: string;
+  createdById: number;
+  createdByName?: string;
+}) {
+  const db = await getDb();
+  if (!db) return null;
+  const [result] = await db.insert(contracts).values({
+    contractNo: data.contractNo,
+    title: data.title,
+    customerId: data.customerId || null,
+    customerName: data.customerName || null,
+    signDate: data.signDate ? new Date(data.signDate) : null,
+    startDate: data.startDate ? new Date(data.startDate) : null,
+    endDate: data.endDate ? new Date(data.endDate) : null,
+    totalKeys: data.totalKeys || 0,
+    remark: data.remark || null,
+    createdById: data.createdById,
+    createdByName: data.createdByName || null,
+    status: "DRAFT",
+  });
+  return { id: result.insertId, ...data };
+}
+
+/** 更新合同 */
+export async function updateContract(id: number, data: Partial<{
+  title: string;
+  customerId: number | null;
+  customerName: string | null;
+  signDate: string | null;
+  startDate: string | null;
+  endDate: string | null;
+  totalKeys: number;
+  status: "DRAFT" | "ACTIVE" | "EXPIRED" | "TERMINATED";
+  remark: string | null;
+}>) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(contracts).set(data as any).where(eq(contracts.id, id));
+}
+
+/** 获取合同列表 */
+export async function getContracts(opts?: {
+  customerId?: number;
+  status?: string;
+  page?: number;
+  pageSize?: number;
+}) {
+  const db = await getDb();
+  if (!db) return { items: [], total: 0 };
+  const conditions: any[] = [];
+  if (opts?.customerId) conditions.push(eq(contracts.customerId, opts.customerId));
+  if (opts?.status) conditions.push(eq(contracts.status, opts.status as any));
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
+  const page = opts?.page || 1;
+  const pageSize = opts?.pageSize || 50;
+  const offset = (page - 1) * pageSize;
+
+  const [items, totalResult] = await Promise.all([
+    db.select().from(contracts).where(where).orderBy(desc(contracts.createdAt)).limit(pageSize).offset(offset),
+    db.select({ count: count() }).from(contracts).where(where),
+  ]);
+  return { items, total: totalResult[0]?.count ?? 0 };
+}
+
+/** 获取单个合同 */
+export async function getContractById(id: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const result = await db.select().from(contracts).where(eq(contracts.id, id)).limit(1);
+  return result[0] || null;
+}
+
+/** 获取合同通过编号 */
+export async function getContractByNo(contractNo: string) {
+  const db = await getDb();
+  if (!db) return null;
+  const result = await db.select().from(contracts).where(eq(contracts.contractNo, contractNo)).limit(1);
+  return result[0] || null;
+}
+
+/** 增加合同已用密钥数 */
+export async function incrementContractUsedKeys(contractId: number, count_: number = 1) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(contracts).set({
+    usedKeys: sql`${contracts.usedKeys} + ${count_}`,
+  }).where(eq(contracts.id, contractId));
+}
+
+// ===================================================================
+// 阶段三：团队管理
+// ===================================================================
+
+/** 创建团队 */
+export async function createTeam(data: {
+  name: string;
+  description?: string;
+  leaderId?: number;
+  leaderName?: string;
+  parentTeamId?: number;
+}) {
+  const db = await getDb();
+  if (!db) return null;
+  const [result] = await db.insert(teams).values({
+    name: data.name,
+    description: data.description || null,
+    leaderId: data.leaderId || null,
+    leaderName: data.leaderName || null,
+    parentTeamId: data.parentTeamId || null,
+  });
+  return { id: result.insertId, ...data };
+}
+
+/** 更新团队 */
+export async function updateTeam(id: number, data: Partial<{
+  name: string;
+  description: string | null;
+  leaderId: number | null;
+  leaderName: string | null;
+  parentTeamId: number | null;
+  isActive: boolean;
+}>) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(teams).set(data as any).where(eq(teams.id, id));
+}
+
+/** 获取所有团队 */
+export async function getTeams(activeOnly: boolean = true) {
+  const db = await getDb();
+  if (!db) return [];
+  if (activeOnly) {
+    return db.select().from(teams).where(eq(teams.isActive, true)).orderBy(teams.name);
+  }
+  return db.select().from(teams).orderBy(teams.name);
+}
+
+/** 获取团队成员 */
+export async function getTeamMembers(teamId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select({
+    id: users.id,
+    username: users.username,
+    name: users.name,
+    role: users.role,
+    isActive: users.isActive,
+  }).from(users).where(eq(users.teamId, teamId));
+}
+
+/** 设置用户团队 */
+export async function setUserTeam(userId: number, teamId: number | null) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(users).set({ teamId }).where(eq(users.id, userId));
+}
+
+// ===================================================================
+// 阶段四：告警与通知
+// ===================================================================
+
+/** 创建告警规则 */
+export async function createAlertRule(data: {
+  name: string;
+  type: "EXPIRY_WARNING" | "HEARTBEAT_LOST" | "QUOTA_EXCEEDED" | "CONTRACT_EXPIRY";
+  config: object;
+  createdById: number;
+}) {
+  const db = await getDb();
+  if (!db) return null;
+  const [result] = await db.insert(alertRules).values({
+    name: data.name,
+    type: data.type,
+    config: JSON.stringify(data.config),
+    createdById: data.createdById,
+  });
+  return { id: result.insertId, ...data };
+}
+
+/** 获取告警规则 */
+export async function getAlertRules(activeOnly: boolean = true) {
+  const db = await getDb();
+  if (!db) return [];
+  if (activeOnly) {
+    return db.select().from(alertRules).where(eq(alertRules.isActive, true));
+  }
+  return db.select().from(alertRules);
+}
+
+/** 更新告警规则 */
+export async function updateAlertRule(id: number, data: Partial<{
+  name: string;
+  config: string;
+  isActive: boolean;
+}>) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(alertRules).set(data as any).where(eq(alertRules.id, id));
+}
+
+/** 创建告警记录 */
+export async function createAlert(data: {
+  ruleId?: number;
+  type: "EXPIRY_WARNING" | "HEARTBEAT_LOST" | "QUOTA_EXCEEDED" | "CONTRACT_EXPIRY";
+  level?: "INFO" | "WARNING" | "CRITICAL";
+  title: string;
+  content?: string;
+  resourceType?: string;
+  resourceId?: number;
+}) {
+  const db = await getDb();
+  if (!db) return null;
+  const [result] = await db.insert(alerts).values({
+    ruleId: data.ruleId || null,
+    type: data.type,
+    level: data.level || "WARNING",
+    title: data.title,
+    content: data.content || null,
+    resourceType: data.resourceType || null,
+    resourceId: data.resourceId || null,
+  });
+  return { id: result.insertId, ...data };
+}
+
+/** 获取告警列表 */
+export async function getAlerts(opts?: {
+  unreadOnly?: boolean;
+  unresolvedOnly?: boolean;
+  type?: string;
+  page?: number;
+  pageSize?: number;
+}) {
+  const db = await getDb();
+  if (!db) return { items: [], total: 0 };
+  const conditions: any[] = [];
+  if (opts?.unreadOnly) conditions.push(eq(alerts.isRead, false));
+  if (opts?.unresolvedOnly) conditions.push(eq(alerts.isResolved, false));
+  if (opts?.type) conditions.push(eq(alerts.type, opts.type as any));
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
+  const page = opts?.page || 1;
+  const pageSize = opts?.pageSize || 50;
+  const offset = (page - 1) * pageSize;
+
+  const [items, totalResult] = await Promise.all([
+    db.select().from(alerts).where(where).orderBy(desc(alerts.createdAt)).limit(pageSize).offset(offset),
+    db.select({ count: count() }).from(alerts).where(where),
+  ]);
+  return { items, total: totalResult[0]?.count ?? 0 };
+}
+
+/** 标记告警已读 */
+export async function markAlertRead(id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(alerts).set({ isRead: true }).where(eq(alerts.id, id));
+}
+
+/** 标记告警已处理 */
+export async function resolveAlert(id: number, resolvedById: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(alerts).set({
+    isResolved: true,
+    resolvedAt: new Date(),
+    resolvedById,
+  }).where(eq(alerts.id, id));
+}
+
+/** 获取未读告警数量 */
+export async function getUnreadAlertCount() {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db.select({ count: count() }).from(alerts)
+    .where(eq(alerts.isRead, false));
+  return result[0]?.count ?? 0;
+}
+
+/** 扫描即将到期的密钥（用于定时任务） */
+export async function scanExpiringKeys(daysBeforeExpiry: number = 7) {
+  const db = await getDb();
+  if (!db) return [];
+  const now = Date.now();
+  const threshold = now + daysBeforeExpiry * 24 * 60 * 60 * 1000;
+  return db.select().from(licenseKeys)
+    .where(and(
+      lte(licenseKeys.expireTimestamp, threshold),
+      gte(licenseKeys.expireTimestamp, now),
+      inArray(licenseKeys.status, ["ISSUED", "ACTIVATED", "RENEWED"]),
+    ));
+}
+
+/** 扫描即将到期的合同 */
+export async function scanExpiringContracts(daysBeforeExpiry: number = 30) {
+  const db = await getDb();
+  if (!db) return [];
+  const threshold = new Date(Date.now() + daysBeforeExpiry * 24 * 60 * 60 * 1000);
+  const today = new Date();
+  return db.select().from(contracts)
+    .where(and(
+      lte(contracts.endDate, threshold),
+      gte(contracts.endDate, today),
+      eq(contracts.status, "ACTIVE"),
+    ));
+}
+
+// ===================================================================
+// 审批流
+// ===================================================================
+
+/** 创建审批请求 */
+export async function createApproval(data: {
+  type: "REVOKE" | "BATCH_GENERATE" | "DELETE" | "SUSPEND";
+  requesterId: number;
+  requesterName?: string;
+  resourceType: string;
+  resourceId?: number;
+  requestData?: object;
+  reason?: string;
+}) {
+  const db = await getDb();
+  if (!db) return null;
+  const [result] = await db.insert(approvals).values({
+    type: data.type,
+    requesterId: data.requesterId,
+    requesterName: data.requesterName || null,
+    resourceType: data.resourceType,
+    resourceId: data.resourceId || null,
+    requestData: data.requestData ? JSON.stringify(data.requestData) : null,
+    reason: data.reason || null,
+  });
+  return { id: result.insertId, ...data };
+}
+
+/** 审批通过 */
+export async function approveApproval(id: number, approverId: number, approverName?: string) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(approvals).set({
+    status: "APPROVED",
+    approverId,
+    approverName: approverName || null,
+    resolvedAt: new Date(),
+  }).where(eq(approvals.id, id));
+}
+
+/** 审批拒绝 */
+export async function rejectApproval(id: number, approverId: number, approverName?: string, rejectReason?: string) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(approvals).set({
+    status: "REJECTED",
+    approverId,
+    approverName: approverName || null,
+    rejectReason: rejectReason || null,
+    resolvedAt: new Date(),
+  }).where(eq(approvals.id, id));
+}
+
+/** 获取审批列表 */
+export async function getApprovals(opts?: {
+  status?: string;
+  requesterId?: number;
+  page?: number;
+  pageSize?: number;
+}) {
+  const db = await getDb();
+  if (!db) return { items: [], total: 0 };
+  const conditions: any[] = [];
+  if (opts?.status) conditions.push(eq(approvals.status, opts.status as any));
+  if (opts?.requesterId) conditions.push(eq(approvals.requesterId, opts.requesterId));
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
+  const page = opts?.page || 1;
+  const pageSize = opts?.pageSize || 50;
+  const offset = (page - 1) * pageSize;
+
+  const [items, totalResult] = await Promise.all([
+    db.select().from(approvals).where(where).orderBy(desc(approvals.requestedAt)).limit(pageSize).offset(offset),
+    db.select({ count: count() }).from(approvals).where(where),
+  ]);
+  return { items, total: totalResult[0]?.count ?? 0 };
+}
+
+/** 获取待审批数量 */
+export async function getPendingApprovalCount() {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db.select({ count: count() }).from(approvals)
+    .where(eq(approvals.status, "PENDING"));
+  return result[0]?.count ?? 0;
 }

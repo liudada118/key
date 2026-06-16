@@ -1,6 +1,7 @@
 import {
   bigint,
   boolean,
+  date,
   int,
   mysqlEnum,
   mysqlTable,
@@ -27,6 +28,8 @@ export const users = mysqlTable("users", {
   role: mysqlEnum("role", ["user", "admin", "super_admin"]).default("user").notNull(),
   /** 创建者 ID，super_admin 为 null */
   createdById: int("createdById"),
+  /** 所属团队 ID */
+  teamId: int("teamId"),
   /** 账号是否启用 */
   isActive: boolean("isActive").default(true).notNull(),
   /** 账号备注 */
@@ -38,6 +41,31 @@ export const users = mysqlTable("users", {
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
+
+/**
+ * 团队表
+ * 支持多级团队结构，用于数据域权限隔离
+ */
+export const teams = mysqlTable("teams", {
+  id: int("id").autoincrement().primaryKey(),
+  /** 团队名称 */
+  name: varchar("name", { length: 128 }).notNull(),
+  /** 团队描述 */
+  description: text("description"),
+  /** 团队负责人 ID */
+  leaderId: int("leaderId"),
+  /** 负责人名称 */
+  leaderName: varchar("leaderName", { length: 128 }),
+  /** 上级团队 ID（支持多级） */
+  parentTeamId: int("parentTeamId"),
+  /** 是否启用 */
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type Team = typeof teams.$inferSelect;
+export type InsertTeam = typeof teams.$inferInsert;
 
 /**
  * 客户表
@@ -67,6 +95,45 @@ export const customers = mysqlTable("customers", {
 
 export type Customer = typeof customers.$inferSelect;
 export type InsertCustomer = typeof customers.$inferInsert;
+
+/**
+ * 合同表
+ * 管理客户合同，密钥生成需关联合同
+ */
+export const contracts = mysqlTable("contracts", {
+  id: int("id").autoincrement().primaryKey(),
+  /** 合同编号（唯一） */
+  contractNo: varchar("contractNo", { length: 128 }).notNull().unique(),
+  /** 合同标题 */
+  title: varchar("title", { length: 256 }).notNull(),
+  /** 关联客户 ID */
+  customerId: int("customerId"),
+  /** 客户名称（冗余） */
+  customerName: varchar("customerName", { length: 256 }),
+  /** 签订日期 */
+  signDate: date("signDate"),
+  /** 生效日期 */
+  startDate: date("startDate"),
+  /** 结束日期 */
+  endDate: date("endDate"),
+  /** 合同约定密钥总数 */
+  totalKeys: int("totalKeys").default(0).notNull(),
+  /** 已使用密钥数 */
+  usedKeys: int("usedKeys").default(0).notNull(),
+  /** 合同状态 */
+  status: mysqlEnum("status", ["DRAFT", "ACTIVE", "EXPIRED", "TERMINATED"]).default("DRAFT").notNull(),
+  /** 备注 */
+  remark: text("remark"),
+  /** 创建者 ID */
+  createdById: int("createdById").notNull(),
+  /** 创建者名称 */
+  createdByName: varchar("createdByName", { length: 128 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type Contract = typeof contracts.$inferSelect;
+export type InsertContract = typeof contracts.$inferInsert;
 
 /**
  * 密钥生命周期状态枚举
@@ -104,6 +171,10 @@ export const licenseKeys = mysqlTable("licenseKeys", {
   createdByName: varchar("createdByName", { length: 128 }),
   /** 关联客户 ID */
   customerId: int("customerId"),
+  /** 关联合同 ID */
+  contractId: int("contractId"),
+  /** 合同编号（冗余） */
+  contractNo: varchar("contractNo", { length: 128 }),
   /** 客户名称（冗余存储，方便查询） */
   customerName: varchar("customerName", { length: 256 }),
   /** 最大可绑定设备数量（0 表示不限制） */
@@ -159,6 +230,57 @@ export const keyDevices = mysqlTable("keyDevices", {
 
 export type KeyDevice = typeof keyDevices.$inferSelect;
 export type InsertKeyDevice = typeof keyDevices.$inferInsert;
+
+/**
+ * 设备心跳表
+ * 记录在线密钥绑定设备的心跳信息，用于持续校验
+ */
+export const deviceHeartbeats = mysqlTable("deviceHeartbeats", {
+  id: int("id").autoincrement().primaryKey(),
+  /** 关联的密钥 ID */
+  keyId: int("keyId").notNull(),
+  /** 密钥类型 */
+  keyType: mysqlEnum("keyType", ["online", "offline"]).default("online").notNull(),
+  /** 设备码 */
+  deviceCode: varchar("deviceCode", { length: 256 }).notNull(),
+  /** 最后心跳时间 */
+  lastHeartbeatAt: timestamp("lastHeartbeatAt").defaultNow().notNull(),
+  /** 累计心跳次数 */
+  heartbeatCount: int("heartbeatCount").default(1).notNull(),
+  /** 客户端 IP */
+  clientIp: varchar("clientIp", { length: 64 }),
+  /** 客户端版本 */
+  clientVersion: varchar("clientVersion", { length: 64 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type DeviceHeartbeat = typeof deviceHeartbeats.$inferSelect;
+export type InsertDeviceHeartbeat = typeof deviceHeartbeats.$inferInsert;
+
+/**
+ * 离线密钥黑名单表
+ * 记录被吊销的机器码，客户端需导入此黑名单
+ */
+export const offlineBlacklist = mysqlTable("offlineBlacklist", {
+  id: int("id").autoincrement().primaryKey(),
+  /** 被吊销的机器码 */
+  machineId: varchar("machineId", { length: 32 }).notNull(),
+  /** 关联的离线密钥 ID */
+  offlineKeyId: int("offlineKeyId"),
+  /** 加入黑名单原因 */
+  reason: text("reason"),
+  /** 添加人 ID */
+  addedById: int("addedById").notNull(),
+  /** 添加人名称 */
+  addedByName: varchar("addedByName", { length: 128 }),
+  /** 是否生效 */
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type OfflineBlacklist = typeof offlineBlacklist.$inferSelect;
+export type InsertOfflineBlacklist = typeof offlineBlacklist.$inferInsert;
 
 /**
  * 传感器类型表
@@ -231,15 +353,28 @@ export const offlineKeys = mysqlTable("offlineKeys", {
   createdByName: varchar("createdByName", { length: 128 }),
   /** 关联客户 ID */
   customerId: int("customerId"),
+  /** 关联合同 ID */
+  contractId: int("contractId"),
+  /** 合同编号（冗余） */
+  contractNo: varchar("contractNo", { length: 128 }),
   /** 客户名称 */
   customerName: varchar("customerName", { length: 256 }),
   /** 备注 */
   remark: text("remark"),
   /** 密钥生命周期状态 */
   status: mysqlEnum("status", ["ISSUED", "ACTIVATED", "SUSPENDED", "EXPIRED", "RENEWED", "REVOKED"]).default("ISSUED").notNull(),
+  /** 暂停时间 */
+  suspendedAt: timestamp("suspendedAt"),
+  /** 暂停原因 */
+  suspendReason: text("suspendReason"),
+  /** 吊销时间 */
+  revokedAt: timestamp("revokedAt"),
+  /** 吊销原因 */
+  revokeReason: text("revokeReason"),
   /** 许可证版本 */
   licenseVersion: int("licenseVersion").notNull().default(2),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
 export type OfflineKey = typeof offlineKeys.$inferSelect;
@@ -306,3 +441,97 @@ export const auditLogs = mysqlTable("auditLogs", {
 
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type InsertAuditLog = typeof auditLogs.$inferInsert;
+
+/**
+ * 告警规则表
+ * 定义自动告警触发条件
+ */
+export const alertRules = mysqlTable("alertRules", {
+  id: int("id").autoincrement().primaryKey(),
+  /** 规则名称 */
+  name: varchar("name", { length: 128 }).notNull(),
+  /** 告警类型 */
+  type: mysqlEnum("type", ["EXPIRY_WARNING", "HEARTBEAT_LOST", "QUOTA_EXCEEDED", "CONTRACT_EXPIRY"]).notNull(),
+  /** 规则配置 JSON */
+  config: text("config").notNull(),
+  /** 是否启用 */
+  isActive: boolean("isActive").default(true).notNull(),
+  /** 创建者 ID */
+  createdById: int("createdById").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type AlertRule = typeof alertRules.$inferSelect;
+export type InsertAlertRule = typeof alertRules.$inferInsert;
+
+/**
+ * 告警记录表
+ * 存储已触发的告警
+ */
+export const alerts = mysqlTable("alerts", {
+  id: int("id").autoincrement().primaryKey(),
+  /** 触发的规则 ID */
+  ruleId: int("ruleId"),
+  /** 告警类型 */
+  type: mysqlEnum("type", ["EXPIRY_WARNING", "HEARTBEAT_LOST", "QUOTA_EXCEEDED", "CONTRACT_EXPIRY"]).notNull(),
+  /** 告警级别 */
+  level: mysqlEnum("level", ["INFO", "WARNING", "CRITICAL"]).default("WARNING").notNull(),
+  /** 告警标题 */
+  title: varchar("title", { length: 256 }).notNull(),
+  /** 告警内容 */
+  content: text("content"),
+  /** 关联资源类型 */
+  resourceType: varchar("resourceType", { length: 64 }),
+  /** 关联资源 ID */
+  resourceId: int("resourceId"),
+  /** 是否已读 */
+  isRead: boolean("isRead").default(false).notNull(),
+  /** 是否已处理 */
+  isResolved: boolean("isResolved").default(false).notNull(),
+  /** 处理时间 */
+  resolvedAt: timestamp("resolvedAt"),
+  /** 处理人 ID */
+  resolvedById: int("resolvedById"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type Alert = typeof alerts.$inferSelect;
+export type InsertAlert = typeof alerts.$inferInsert;
+
+/**
+ * 审批流表
+ * 敏感操作需要上级审批
+ */
+export const approvals = mysqlTable("approvals", {
+  id: int("id").autoincrement().primaryKey(),
+  /** 审批类型 */
+  type: mysqlEnum("type", ["REVOKE", "BATCH_GENERATE", "DELETE", "SUSPEND"]).notNull(),
+  /** 审批状态 */
+  status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED"]).default("PENDING").notNull(),
+  /** 申请人 ID */
+  requesterId: int("requesterId").notNull(),
+  /** 申请人名称 */
+  requesterName: varchar("requesterName", { length: 128 }),
+  /** 审批人 ID */
+  approverId: int("approverId"),
+  /** 审批人名称 */
+  approverName: varchar("approverName", { length: 128 }),
+  /** 资源类型 */
+  resourceType: varchar("resourceType", { length: 64 }).notNull(),
+  /** 资源 ID */
+  resourceId: int("resourceId"),
+  /** 请求数据 JSON */
+  requestData: text("requestData"),
+  /** 申请原因 */
+  reason: text("reason"),
+  /** 拒绝原因 */
+  rejectReason: text("rejectReason"),
+  /** 申请时间 */
+  requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+  /** 处理时间 */
+  resolvedAt: timestamp("resolvedAt"),
+});
+
+export type Approval = typeof approvals.$inferSelect;
+export type InsertApproval = typeof approvals.$inferInsert;
