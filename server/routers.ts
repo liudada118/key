@@ -382,11 +382,12 @@ export const appRouter = router({
     generate: protectedProcedure
       .input(
         z.object({
-          machineId: z.string().length(16, "机器码必须为16位"),
           sensorTypes: z.union([z.literal("all"), z.array(z.string().min(1))]),
           days: z.number().min(1).max(36500),
           customerId: z.number().optional(),
           customerName: z.string().optional(),
+          contractId: z.number().optional(),
+          contractNo: z.string().optional(),
           remark: z.string().optional(),
         })
       )
@@ -397,11 +398,12 @@ export const appRouter = router({
           customerName = customer?.name || null;
         }
         return generateOfflineActivationCode({
-          machineId: input.machineId.toUpperCase(),
           sensorTypes: input.sensorTypes,
           days: input.days,
           customerId: input.customerId || null,
           customerName,
+          contractId: input.contractId || null,
+          contractNo: input.contractNo || null,
           createdById: ctx.user.id,
           createdByName: ctx.user.name || "未知",
           remark: input.remark || null,
@@ -474,6 +476,8 @@ export const appRouter = router({
           maxDevices: z.number().min(0).max(9999).default(1),
           customerId: z.number().optional(),
           customerName: z.string().optional(),
+          contractId: z.number().optional(),
+          contractNo: z.string().optional(),
           remark: z.string().optional(),
         })
       )
@@ -502,6 +506,8 @@ export const appRouter = router({
           createdByName: ctx.user.name || "未知",
           customerId: input.customerId || null,
           customerName,
+          contractId: input.contractId || null,
+          contractNo: input.contractNo || null,
           remark: input.remark || null,
         });
 
@@ -518,6 +524,8 @@ export const appRouter = router({
           maxDevices: z.number().min(0).max(9999).default(1),
           customerId: z.number().optional(),
           customerName: z.string().optional(),
+          contractId: z.number().optional(),
+          contractNo: z.string().optional(),
           remark: z.string().optional(),
         })
       )
@@ -551,6 +559,8 @@ export const appRouter = router({
             createdByName: ctx.user.name || "未知",
             customerId: input.customerId || null,
             customerName,
+            contractId: input.contractId || null,
+            contractNo: input.contractNo || null,
             batchId,
             remark: input.remark || null,
           });
@@ -566,6 +576,7 @@ export const appRouter = router({
           page: z.number().min(1).default(1),
           pageSize: z.number().min(1).max(100).default(20),
           category: z.string().optional(),
+          genType: z.enum(["single", "batch"]).optional(),
           sensorType: z.string().optional(),
           isActivated: z.boolean().optional(),
           status: z.string().optional(),
@@ -580,6 +591,7 @@ export const appRouter = router({
           page: input.page,
           pageSize: input.pageSize,
           category: input.category,
+          genType: input.genType,
           sensorType: input.sensorType,
           isActivated: input.isActivated,
           status: input.status,
@@ -1068,7 +1080,7 @@ export const appRouter = router({
       }),
 
     /** 创建合同 */
-    create: adminProcedure
+    create: protectedProcedure
       .input(z.object({
         contractNo: z.string().min(1, "合同编号不能为空"),
         title: z.string().min(1, "合同标题不能为空"),
@@ -1078,6 +1090,7 @@ export const appRouter = router({
         startDate: z.string().optional(),
         endDate: z.string().optional(),
         totalKeys: z.number().min(0).optional(),
+        status: z.enum(["DRAFT", "ACTIVE", "EXPIRED", "TERMINATED"]).optional(),
         remark: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {

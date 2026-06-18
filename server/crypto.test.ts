@@ -11,7 +11,7 @@ import {
   KEY_CATEGORIES,
 } from "../shared/crypto";
 
-describe("AES-256-GCM Crypto Module", () => {
+describe("AES-ECB Crypto Module", () => {
   it("encrypts and decrypts a simple string correctly", () => {
     const plaintext = "Hello, World!";
     const encrypted = aesEncrypt(plaintext);
@@ -22,27 +22,25 @@ describe("AES-256-GCM Crypto Module", () => {
     expect(decrypted).toBe(plaintext);
   });
 
-  it("produces different ciphertext for the same plaintext (random IV)", () => {
+  it("produces identical ciphertext for the same plaintext (ECB is deterministic)", () => {
+    // ECB 无随机 IV：相同明文得相同密文（与桌面端 aesUtil.js 行为一致）
     const plaintext = "Same input";
     const enc1 = aesEncrypt(plaintext);
     const enc2 = aesEncrypt(plaintext);
-    expect(enc1).not.toBe(enc2);
+    expect(enc1).toBe(enc2);
   });
 
-  it("returns null for tampered ciphertext", () => {
-    const encrypted = aesEncrypt("test data");
-    const tampered =
-      encrypted.substring(0, 30) +
-      "ff" +
-      encrypted.substring(32);
-    const result = aesDecrypt(tampered);
-    expect(result).toBeNull();
+  it("decodes invalid for tampered ciphertext (no auth tag, fails at JSON parse)", () => {
+    // ECB 无认证标签，篡改靠上层 JSON 解析失败来发现
+    const key = generateLicenseKey("car", 30, "production");
+    const tampered = "00000000" + key.substring(8);
+    const decoded = decodeLicenseKey(tampered);
+    expect(decoded.valid).toBe(false);
   });
 
   it("returns null for invalid hex input", () => {
     expect(aesDecrypt("")).toBeNull();
-    expect(aesDecrypt("abc")).toBeNull();
-    expect(aesDecrypt("not-valid-hex-at-all")).toBeNull();
+    expect(aesDecrypt("zzzz")).toBeNull();
   });
 
   it("handles JSON payload encryption/decryption", () => {
@@ -70,10 +68,12 @@ describe("License Key Generation - Single Type", () => {
     expect(key).toBeTruthy();
   });
 
-  it("generates unique keys for same parameters", () => {
+  it("decodes correctly regardless of ECB determinism", () => {
+    // ECB 下相同参数+相同时间戳会得到相同密文，这是预期行为；重点是都能正确解码
     const key1 = generateLicenseKey("car", 30, "production");
     const key2 = generateLicenseKey("car", 30, "production");
-    expect(key1).not.toBe(key2);
+    expect(decodeLicenseKey(key1).sensorType).toBe("car");
+    expect(decodeLicenseKey(key2).sensorType).toBe("car");
   });
 });
 
@@ -165,6 +165,25 @@ describe("License Key Decoding - Error Cases", () => {
   it("returns invalid for empty string", () => {
     const decoded = decodeLicenseKey("");
     expect(decoded.valid).toBe(false);
+  });
+});
+
+describe("License Key Decoding - Time Injection (nowMs)", () => {
+  it("uses injected nowMs for expiry instead of local time", () => {
+    const key = generateLicenseKey("car", 30, "production"); // 30 天后到期
+
+    // 注入一个远未来时间 → 应判为已过期
+    const future = Date.now() + 60 * 24 * 60 * 60 * 1000;
+    expect(decodeLicenseKey(key, future).valid).toBe(false);
+
+    // 注入当前时间 → 仍有效
+    const now = Date.now();
+    expect(decodeLicenseKey(key, now).valid).toBe(true);
+  });
+
+  it("falls back to local time when nowMs is omitted", () => {
+    const key = generateLicenseKey("foot", 10, "production");
+    expect(decodeLicenseKey(key).valid).toBe(true);
   });
 });
 

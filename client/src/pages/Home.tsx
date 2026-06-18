@@ -1,16 +1,21 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { trpc } from "@/lib/trpc";
-import { BarChart3, Building2, FileText, Key, KeyRound, Pause, ShieldAlert, ShieldCheck, ShieldX, Zap } from "lucide-react";
+import { BarChart3, Building2, FileText, Key, KeyRound, Pause, ShieldAlert, ShieldCheck, ShieldX, Wifi, WifiOff } from "lucide-react";
 
 export default function Home() {
   const { user } = useAuth();
   const { data: stats, isLoading } = trpc.keys.stats.useQuery();
+  const { data: offlineStats } = trpc.offlineKeys.stats.useQuery();
+
+  const onlineTotal = stats?.total ?? 0;
+  const offlineTotal = offlineStats?.total ?? 0;
+  const grandTotal = onlineTotal + offlineTotal;
 
   const cards = [
     {
       title: "总密钥数",
-      value: stats?.total ?? 0,
+      value: grandTotal,
       icon: KeyRound,
       color: "text-chart-1",
       bg: "bg-chart-1/10",
@@ -23,16 +28,16 @@ export default function Home() {
       bg: "bg-chart-2/10",
     },
     {
-      title: "量产密钥",
-      value: stats?.production ?? 0,
-      icon: Zap,
+      title: "在线密钥",
+      value: onlineTotal,
+      icon: Wifi,
       color: "text-chart-3",
       bg: "bg-chart-3/10",
     },
     {
-      title: "租赁密钥",
-      value: stats?.rental ?? 0,
-      icon: Key,
+      title: "离线密钥",
+      value: offlineTotal,
+      icon: WifiOff,
       color: "text-chart-4",
       bg: "bg-chart-4/10",
     },
@@ -111,9 +116,9 @@ export default function Home() {
               </div>
             ) : (
               <div className="space-y-4">
+                <StatBar label="在线密钥" value={onlineTotal} total={grandTotal || 1} color="bg-chart-3" />
+                <StatBar label="离线密钥" value={offlineTotal} total={grandTotal || 1} color="bg-chart-4" />
                 <StatBar label="已激活" value={stats?.activated ?? 0} total={stats?.total ?? 1} color="bg-chart-2" />
-                <StatBar label="量产密钥" value={stats?.production ?? 0} total={stats?.total ?? 1} color="bg-chart-3" />
-                <StatBar label="租赁密钥" value={stats?.rental ?? 0} total={stats?.total ?? 1} color="bg-chart-4" />
                 <StatBar label="已过期" value={stats?.expired ?? 0} total={stats?.total ?? 1} color="bg-chart-5" />
                 <StatBar label="已暂停" value={stats?.suspended ?? 0} total={stats?.total ?? 1} color="bg-yellow-500" />
                 <StatBar label="已吊销" value={stats?.revoked ?? 0} total={stats?.total ?? 1} color="bg-red-500" />

@@ -100,6 +100,7 @@ const menuSections: MenuSection[] = [
     icon: WifiOff,
     items: [
       { icon: Shield, label: "生成离线密钥", path: "/offline-keys" },
+      { icon: BarChart3, label: "离线密钥管理", path: "/offline-key-list" },
     ],
   },
   {

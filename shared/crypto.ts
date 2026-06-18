@@ -1,70 +1,50 @@
 /**
- * AES-256-GCM 加密/解密模块
- * 
+ * AES-ECB 加密/解密模块
+ *
  * 独立模块，可在 Web 端和 Electron 端使用。
  * Electron 端使用时，复制 crypto-lib.cjs 文件即可通过 require() 引入。
- * 
- * 密钥格式: IV(24 hex) + AuthTag(32 hex) + Ciphertext(hex)
- * 加密密钥: 由固定字符串 SHA-256 派生为 32 字节密钥
+ *
+ * 算法与桌面端 shroom1.0 (aesUtil.js / aes_ecb.js) 完全一致：
+ *   AES / ECB / Pkcs7，密钥 = "JIANXINGZHEPSVMC" 逐字符转 hex 后 Hex.parse（AES-128）。
+ *   输出为纯 hex 密文（无 IV、无认证标签）。
+ *   这样新系统生成的密钥与桌面端互通，老客户的 ECB 密钥也能继续解。
+ *
+ * 注意：ECB 无随机 IV、无认证标签——相同明文得相同密文，且不做篡改检测
+ *      （与桌面端历史行为保持一致；防伪造由离线版的 RSA 签名负责）。
  */
 import CryptoJS from "crypto-js";
 
-const PASSPHRASE = "JIANXINGZHE-KEY-MANAGER-2026";
+const KEY_STR = "JIANXINGZHEPSVMC";
 
-/** 从固定口令派生 256-bit 密钥 */
+/** 把口令逐字符转 hex 再 Hex.parse 成 WordArray（与桌面端 stringToHex 一致） */
 function deriveKey(): CryptoJS.lib.WordArray {
-  return CryptoJS.SHA256(PASSPHRASE);
+  let hex = "";
+  for (let i = 0; i < KEY_STR.length; i++) {
+    hex += KEY_STR.charCodeAt(i).toString(16);
+  }
+  return CryptoJS.enc.Hex.parse(hex);
 }
 
-/** 加密明文 → hex 字符串 (iv + tag + ciphertext) */
+/** 加密明文 → hex 密文（AES-ECB/Pkcs7） */
 export function aesEncrypt(plaintext: string): string {
   const key = deriveKey();
-  const iv = CryptoJS.lib.WordArray.random(12); // 96-bit IV for GCM
-
-  // CryptoJS 没有原生 GCM，使用 CTR 模式 + HMAC 实现认证加密
   const encrypted = CryptoJS.AES.encrypt(plaintext, key, {
-    iv: iv,
-    mode: CryptoJS.mode.CTR,
-    padding: CryptoJS.pad.NoPadding,
+    mode: CryptoJS.mode.ECB,
+    padding: CryptoJS.pad.Pkcs7,
   });
-
-  const ciphertext = encrypted.ciphertext.toString(); // hex
-  const ivHex = iv.toString(); // 24 hex chars (12 bytes)
-
-  // HMAC-SHA256 作为认证标签 (对 iv + ciphertext 签名)
-  const authTag = CryptoJS.HmacSHA256(ivHex + ciphertext, key).toString().substring(0, 32);
-
-  // 格式: iv(24) + authTag(32) + ciphertext
-  return ivHex + authTag + ciphertext;
+  return encrypted.ciphertext.toString(); // hex
 }
 
-/** 解密 hex 字符串 → 明文，失败返回 null */
+/** 解密 hex 密文 → 明文，失败返回 null */
 export function aesDecrypt(hexStr: string): string | null {
   try {
-    if (!hexStr || hexStr.length < 58) return null;
-
+    if (!hexStr) return null;
     const key = deriveKey();
-    const ivHex = hexStr.substring(0, 24);
-    const authTag = hexStr.substring(24, 56);
-    const ciphertext = hexStr.substring(56);
-
-    // 验证认证标签
-    const expectedTag = CryptoJS.HmacSHA256(ivHex + ciphertext, key).toString().substring(0, 32);
-    if (authTag !== expectedTag) return null; // 篡改检测
-
-    const iv = CryptoJS.enc.Hex.parse(ivHex);
-    const ciphertextWA = CryptoJS.enc.Hex.parse(ciphertext);
-
-    const cipherParams = CryptoJS.lib.CipherParams.create({
-      ciphertext: ciphertextWA,
-    });
-
-    const decrypted = CryptoJS.AES.decrypt(cipherParams, key, {
-      iv: iv,
-      mode: CryptoJS.mode.CTR,
-      padding: CryptoJS.pad.NoPadding,
-    });
-
+    const decrypted = CryptoJS.AES.decrypt(
+      CryptoJS.format.Hex.parse(hexStr) as unknown as CryptoJS.lib.CipherParams,
+      key,
+      { mode: CryptoJS.mode.ECB, padding: CryptoJS.pad.Pkcs7 }
+    );
     const result = decrypted.toString(CryptoJS.enc.Utf8);
     return result || null;
   } catch {
@@ -248,8 +228,11 @@ export interface DecodedKey {
 
 /**
  * 解密密钥，返回解析后的信息
+ * @param hexKey hex 密钥字符串
+ * @param nowMs 可选，判过期所用的"当前时间"(ms)。
+ *              在线版传服务器时间、离线版传防回拨锚点时间；不传则用本机 Date.now()。
  */
-export function decodeLicenseKey(hexKey: string): DecodedKey {
+export function decodeLicenseKey(hexKey: string, nowMs?: number): DecodedKey {
   try {
     const plaintext = aesDecrypt(hexKey.trim());
     if (!plaintext) {
@@ -260,7 +243,7 @@ export function decodeLicenseKey(hexKey: string): DecodedKey {
       return { valid: false, error: "解密失败：缺少必要字段" };
     }
     const expireTimestamp = parseFloat(parsed.date);
-    const now = Date.now();
+    const now = (typeof nowMs === "number" && !Number.isNaN(nowMs)) ? nowMs : Date.now();
     const remainingMs = expireTimestamp - now;
     const remainingDays = Math.ceil(remainingMs / (24 * 60 * 60 * 1000));
     const expireDate = new Date(expireTimestamp).toISOString();

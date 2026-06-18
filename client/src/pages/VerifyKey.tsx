@@ -1,7 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,7 +13,6 @@ import {
   KeyRound,
   Loader2,
   Monitor,
-  Search,
   Shield,
   ShieldCheck,
   ShieldX,
@@ -53,7 +51,6 @@ type OnlineVerifyResult = {
 /* ============ 离线密钥验证结果类型 ============ */
 type OfflineVerifyResult = {
   valid: boolean;
-  machineId?: string;
   sensorTypes?: string[] | string;
   isAllTypes?: boolean;
   days?: number;
@@ -309,7 +306,6 @@ function OnlineVerifyPanel() {
 
 /* ============ 离线密钥验证面板 ============ */
 function OfflineVerifyPanel() {
-  const [machineId, setMachineId] = useState("");
   const [activationCode, setActivationCode] = useState("");
   const [result, setResult] = useState<OfflineVerifyResult | null>(null);
   const [verifying, setVerifying] = useState(false);
@@ -329,29 +325,32 @@ function OfflineVerifyPanel() {
   const { data: publicKeyData } = trpc.offlineKeys.publicKey.useQuery();
 
   const handleVerify = async () => {
-    const mid = machineId.trim().toUpperCase();
     const code = activationCode.trim();
 
-    if (!mid) return toast.error("请输入机器码");
-    if (mid.length !== 16) return toast.error("机器码必须为16位");
     if (!code) return toast.error("请输入激活码");
 
     setVerifying(true);
     try {
-      // 解码激活码
-      const decoded = atob(code);
-      const parts = decoded.split(".");
-      if (parts.length !== 2) {
+      // 解码激活码：base64( JSON({ payload, signature }) )，payload 为 base64 的明文 JSON
+      let envelope: { payload?: string; signature?: string };
+      try {
+        envelope = JSON.parse(atob(code));
+      } catch {
         setResult({ valid: false, error: "激活码格式无效" });
         toast.error("激活码格式无效");
         setVerifying(false);
         return;
       }
+      if (!envelope?.payload || !envelope?.signature) {
+        setResult({ valid: false, error: "激活码缺少 payload 或 signature" });
+        toast.error("激活码格式无效");
+        setVerifying(false);
+        return;
+      }
 
-      const payloadStr = atob(parts[0]);
       let payload: any;
       try {
-        payload = JSON.parse(payloadStr);
+        payload = JSON.parse(atob(envelope.payload));
       } catch {
         setResult({ valid: false, error: "激活码数据解析失败" });
         toast.error("激活码数据解析失败");
@@ -359,24 +358,11 @@ function OfflineVerifyPanel() {
         return;
       }
 
-      // 验证机器码匹配
-      if (payload.machineId !== mid) {
-        setResult({
-          valid: false,
-          error: "机器码不匹配",
-          machineId: payload.machineId,
-        });
-        toast.error("机器码不匹配");
-        setVerifying(false);
-        return;
-      }
-
-      // 验证签名（使用 Web Crypto API）
+      // 验证签名（使用 Web Crypto API），对 payload 的 base64 串验签
       if (publicKeyData?.publicKey) {
         try {
-          const signatureB64 = parts[1];
-          const signatureBytes = Uint8Array.from(atob(signatureB64), (c) => c.charCodeAt(0));
-          const dataBytes = new TextEncoder().encode(parts[0]);
+          const signatureBytes = Uint8Array.from(atob(envelope.signature), (c) => c.charCodeAt(0));
+          const dataBytes = new TextEncoder().encode(envelope.payload);
 
           // 导入公钥
           const pemBody = publicKeyData.publicKey
@@ -428,7 +414,6 @@ function OfflineVerifyPanel() {
 
       setResult({
         valid: !isExpired,
-        machineId: payload.machineId,
         sensorTypes: isAllTypes ? "all" : sensorTypes,
         isAllTypes,
         days: payload.days,
@@ -480,21 +465,6 @@ function OfflineVerifyPanel() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div>
-            <Label className="text-sm font-medium">机器码（16位）</Label>
-            <div className="relative mt-1.5">
-              <Monitor className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                value={machineId}
-                onChange={(e) => setMachineId(e.target.value.toUpperCase().replace(/[^0-9A-F]/g, "").slice(0, 16))}
-                placeholder="例如：04A1E82A71675B47"
-                className="pl-10 font-mono tracking-wider"
-                maxLength={16}
-              />
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">{machineId.length}/16 位</p>
-          </div>
-
-          <div>
             <Label className="text-sm font-medium">激活码</Label>
             <Textarea
               value={activationCode}
@@ -506,7 +476,7 @@ function OfflineVerifyPanel() {
 
           <Button
             onClick={handleVerify}
-            disabled={verifying || machineId.length !== 16 || !activationCode.trim()}
+            disabled={verifying || !activationCode.trim()}
             className="w-full"
             size="lg"
           >
@@ -530,9 +500,6 @@ function OfflineVerifyPanel() {
               <StatusBanner valid={result.valid} error={result.error} remainingDays={result.remainingDays} />
 
               <div className="grid grid-cols-2 gap-3">
-                {result.machineId && (
-                  <InfoItem icon={Monitor} label="机器码" value={result.machineId} />
-                )}
                 <InfoItem
                   icon={Zap}
                   label="密钥类型"

@@ -20,6 +20,7 @@ import {
   Building2,
   Copy,
   Download,
+  FileText,
   KeyRound,
   Loader2,
   Monitor,
@@ -67,7 +68,7 @@ export default function GenerateKey() {
           生成密钥
         </h1>
         <p className="text-muted-foreground mt-1">
-          选择传感器类型与有效期，生成量产密钥或在线租赁密钥
+          选择传感器类型与有效期，生成在线密钥
         </p>
       </div>
 
@@ -112,7 +113,8 @@ function KeyGenerator({
   const [isAll, setIsAll] = useState(false);
 
   // 参数状态
-  const [category, setCategory] = useState<"production" | "rental">("production");
+  // 已取消量产/在线租赁区分，所有密钥统一以 production 入库
+  const category = "production" as const;
   const [days, setDays] = useState("365");
   const [count, setCount] = useState("10");
   const [remark, setRemark] = useState("");
@@ -125,8 +127,17 @@ function KeyGenerator({
   const [newCustomerName, setNewCustomerName] = useState("");
   const [newCustomerPhone, setNewCustomerPhone] = useState("");
 
+  // 合同选择状态
+  const [selectedContractId, setSelectedContractId] = useState<number | undefined>(undefined);
+  const [selectedContractNo, setSelectedContractNo] = useState("");
+  const [showNewContract, setShowNewContract] = useState(false);
+  const [newContractNo, setNewContractNo] = useState("");
+  const [newContractTitle, setNewContractTitle] = useState("");
+
   const utils = trpc.useUtils();
   const { data: customerList } = trpc.customers.all.useQuery();
+  const { data: contractData } = trpc.contracts.list.useQuery({ page: 1, pageSize: 100, status: "ACTIVE" });
+  const contractList = contractData?.items ?? [];
   const createCustomerMutation = trpc.customers.create.useMutation({
     onSuccess: (data) => {
       if (data) {
@@ -140,6 +151,21 @@ function KeyGenerator({
       utils.customers.all.invalidate();
       utils.customers.list.invalidate();
       toast.success("客户创建成功");
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  const createContractMutation = trpc.contracts.create.useMutation({
+    onSuccess: (data: any) => {
+      const c = data?.contract ?? data;
+      if (c?.id) {
+        setSelectedContractId(c.id);
+        setSelectedContractNo(c.contractNo || newContractNo);
+      }
+      setShowNewContract(false);
+      setNewContractNo("");
+      setNewContractTitle("");
+      utils.contracts.list.invalidate();
+      toast.success("合同创建成功");
     },
     onError: (err) => toast.error(err.message),
   });
@@ -255,6 +281,8 @@ function KeyGenerator({
         maxDevices: maxDev,
         customerId: selectedCustomerId,
         customerName: selectedCustomerName || undefined,
+        contractId: selectedContractId,
+        contractNo: selectedContractNo || undefined,
         remark: remark || undefined,
       });
     } else {
@@ -267,6 +295,8 @@ function KeyGenerator({
         maxDevices: maxDev,
         customerId: selectedCustomerId,
         customerName: selectedCustomerName || undefined,
+        contractId: selectedContractId,
+        contractNo: selectedContractNo || undefined,
         remark: remark || undefined,
       });
     }
@@ -296,10 +326,9 @@ function KeyGenerator({
     const typeLabel = isAll
       ? "全部类型"
       : selectedTypes.map((v) => sensorLabelMap[v] || v).join("/");
-    const catLabel = category === "production" ? "量产密钥" : "在线租赁密钥";
-    const header = "序号,密钥,传感器类型,密钥类型,有效期天数";
+    const header = "序号,密钥,传感器类型,有效期天数";
     const rows = batchResults.keys.map(
-      (k, i) => `${i + 1},${k.keyString},${typeLabel},${catLabel},${days}`
+      (k, i) => `${i + 1},${k.keyString},${typeLabel},${days}`
     );
     const csv = "\uFEFF" + header + "\n" + rows.join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
@@ -447,23 +476,6 @@ function KeyGenerator({
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            {/* 密钥类型 */}
-            <div className="space-y-1.5">
-              <Label className="text-foreground text-sm">密钥类型</Label>
-              <Select
-                value={category}
-                onValueChange={(v) => setCategory(v as "production" | "rental")}
-              >
-                <SelectTrigger className="bg-secondary/50">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="production">量产密钥</SelectItem>
-                  <SelectItem value="rental">在线租赁密钥</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
             {/* 有效天数 */}
             <div className="space-y-1.5">
               <Label className="text-foreground text-sm">有效天数</Label>
@@ -636,6 +648,100 @@ function KeyGenerator({
               )}
             </div>
 
+            {/* 关联合同 */}
+            <div className="space-y-1.5">
+              <Label className="text-foreground text-sm flex items-center gap-1">
+                <FileText className="h-3.5 w-3.5" />
+                关联合同（可选）
+              </Label>
+              {!showNewContract ? (
+                <div className="space-y-2">
+                  <Select
+                    value={selectedContractId ? String(selectedContractId) : "none"}
+                    onValueChange={(v) => {
+                      if (v === "none") {
+                        setSelectedContractId(undefined);
+                        setSelectedContractNo("");
+                      } else {
+                        const id = parseInt(v);
+                        setSelectedContractId(id);
+                        const c = contractList.find((c: any) => c.id === id);
+                        setSelectedContractNo(c?.contractNo || "");
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="bg-secondary/50">
+                      <SelectValue placeholder="选择合同（可不选）" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">不关联合同</SelectItem>
+                      {contractList.map((c: any) => (
+                        <SelectItem key={c.id} value={String(c.id)}>
+                          {c.contractNo} - {c.title}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs w-full"
+                    onClick={() => setShowNewContract(true)}
+                  >
+                    <Plus className="h-3 w-3 mr-1" />
+                    新建合同
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-2 p-3 bg-secondary/30 rounded-lg border border-border/50">
+                  <Input
+                    placeholder="合同编号 *"
+                    value={newContractNo}
+                    onChange={(e) => setNewContractNo(e.target.value)}
+                    className="bg-secondary/50 h-8 text-sm"
+                  />
+                  <Input
+                    placeholder="合同标题 *"
+                    value={newContractTitle}
+                    onChange={(e) => setNewContractTitle(e.target.value)}
+                    className="bg-secondary/50 h-8 text-sm"
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      className="h-7 text-xs flex-1"
+                      disabled={!newContractNo.trim() || !newContractTitle.trim() || createContractMutation.isPending}
+                      onClick={() => {
+                        createContractMutation.mutate({
+                          contractNo: newContractNo.trim(),
+                          title: newContractTitle.trim(),
+                          customerId: selectedCustomerId,
+                          customerName: selectedCustomerName || undefined,
+                          status: "ACTIVE",
+                        });
+                      }}
+                    >
+                      {createContractMutation.isPending && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
+                      创建
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 text-xs"
+                      onClick={() => {
+                        setShowNewContract(false);
+                        setNewContractNo("");
+                        setNewContractTitle("");
+                      }}
+                    >
+                      取消
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* 备注 */}
             <div className="space-y-1.5">
               <Label className="text-foreground text-sm">备注（可选）</Label>
@@ -749,9 +855,9 @@ function KeyGenerator({
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <div className="p-2 bg-secondary/30 rounded">
-                    <p className="text-muted-foreground">密钥类型</p>
+                    <p className="text-muted-foreground">有效天数</p>
                     <p className="font-medium text-foreground mt-0.5">
-                      {category === "production" ? "量产密钥" : "在线租赁密钥"}
+                      {days} 天
                     </p>
                   </div>
                   <div className="p-2 bg-secondary/30 rounded">

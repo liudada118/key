@@ -33,7 +33,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { trpc } from "@/lib/trpc";
-import { BarChart3, Copy, Download, Loader2, Monitor, Pause, Pencil, Play, RefreshCw, Search, ShieldX, Trash2, Unplug, History } from "lucide-react";
+import { BarChart3, Copy, Download, Loader2, Monitor, Pause, Play, RefreshCw, Search, ShieldX, Trash2, Unplug, History } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Textarea } from "@/components/ui/textarea";
@@ -50,24 +50,14 @@ const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
 
 export default function KeyList() {
   const { user } = useAuth();
-  const isSuperAdmin = user?.role === "super_admin";
   const isAdmin = user?.role === "super_admin" || user?.role === "admin";
 
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
-  const [category, setCategory] = useState<string>("__all__");
+  const [genType, setGenType] = useState<string>("__all__");
   const [sensorType, setSensorType] = useState<string>("__all__");
   const [statusFilter, setStatusFilter] = useState<string>("__all__");
-
-  // 更改密钥类型弹窗状态
-  const [changeCategoryOpen, setChangeCategoryOpen] = useState(false);
-  const [changeCategoryKey, setChangeCategoryKey] = useState<{
-    id: number;
-    keyString: string;
-    category: string;
-  } | null>(null);
-  const [newCategory, setNewCategory] = useState<string>("");
 
   // 设备详情弹窗状态
   const [devicesDialogOpen, setDevicesDialogOpen] = useState(false);
@@ -102,12 +92,12 @@ export default function KeyList() {
     () => ({
       page,
       pageSize: 20,
-      category: category === "__all__" ? undefined : category,
+      genType: genType === "__all__" ? undefined : (genType as "single" | "batch"),
       sensorType: sensorType === "__all__" ? undefined : sensorType,
       status: statusFilter === "__all__" ? undefined : statusFilter,
       search: search || undefined,
     }),
-    [page, category, sensorType, statusFilter, search]
+    [page, genType, sensorType, statusFilter, search]
   );
 
   const utils = trpc.useUtils();
@@ -147,17 +137,6 @@ export default function KeyList() {
         URL.revokeObjectURL(url);
       }
       toast.success("导出成功");
-    },
-    onError: (err) => toast.error(err.message),
-  });
-
-  const changeCategoryMutation = trpc.keys.changeCategory.useMutation({
-    onSuccess: () => {
-      toast.success("密钥类型已更改");
-      setChangeCategoryOpen(false);
-      setChangeCategoryKey(null);
-      utils.keys.list.invalidate();
-      utils.keys.stats.invalidate();
     },
     onError: (err) => toast.error(err.message),
   });
@@ -239,20 +218,6 @@ export default function KeyList() {
         renewMutation.mutate({ keyId: lifecycleKeyId, additionalDays: renewDays });
         break;
     }
-  };
-
-  const handleOpenChangeCategory = (key: { id: number; keyString: string; category: string }) => {
-    setChangeCategoryKey(key);
-    setNewCategory(key.category === "production" ? "rental" : "production");
-    setChangeCategoryOpen(true);
-  };
-
-  const handleConfirmChangeCategory = () => {
-    if (!changeCategoryKey || !newCategory) return;
-    changeCategoryMutation.mutate({
-      keyId: changeCategoryKey.id,
-      category: newCategory as "production" | "rental",
-    });
   };
 
   const handleOpenDevices = (key: { id: number; keyString: string; maxDevices: number }) => {
@@ -442,21 +407,6 @@ export default function KeyList() {
           </>
         )}
 
-        {isSuperAdmin && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 w-7 p-0"
-                onClick={() => handleOpenChangeCategory(key)}
-              >
-                <Pencil className="h-3 w-3" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>更改密钥类型</TooltipContent>
-          </Tooltip>
-        )}
       </div>
     );
   };
@@ -475,7 +425,6 @@ export default function KeyList() {
             onClick={() =>
               exportMutation.mutate({
                 format: "csv",
-                category: category === "__all__" ? undefined : category,
                 sensorType: sensorType === "__all__" ? undefined : sensorType,
               })
             }
@@ -490,7 +439,6 @@ export default function KeyList() {
             onClick={() =>
               exportMutation.mutate({
                 format: "json",
-                category: category === "__all__" ? undefined : category,
                 sensorType: sensorType === "__all__" ? undefined : sensorType,
               })
             }
@@ -532,14 +480,14 @@ export default function KeyList() {
                 搜索
               </Button>
             </div>
-            <Select value={category} onValueChange={(v) => { setCategory(v); setPage(1); }}>
+            <Select value={genType} onValueChange={(v) => { setGenType(v); setPage(1); }}>
               <SelectTrigger className="w-[130px] bg-secondary/50">
-                <SelectValue placeholder="密钥类型" />
+                <SelectValue placeholder="生成方式" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="__all__">全部类型</SelectItem>
-                <SelectItem value="production">量产密钥</SelectItem>
-                <SelectItem value="rental">在线租赁</SelectItem>
+                <SelectItem value="__all__">全部</SelectItem>
+                <SelectItem value="single">单个生成</SelectItem>
+                <SelectItem value="batch">批量生成</SelectItem>
               </SelectContent>
             </Select>
             <Select value={sensorType} onValueChange={(v) => { setSensorType(v); setPage(1); }}>
@@ -602,6 +550,7 @@ export default function KeyList() {
                       <TableHead className="text-muted-foreground">设备</TableHead>
                       <TableHead className="text-muted-foreground">状态</TableHead>
                       <TableHead className="text-muted-foreground">客户</TableHead>
+                      <TableHead className="text-muted-foreground">合同</TableHead>
                       <TableHead className="text-muted-foreground">创建者</TableHead>
                       <TableHead className="text-muted-foreground">创建时间</TableHead>
                       <TableHead className="text-muted-foreground w-32">操作</TableHead>
@@ -624,12 +573,12 @@ export default function KeyList() {
                           <Badge
                             variant="outline"
                             className={
-                              key.category === "production"
-                                ? "bg-chart-3/10 text-chart-3 border-chart-3/30"
-                                : "bg-chart-4/10 text-chart-4 border-chart-4/30"
+                              key.batchId
+                                ? "bg-chart-4/10 text-chart-4 border-chart-4/30"
+                                : "bg-chart-3/10 text-chart-3 border-chart-3/30"
                             }
                           >
-                            {key.category === "production" ? "量产" : "租赁"}
+                            {key.batchId ? "批量" : "单个"}
                           </Badge>
                         </TableCell>
                         <TableCell>
@@ -660,6 +609,9 @@ export default function KeyList() {
                         </TableCell>
                         <TableCell className="text-sm text-foreground">
                           {key.customerName || "-"}
+                        </TableCell>
+                        <TableCell className="text-sm text-foreground">
+                          {key.contractNo || "-"}
                         </TableCell>
                         <TableCell className="text-sm text-foreground">
                           {key.createdByName || "-"}
@@ -821,67 +773,6 @@ export default function KeyList() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setHistoryDialogOpen(false)}>
               关闭
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* 更改密钥类型弹窗 */}
-      <Dialog open={changeCategoryOpen} onOpenChange={setChangeCategoryOpen}>
-        <DialogContent className="sm:max-w-[425px]">
-          <DialogHeader>
-            <DialogTitle>更改密钥类型</DialogTitle>
-            <DialogDescription>
-              将密钥类型从「{changeCategoryKey?.category === "production" ? "量产密钥" : "在线租赁密钥"}」更改为其他类型
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label className="text-muted-foreground">密钥</Label>
-              <p className="font-mono text-xs bg-muted p-2 rounded break-all">
-                {"****" + (changeCategoryKey?.keyString || "").slice(-6)}
-              </p>
-            </div>
-            <div className="space-y-2">
-              <Label>当前类型</Label>
-              <div>
-                <Badge
-                  variant="outline"
-                  className={
-                    changeCategoryKey?.category === "production"
-                      ? "bg-chart-3/10 text-chart-3 border-chart-3/30"
-                      : "bg-chart-4/10 text-chart-4 border-chart-4/30"
-                  }
-                >
-                  {changeCategoryKey?.category === "production" ? "量产密钥" : "在线租赁密钥"}
-                </Badge>
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label>更改为</Label>
-              <Select value={newCategory} onValueChange={setNewCategory}>
-                <SelectTrigger>
-                  <SelectValue placeholder="选择新类型" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="production">量产密钥</SelectItem>
-                  <SelectItem value="rental">在线租赁密钥</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setChangeCategoryOpen(false)}>
-              取消
-            </Button>
-            <Button
-              onClick={handleConfirmChangeCategory}
-              disabled={changeCategoryMutation.isPending || newCategory === changeCategoryKey?.category}
-            >
-              {changeCategoryMutation.isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              ) : null}
-              确认更改
             </Button>
           </DialogFooter>
         </DialogContent>

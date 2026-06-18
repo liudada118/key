@@ -14,6 +14,7 @@ import CustomerManagement from "./pages/CustomerManagement";
 import MacReader from "./pages/MacReader";
 import SensorTypeManagement from "./pages/SensorTypeManagement";
 import OfflineKeyGen from "./pages/OfflineKeyGen";
+import OfflineKeyList from "./pages/OfflineKeyList";
 import ApiDocs from "./pages/ApiDocs";
 import FootDeviceCode from "./pages/FootDeviceCode";
 import SeatDeviceCode from "./pages/SeatDeviceCode";
@@ -41,6 +42,7 @@ function AuthenticatedRouter() {
         <Route path={"/customers"} component={CustomerManagement} />
         <Route path={"/sensor-types"} component={SensorTypeManagement} />
         <Route path={"/offline-keys"} component={OfflineKeyGen} />
+        <Route path={"/offline-key-list"} component={OfflineKeyList} />
         <Route path={"/mac-reader"} component={MacReader} />
         <Route path={"/api-docs"} component={ApiDocs} />
         <Route path={"/foot-device-code"} component={FootDeviceCode} />

@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gte, inArray, isNull, like, lte, or, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, isNull, isNotNull, like, lte, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
@@ -420,6 +420,7 @@ export async function getLicenseKeys(opts: {
   page: number;
   pageSize: number;
   category?: string;
+  genType?: "single" | "batch";
   sensorType?: string;
   isActivated?: boolean;
   status?: string;
@@ -432,6 +433,9 @@ export async function getLicenseKeys(opts: {
   const conditions = [inArray(licenseKeys.createdById, opts.userIds)];
 
   if (opts.category) conditions.push(eq(licenseKeys.category, opts.category as "production" | "rental"));
+  // 单个生成 = batchId 为空；批量生成 = batchId 非空
+  if (opts.genType === "single") conditions.push(isNull(licenseKeys.batchId));
+  if (opts.genType === "batch") conditions.push(isNotNull(licenseKeys.batchId));
   if (opts.sensorType) conditions.push(like(licenseKeys.sensorType, `%${opts.sensorType}%`));
   if (opts.isActivated !== undefined) conditions.push(eq(licenseKeys.isActivated, opts.isActivated));
   if (opts.status) conditions.push(eq(licenseKeys.status, opts.status as any));
@@ -461,6 +465,22 @@ export async function getLicenseKeyByString(keyString: string) {
   if (!db) return undefined;
   const result = await db.select().from(licenseKeys).where(eq(licenseKeys.keyString, keyString)).limit(1);
   return result.length > 0 ? result[0] : undefined;
+}
+
+/**
+ * 标记密钥为"已激活"（在线版客户端首次校验通过时调用）。
+ * 仅在尚未激活时更新；状态为 ISSUED 时同步置为 ACTIVATED（不覆盖 RENEWED 等其它状态）。
+ * @returns 是否本次刚激活
+ */
+export async function markLicenseKeyActivated(keyString: string): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const rec = await getLicenseKeyByString(keyString);
+  if (!rec || rec.isActivated) return false;
+  const patch: Record<string, unknown> = { isActivated: true, activatedAt: new Date() };
+  if (rec.status === "ISSUED") patch.status = "ACTIVATED";
+  await db.update(licenseKeys).set(patch).where(eq(licenseKeys.id, rec.id));
+  return true;
 }
 
 /**
@@ -947,12 +967,13 @@ const LICENSE_VERSION = 2;
 
 /** 生成离线激活码（RSA-SHA256 签名） */
 export async function generateOfflineActivationCode(params: {
-  machineId: string;
   sensorTypes: string[] | "all";
   days: number;
   expireDate?: number;
   customerId?: number | null;
   customerName?: string | null;
+  contractId?: number | null;
+  contractNo?: string | null;
   createdById: number;
   createdByName: string;
   remark?: string | null;
@@ -967,9 +988,8 @@ export async function generateOfflineActivationCode(params: {
   // 计算到期时间
   const expireDate = params.expireDate || (Date.now() + params.days * 24 * 60 * 60 * 1000);
 
-  // 构造 payload
+  // 构造 payload（已去掉机器码绑定：离线版不再绑定具体机器）
   const payload = {
-    machineId: params.machineId,
     sensorTypes: params.sensorTypes,
     expireDate,
     issuedAt: Date.now(),
@@ -992,7 +1012,7 @@ export async function generateOfflineActivationCode(params: {
   const sensorTypeStr = params.sensorTypes === "all" ? "all" : params.sensorTypes.join(",");
 
   await db.insert(offlineKeys).values({
-    machineId: params.machineId,
+    machineId: "", // 已弃用：离线版不再绑定机器码，占位空串（列仍为 notNull，避免 DB 迁移）
     sensorTypes: sensorTypeStr,
     expireDate,
     days: params.days,
@@ -1002,13 +1022,14 @@ export async function generateOfflineActivationCode(params: {
     createdByName: params.createdByName,
     customerId: params.customerId || null,
     customerName: params.customerName || null,
+    contractId: params.contractId || null,
+    contractNo: params.contractNo || null,
     remark: params.remark || null,
     licenseVersion: LICENSE_VERSION,
   });
 
   return {
     activationCode,
-    machineId: params.machineId,
     sensorTypes: params.sensorTypes,
     expireDate,
     days: params.days,
@@ -1455,6 +1476,7 @@ export async function createContract(data: {
   endDate?: string;
   totalKeys?: number;
   remark?: string;
+  status?: "DRAFT" | "ACTIVE" | "EXPIRED" | "TERMINATED";
   createdById: number;
   createdByName?: string;
 }) {
@@ -1472,7 +1494,7 @@ export async function createContract(data: {
     remark: data.remark || null,
     createdById: data.createdById,
     createdByName: data.createdByName || null,
-    status: "DRAFT",
+    status: data.status || "DRAFT",
   });
   return { id: result.insertId, ...data };
 }
