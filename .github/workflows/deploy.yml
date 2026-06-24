@@ -25,6 +25,12 @@ jobs:
             echo "==> 拉取最新代码"
             git fetch origin main
             git reset --hard origin/main
+            echo "==> 写入 .env 配置(从 GitHub Secrets)"
+            cat > .env <<EOF
+            DATABASE_URL=${{ secrets.DATABASE_URL }}
+            JWT_SECRET=${{ secrets.JWT_SECRET }}
+            PORT=3000
+            EOF
             echo "==> 安装依赖"
             pnpm install --frozen-lockfile
             echo "==> 同步数据库表结构"
