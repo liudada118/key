@@ -33,6 +33,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { copyText } from "@/lib/clipboard";
 
 // Status indicator
 function StatusIndicator({ status }: { status: ConnectionStatus }) {
@@ -119,7 +120,7 @@ function MacResultCard({ result, index }: { result: MacResult; index: number }) 
   };
 
   const copyId = () => {
-    navigator.clipboard.writeText(result.uniqueId).then(() => {
+    copyText(result.uniqueId).then(() => {
       toast.success("已复制 Unique ID");
     });
   };

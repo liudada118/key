@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { useState, useMemo, useCallback } from "react";
 import { toast } from "sonner";
+import { copyText } from "@/lib/clipboard";
 
 /** 传感器分组类型 */
 type SensorGroup = {
@@ -307,14 +308,14 @@ function KeyGenerator({
   // 复制
   const copySingleKey = () => {
     if (singleResult) {
-      navigator.clipboard.writeText(singleResult.keyString);
+      copyText(singleResult.keyString);
       toast.success("密钥已复制到剪贴板");
     }
   };
 
   const copyAll = () => {
     if (batchResults) {
-      navigator.clipboard.writeText(
+      copyText(
         batchResults.keys.map((k) => k.keyString).join("\n")
       );
       toast.success("所有密钥已复制到剪贴板");
@@ -892,7 +893,7 @@ function KeyGenerator({
                           variant="ghost"
                           className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 h-5 w-5 p-0"
                           onClick={() => {
-                            navigator.clipboard.writeText(k.keyString);
+                            copyText(k.keyString);
                             toast.success("已复制");
                           }}
                         >

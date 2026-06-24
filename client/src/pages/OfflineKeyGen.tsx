@@ -33,6 +33,7 @@ import {
 } from "lucide-react";
 import { useState, useMemo, useCallback } from "react";
 import { toast } from "sonner";
+import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/_core/hooks/useAuth";
 
 type SensorGroup = {
@@ -68,7 +69,7 @@ function ResultDialog({
   sensorLabelMap: Record<string, string>;
 }) {
   const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
+    copyText(text);
     toast.success("已复制到剪贴板");
   };
 

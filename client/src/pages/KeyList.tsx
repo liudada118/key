@@ -36,6 +36,7 @@ import { trpc } from "@/lib/trpc";
 import { BarChart3, Copy, Download, Loader2, Monitor, Pause, Play, RefreshCw, Search, ShieldX, Trash2, Unplug, History } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import { copyText } from "@/lib/clipboard";
 import { Textarea } from "@/components/ui/textarea";
 
 /** 状态 Badge 配置 */
@@ -299,7 +300,7 @@ export default function KeyList() {
               variant="ghost"
               className="h-7 w-7 p-0"
               onClick={() => {
-                navigator.clipboard.writeText(key.keyString);
+                copyText(key.keyString);
                 toast.success("已复制");
               }}
             >

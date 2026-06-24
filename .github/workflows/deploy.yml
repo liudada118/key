@@ -23,7 +23,17 @@ jobs:
             export NODE_ENV=production
             cd /opt/key-manager
             echo "==> 拉取最新代码"
-            git fetch origin main
+            # 国内服务器拉 GitHub 容易断流,放宽缓冲与低速超时,并重试多次
+            git config http.postBuffer 524288000
+            git config http.lowSpeedLimit 0
+            git config http.lowSpeedTime 600
+            ok=0
+            for i in 1 2 3 4 5; do
+              if git fetch origin main; then ok=1; break; fi
+              echo "fetch 第 $i 次失败,5 秒后重试..."
+              sleep 5
+            done
+            [ "$ok" = 1 ] || { echo "拉取代码多次失败,放弃"; exit 1; }
             git reset --hard origin/main
             echo "==> 写入 .env 配置(从 GitHub Secrets)"
             cat > .env <<EOF

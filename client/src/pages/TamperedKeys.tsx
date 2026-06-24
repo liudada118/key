@@ -19,6 +19,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { toast } from "sonner";
+import { copyText } from "@/lib/clipboard";
 import { ShieldAlert } from "lucide-react";
 
 function fmt(ts?: number | null) {
@@ -195,7 +196,7 @@ export default function TamperedKeys() {
               <Input readOnly value={reissued?.keyString || ""} className="font-mono text-xs" />
               <Button
                 variant="outline"
-                onClick={() => { navigator.clipboard.writeText(reissued?.keyString || ""); toast.success("已复制"); }}
+                onClick={() => { copyText(reissued?.keyString || ""); toast.success("已复制"); }}
               >
                 复制
               </Button>

@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { useState, useMemo } from "react";
 import { toast } from "sonner";
+import { copyText } from "@/lib/clipboard";
 
 /* ============ 离线密钥状态判定 ============ */
 function getStatusBadge(item: { status?: string; expireDate: number }) {
@@ -56,7 +57,7 @@ export default function OfflineKeyList() {
   });
 
   const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
+    copyText(text);
     toast.success("已复制到剪贴板");
   };
 
