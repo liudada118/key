@@ -57,6 +57,13 @@
       "when": 1781748285260,
       "tag": "0007_swift_metal_master",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1782124379609,
+      "tag": "0008_tamper_guard",
+      "breakpoints": true
     }
   ]
 }

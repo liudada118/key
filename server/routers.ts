@@ -88,6 +88,10 @@ import {
   rejectApproval,
   getApprovals,
   getPendingApprovalCount,
+  getTamperedKeys,
+  getTamperedKeyCount,
+  clearKeyTamper,
+  reissueLicenseKey,
 } from "./db";
 import {
   decodeLicenseKey,
@@ -621,10 +625,36 @@ export const appRouter = router({
           }
         }
 
+        // 生命周期状态以数据库为权威：吊销/暂停/异常会覆盖"按到期时间算的有效性"
+        const dbStatus = dbRecord?.status ?? (dbRecord ? "ISSUED" : "UNKNOWN");
+        let valid = decoded.valid;
+        let statusReason: string | null = null;
+        if (dbRecord) {
+          if (dbStatus === "REVOKED") {
+            valid = false;
+            statusReason = dbRecord.revokeReason || "密钥已吊销";
+          } else if (dbStatus === "SUSPENDED") {
+            valid = false;
+            statusReason = dbRecord.suspendReason || "密钥已暂停";
+          } else if (dbStatus === "TAMPERED") {
+            valid = false;
+            statusReason = dbRecord.tamperReason || "密钥异常（检测到时间回拨/篡改）";
+          }
+        }
+
         return {
           ...decoded,
+          valid,
+          status: dbStatus,
+          statusReason,
           isActivated: dbRecord?.isActivated ?? false,
           activatedAt: dbRecord?.activatedAt ?? null,
+          suspendedAt: dbRecord?.suspendedAt ?? null,
+          revokedAt: dbRecord?.revokedAt ?? null,
+          tamperedAt: dbRecord?.tamperedAt ?? null,
+          revokeReason: dbRecord?.revokeReason ?? null,
+          suspendReason: dbRecord?.suspendReason ?? null,
+          tamperReason: dbRecord?.tamperReason ?? null,
           createdByName: dbRecord?.createdByName ?? null,
           customerName: dbRecord?.customerName ?? null,
           customerId: dbRecord?.customerId ?? null,
@@ -902,6 +932,56 @@ export const appRouter = router({
       .query(async ({ input }) => {
         return getKeyStatusHistoryList(input.keyType, input.keyId);
       }),
+
+    // ===== 异常密钥（TAMPERED）管理 =====
+
+    /** 异常密钥列表（按数据域过滤） */
+    tamperedList: adminProcedure.query(async ({ ctx }) => {
+      const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+      return getTamperedKeys(userIds);
+    }),
+
+    /** 异常密钥数量（监控/角标） */
+    tamperedCount: protectedProcedure.query(async ({ ctx }) => {
+      const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+      return getTamperedKeyCount(userIds);
+    }),
+
+    /** 清除异常 / 重新激活 */
+    clearTamper: adminProcedure
+      .input(z.object({ keyId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const result = await clearKeyTamper(input.keyId, ctx.user.id, ctx.user.name || ctx.user.username);
+        await createAuditLog({
+          userId: ctx.user.id,
+          userName: ctx.user.name || ctx.user.username,
+          action: "RESTORE",
+          resourceType: "licenseKey",
+          resourceId: input.keyId,
+          description: `清除异常/重新激活密钥 #${input.keyId}`,
+          ip: ctx.req?.headers?.['x-forwarded-for'] as string || ctx.req?.socket?.remoteAddress || null,
+          userAgent: ctx.req?.headers?.['user-agent'] || null,
+        });
+        return { success: true, key: result };
+      }),
+
+    /** 重新签发新密钥（默认吊销旧 key） */
+    reissue: adminProcedure
+      .input(z.object({ keyId: z.number(), revokeOld: z.boolean().default(true) }))
+      .mutation(async ({ ctx, input }) => {
+        const result = await reissueLicenseKey(input.keyId, ctx.user.id, ctx.user.name || ctx.user.username, { revokeOld: input.revokeOld });
+        await createAuditLog({
+          userId: ctx.user.id,
+          userName: ctx.user.name || ctx.user.username,
+          action: "CREATE",
+          resourceType: "licenseKey",
+          resourceId: result.newKey.id,
+          description: `重新签发密钥 #${result.newKey.id}（源 #${result.oldKeyId}${input.revokeOld ? "，旧 key 已吊销" : ""}）`,
+          ip: ctx.req?.headers?.['x-forwarded-for'] as string || ctx.req?.socket?.remoteAddress || null,
+          userAgent: ctx.req?.headers?.['user-agent'] || null,
+        });
+        return { success: true, ...result };
+      }),
   }),
 
   // ===== 审计日志 =====
@@ -950,6 +1030,9 @@ export const appRouter = router({
         }
         if (key.status === "REVOKED") {
           return { authorized: false, reason: "KEY_REVOKED", message: "密钥已被吊销" };
+        }
+        if (key.status === "TAMPERED") {
+          return { authorized: false, reason: "KEY_TAMPERED", message: key.tamperReason || "密钥异常：检测到时间回拨或篡改" };
         }
         if (key.expireTimestamp < Date.now()) {
           return { authorized: false, reason: "KEY_EXPIRED", message: "密钥已过期" };

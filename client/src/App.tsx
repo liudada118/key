@@ -26,6 +26,7 @@ import BlacklistManagement from "./pages/BlacklistManagement";
 import AlertCenter from "./pages/AlertCenter";
 import ApprovalManagement from "./pages/ApprovalManagement";
 import HeartbeatMonitor from "./pages/HeartbeatMonitor";
+import TamperedKeys from "./pages/TamperedKeys";
 import Login from "./pages/Login";
 import { useAuth } from "./_core/hooks/useAuth";
 import { Loader2 } from "lucide-react";
@@ -55,6 +56,7 @@ function AuthenticatedRouter() {
         <Route path={"/alerts"} component={AlertCenter} />
         <Route path={"/approvals"} component={ApprovalManagement} />
         <Route path={"/heartbeat"} component={HeartbeatMonitor} />
+        <Route path={"/tampered"} component={TamperedKeys} />
         <Route path={"/404"} component={NotFound} />
         <Route component={NotFound} />
       </Switch>

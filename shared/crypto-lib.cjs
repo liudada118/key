@@ -333,10 +333,264 @@ function verifyOfflineLicense(activationCode, options) {
   }
 }
 
-/* ---------- 防回拨时间锚点 ----------
- * 把"见过的最大时间"签名后存到本地文件；每次取一个"可信的当前时间"。
- * 用户把系统时间往回调时，可信时间不会跟着变小 → 防止白嫖。
- * 注意：删除锚点文件可重置，建议桌面端把它放到不显眼的目录并设多份备份。
+/* ============================================================
+ * v2 统一时间闸：防回拨（高水位）+ 永久锁定 + 在线状态缓存
+ *
+ * 设计动机：旧的 getTrustedNow 用 max(本机时间, 锚点) 做"可信时间"，只"钳制"
+ *   不"拒绝"——用户在有效期内回拨时钟，可信时间退回锚点（仍未过期）就照用不误，
+ *   防不住"有效期内任意回拨"。
+ *
+ * v2 改为：持久化一个 HMAC 签名的状态文件 { hw, locked, reason, lockedAt }
+ *   - hw     = 已见过的最高可信时间（只增不减）
+ *   - locked = 一旦检测到回拨即置 true，永久锁定，需厂商 RSA 解锁码（verifyUnlockCode）解锁
+ *   离线 / 在线断网兜底都调用 checkTimeGuard()；在线联网时用服务器时间顶高水位。
+ *
+ * 限制（已知、与旧版一致）：删除状态文件可在纯离线下重置高水位；但状态文件被改字段
+ *   会因 HMAC 不匹配直接判定锁定。在线密钥每次联网都用服务器时间重建高水位，删文件意义不大。
+ * ============================================================ */
+
+// 容差：允许本机时间相对高水位有最多 5 分钟的轻微倒退（NTP 校时/时区抖动），不算回拨
+var ROLLBACK_TOLERANCE_MS = 5 * 60 * 1000;
+// 在线缓存刷新间隔：2 小时
+var ONLINE_REFRESH_INTERVAL_MS = 2 * 60 * 60 * 1000;
+
+/** 对状态对象做稳定 HMAC（固定字段顺序，不含 sig 本身） */
+function _signState(obj) {
+  var base = JSON.stringify({
+    hw: obj.hw || 0,
+    locked: !!obj.locked,
+    reason: obj.reason || "",
+    lockedAt: obj.lockedAt || 0,
+  });
+  return CryptoJS.HmacSHA256(base, KEY_STR).toString();
+}
+
+/** 读状态文件；不存在→初始态；被篡改(HMAC 不符)→直接判定锁定 */
+function _readState(filePath) {
+  try {
+    var fs = require("fs");
+    if (!fs.existsSync(filePath)) return { hw: 0, locked: false, reason: "", lockedAt: 0 };
+    var raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    if (raw.sig !== _signState(raw)) {
+      return { hw: 0, locked: true, reason: "授权状态文件被篡改", lockedAt: 0, tampered: true };
+    }
+    return {
+      hw: parseInt(raw.hw, 10) || 0,
+      locked: !!raw.locked,
+      reason: raw.reason || "",
+      lockedAt: raw.lockedAt || 0,
+    };
+  } catch (e) {
+    return { hw: 0, locked: false, reason: "", lockedAt: 0 };
+  }
+}
+
+/** 写状态文件（带 HMAC 签名） */
+function _writeState(filePath, obj) {
+  try {
+    var fs = require("fs");
+    var out = { hw: obj.hw || 0, locked: !!obj.locked, reason: obj.reason || "", lockedAt: obj.lockedAt || 0 };
+    out.sig = _signState(out);
+    fs.writeFileSync(filePath, JSON.stringify(out));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * 统一回拨闸（离线 / 在线断网兜底共用）。
+ *   - 已锁定               → { ok:false, locked:true }
+ *   - 当前时间 < 高水位-容差 → 判回拨 → 永久锁定 → { ok:false, locked:true, rolledBack:true }
+ *   - 正常                 → 顶高水位 → { ok:true, now:currentMs }
+ * @param {string} filePath  状态文件路径（建议放不显眼目录）
+ * @param {number} currentMs 本次用于校验的时间：离线传本机时间，在线联网传服务器时间
+ * @param {Object} [options] { toleranceMs }
+ */
+function checkTimeGuard(filePath, currentMs, options) {
+  options = options || {};
+  var tol = (typeof options.toleranceMs === "number") ? options.toleranceMs : ROLLBACK_TOLERANCE_MS;
+  var st = _readState(filePath);
+
+  if (st.locked) {
+    return { ok: false, locked: true, rolledBack: false, reason: st.reason || "检测到异常行为", now: st.hw };
+  }
+  if (typeof currentMs !== "number" || isNaN(currentMs)) currentMs = Date.now();
+
+  if (currentMs < st.hw - tol) {
+    var reason = "检测到系统时间被回拨";
+    _writeState(filePath, { hw: st.hw, locked: true, reason: reason, lockedAt: st.hw });
+    return { ok: false, locked: true, rolledBack: true, reason: reason, now: st.hw };
+  }
+
+  var hw = currentMs > st.hw ? currentMs : st.hw;
+  _writeState(filePath, { hw: hw, locked: false, reason: "", lockedAt: 0 });
+  return { ok: true, locked: false, rolledBack: false, now: currentMs };
+}
+
+/** 当前是否处于锁定态（用于启动时决定弹"请联系厂商解锁"弹窗） */
+function isLocked(filePath) {
+  var st = _readState(filePath);
+  return { locked: !!st.locked, reason: st.reason || "", lockedAt: st.lockedAt || 0 };
+}
+
+/**
+ * 校验厂商解锁码（RSA-SHA256 验签）并清除锁定。
+ * 解锁码由管理系统用私钥签发（见 server/db.ts generateUnlockCode）。
+ * 验签通过 → 清除 locked，并把高水位顶到解锁码签发时间，避免立刻又触发回拨。
+ * @param {string} filePath 状态文件路径
+ * @param {string} code     base64 解锁码（{payload, signature} 的 base64）
+ * @param {Object} [options] { publicKey } 覆盖默认公钥
+ * @returns {{ok:boolean, unlockedAt?:number, error?:string}}
+ */
+function verifyUnlockCode(filePath, code, options) {
+  options = options || {};
+  try {
+    var crypto = require("crypto");
+    var publicKey = options.publicKey || OFFLINE_PUBLIC_KEY;
+    if (!code) return { ok: false, error: "解锁码为空" };
+
+    var envelope;
+    try {
+      envelope = JSON.parse(Buffer.from(code.trim(), "base64").toString("utf-8"));
+    } catch (e) {
+      return { ok: false, error: "解锁码格式错误" };
+    }
+    if (!envelope || !envelope.payload || !envelope.signature) {
+      return { ok: false, error: "解锁码缺少 payload 或 signature" };
+    }
+
+    var verify = crypto.createVerify("RSA-SHA256");
+    verify.update(envelope.payload);
+    verify.end();
+    if (!verify.verify(publicKey, envelope.signature, "base64")) {
+      return { ok: false, error: "解锁码签名无效" };
+    }
+
+    var payload = JSON.parse(Buffer.from(envelope.payload, "base64").toString("utf-8"));
+    if (payload.type !== "unlock") return { ok: false, error: "解锁码类型错误" };
+
+    var st = _readState(filePath);
+    var issuedAt = parseInt(payload.issuedAt, 10) || 0;
+    var hw = issuedAt > st.hw ? issuedAt : st.hw;
+    _writeState(filePath, { hw: hw, locked: false, reason: "", lockedAt: 0 });
+    return { ok: true, unlockedAt: issuedAt };
+  } catch (e) {
+    return { ok: false, error: "解锁异常：" + (e && e.message) };
+  }
+}
+
+/* ---------- 在线密钥本地缓存（服务器时间 + 密钥状态） ---------- */
+
+/** 读在线缓存（HMAC 校验，被改返回 null） */
+function readOnlineCache(filePath) {
+  try {
+    var fs = require("fs");
+    if (!fs.existsSync(filePath)) return null;
+    var raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    if (raw.sig !== CryptoJS.HmacSHA256(JSON.stringify(raw.d), KEY_STR).toString()) return null;
+    return raw.d;
+  } catch (e) {
+    return null;
+  }
+}
+
+/** 写在线缓存（HMAC 签名） */
+function writeOnlineCache(filePath, data) {
+  try {
+    var fs = require("fs");
+    var out = { d: data, sig: CryptoJS.HmacSHA256(JSON.stringify(data), KEY_STR).toString() };
+    fs.writeFileSync(filePath, JSON.stringify(out));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/** 缓存是否该刷新（超过 intervalMs 未拉取，或从未拉过） */
+function shouldRefreshOnlineCache(cache, nowMs, intervalMs) {
+  if (!cache || !cache.fetchedAt) return true;
+  var iv = (typeof intervalMs === "number") ? intervalMs : ONLINE_REFRESH_INTERVAL_MS;
+  return (nowMs - cache.fetchedAt) >= iv;
+}
+
+/**
+ * 在线密钥统一校验。整合方（Electron）负责实际联网拉 /serverTime + /licenseCheck，
+ * 拉到就把结果作为 serverResult 传进来；断网传 null。
+ * @param {Object} p
+ * @param {string} p.statePath   回拨状态文件
+ * @param {string} p.cachePath   在线缓存文件
+ * @param {Object|null} p.serverResult  /licenseCheck 结果 { time, valid, status, reason, expireTimestamp, remainingDays, sensorTypes, isAllTypes }；断网传 null
+ * @param {number} [p.localNow]  本机时间
+ */
+function evaluateOnlineLicense(p) {
+  p = p || {};
+  var localNow = (typeof p.localNow === "number") ? p.localNow : Date.now();
+
+  // —— 在线：刷新缓存 + 用服务器时间顶高水位 ——
+  if (p.serverResult && typeof p.serverResult.time === "number") {
+    writeOnlineCache(p.cachePath, {
+      status: p.serverResult.status,
+      valid: !!p.serverResult.valid,
+      expireTimestamp: p.serverResult.expireTimestamp,
+      sensorTypes: p.serverResult.sensorTypes,
+      isAllTypes: !!p.serverResult.isAllTypes,
+      serverTime: p.serverResult.time,
+      fetchedAt: localNow,
+    });
+    var g1 = checkTimeGuard(p.statePath, p.serverResult.time);
+    if (!g1.ok) return { valid: false, locked: g1.locked, rolledBack: g1.rolledBack, offline: false, reason: g1.reason };
+    return {
+      valid: !!p.serverResult.valid, locked: false, rolledBack: false, offline: false,
+      status: p.serverResult.status, reason: p.serverResult.reason,
+      expireTimestamp: p.serverResult.expireTimestamp, sensorTypes: p.serverResult.sensorTypes,
+      isAllTypes: !!p.serverResult.isAllTypes, remainingDays: p.serverResult.remainingDays,
+    };
+  }
+
+  // —— 断网兜底：走回拨闸 + 缓存状态 + 本机时间判过期 ——
+  var g = checkTimeGuard(p.statePath, localNow);
+  if (!g.ok) {
+    return { valid: false, locked: g.locked, rolledBack: g.rolledBack, offline: true, reason: g.reason || "检测到异常行为" };
+  }
+  var cache = readOnlineCache(p.cachePath);
+  if (!cache) {
+    // 从未成功联网过 → 无法判定 → 保守拒绝，引导先联网激活一次
+    return { valid: false, locked: false, rolledBack: false, offline: true, reason: "尚未联网验证，请先联网激活一次" };
+  }
+  if (cache.status === "REVOKED") return { valid: false, locked: false, rolledBack: false, offline: true, status: "REVOKED", reason: "密钥已吊销" };
+  if (cache.status === "SUSPENDED") return { valid: false, locked: false, rolledBack: false, offline: true, status: "SUSPENDED", reason: "密钥已暂停" };
+
+  var expired = !!cache.expireTimestamp && localNow >= cache.expireTimestamp;
+  var remainingDays = cache.expireTimestamp ? Math.ceil((cache.expireTimestamp - localNow) / 86400000) : null;
+  return {
+    valid: !expired, locked: false, rolledBack: false, offline: true,
+    status: cache.status, reason: expired ? "密钥已过期" : undefined,
+    expireTimestamp: cache.expireTimestamp, sensorTypes: cache.sensorTypes,
+    isAllTypes: cache.isAllTypes, remainingDays: remainingDays,
+  };
+}
+
+/**
+ * 离线密钥统一校验：回拨闸 + RSA 验签 + 本机时间判过期。
+ * @param {Object} p { activationCode, statePath, localNow?, publicKey? }
+ */
+function evaluateOfflineLicense(p) {
+  p = p || {};
+  var localNow = (typeof p.localNow === "number") ? p.localNow : Date.now();
+  var g = checkTimeGuard(p.statePath, localNow);
+  if (!g.ok) {
+    return { valid: false, locked: g.locked, rolledBack: g.rolledBack, reason: g.reason || "检测到异常行为" };
+  }
+  var res = verifyOfflineLicense(p.activationCode, { publicKey: p.publicKey, nowMs: localNow });
+  res.locked = false;
+  res.rolledBack = false;
+  return res;
+}
+
+/* ---------- 防回拨时间锚点（v1，已废弃，保留向后兼容） ----------
+ * @deprecated 改用 checkTimeGuard / evaluateOfflineLicense / evaluateOnlineLicense。
+ * 旧逻辑只钳制不拒绝，防不住有效期内回拨；请勿在新接入中使用。
  */
 
 /** 读取锚点文件里的最大时间戳（带 HMAC 校验，被改过则当作 0） */
@@ -386,6 +640,19 @@ module.exports = {
   generateLicenseKey,
   decodeLicenseKey,
   verifyOfflineLicense,
+  // v2 统一时间闸 / 锁定 / 解锁
+  checkTimeGuard,
+  isLocked,
+  verifyUnlockCode,
+  // 在线缓存 + 统一校验入口
+  readOnlineCache,
+  writeOnlineCache,
+  shouldRefreshOnlineCache,
+  evaluateOnlineLicense,
+  evaluateOfflineLicense,
+  ROLLBACK_TOLERANCE_MS,
+  ONLINE_REFRESH_INTERVAL_MS,
+  // v1 锚点（已废弃，保留兼容）
   getTrustedNow,
   readTimeAnchor,
   writeTimeAnchor,

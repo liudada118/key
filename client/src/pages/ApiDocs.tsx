@@ -239,6 +239,35 @@ for group in groups:
         desc: "获取所有分组名称列表",
         responseExample: `["触觉手套", "汽车座椅", "其他"]`,
       },
+      {
+        name: "GET /sensorTypes",
+        method: "query",
+        auth: "public",
+        desc: "桌面端专用：纯 REST 接口（非 tRPC），返回当前启用的传感器类型清单 + value→label 映射。带 CORS，桌面端一次 fetch 即可用，无需解析 superjson。后台在「传感器类型管理」里增删后，桌面端自动同步。",
+        responseExample: `{
+  "time": 1750000000000,
+  "groups": [
+    {
+      "group": "触觉手套",
+      "icon": "🧤",
+      "items": [
+        { "id": 1, "label": "触觉手套", "value": "hand0205" }
+      ]
+    }
+  ],
+  "flat": [
+    { "label": "触觉手套", "value": "hand0205", "group": "触觉手套" }
+  ],
+  "map": { "hand0205": "触觉手套" }
+}`,
+        callExample: `// 桌面端启动时拉取（替换本地硬编码 sensorArr）
+const BASE_URL = "https://your-domain.com";
+const resp = await fetch(BASE_URL + "/sensorTypes");
+const data = await resp.json();
+// data.flat   → [{ label, value, group }]  做选择列表
+// data.map    → { value: label }  把授权到的 value 翻译成中文名
+const label = data.map["hand0205"]; // "触觉手套"`,
+      },
     ],
   },
 ];
@@ -789,6 +818,15 @@ function generateHttpExample(endpoint: ApiEndpoint): string {
 function EndpointCard({ endpoint }: { endpoint: ApiEndpoint }) {
   const [open, setOpen] = useState(false);
   const httpExample = useMemo(() => generateHttpExample(endpoint), [endpoint]);
+  // 示例里的占位域名替换为当前访问地址（如 http://39.105.83.246:3000），换服务器/域名无需改代码
+  const callExample = useMemo(
+    () =>
+      endpoint.callExample?.replace(
+        /https:\/\/your-domain\.com/g,
+        typeof window !== "undefined" ? window.location.origin : "https://your-domain.com"
+      ),
+    [endpoint.callExample]
+  );
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -910,16 +948,16 @@ function EndpointCard({ endpoint }: { endpoint: ApiEndpoint }) {
           </div>
 
           {/* 客户端代码示例（可复制） */}
-          {endpoint.callExample && (
+          {callExample && (
             <div>
               <div className="flex items-center justify-between mb-2">
                 <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                   客户端代码示例
                 </h4>
-                <CopyButton text={endpoint.callExample} label="复制代码" />
+                <CopyButton text={callExample} label="复制代码" />
               </div>
               <pre className="bg-slate-950 text-slate-50 rounded-lg p-4 text-xs overflow-x-auto font-mono leading-relaxed">
-                {endpoint.callExample}
+                {callExample}
               </pre>
             </div>
           )}
@@ -1099,7 +1137,8 @@ Content-Type: application/json
 
 # 其他辅助接口
 GET /api/trpc/offlineKeys.publicKey   # RSA 公钥（离线密钥用）
-GET /api/trpc/sensors.groups          # 传感器类型列表`}</pre>
+GET /api/trpc/sensors.groups          # 传感器类型列表（tRPC，含 superjson 包装）
+GET /sensorTypes                      # 传感器类型清单（纯 REST + CORS，桌面端推荐用这个）`}</pre>
               </>
             ) : (
               <>

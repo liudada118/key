@@ -46,6 +46,7 @@ const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
   EXPIRED: { label: "已过期", className: "bg-chart-5/10 text-chart-5 border-chart-5/30" },
   RENEWED: { label: "已续期", className: "bg-blue-500/10 text-blue-600 border-blue-500/30" },
   REVOKED: { label: "已吊销", className: "bg-red-500/10 text-red-600 border-red-500/30" },
+  TAMPERED: { label: "异常", className: "bg-red-600 text-white border-red-700 font-semibold" },
 };
 
 export default function KeyList() {
@@ -522,6 +523,7 @@ export default function KeyList() {
                 <SelectItem value="EXPIRED">已过期</SelectItem>
                 <SelectItem value="RENEWED">已续期</SelectItem>
                 <SelectItem value="REVOKED">已吊销</SelectItem>
+                <SelectItem value="TAMPERED">异常</SelectItem>
               </SelectContent>
             </Select>
           </div>

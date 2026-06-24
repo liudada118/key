@@ -143,8 +143,9 @@ export type InsertContract = typeof contracts.$inferInsert;
  * EXPIRED: 已过期（超过有效期）
  * RENEWED: 已续期（从过期状态续期）
  * REVOKED: 已吊销（永久作废）
+ * TAMPERED: 异常（服务端检测到客户端时间回拨 / 客户端上报篡改）
  */
-export const KEY_STATUS = ["ISSUED", "ACTIVATED", "SUSPENDED", "EXPIRED", "RENEWED", "REVOKED"] as const;
+export const KEY_STATUS = ["ISSUED", "ACTIVATED", "SUSPENDED", "EXPIRED", "RENEWED", "REVOKED", "TAMPERED"] as const;
 export type KeyStatus = typeof KEY_STATUS[number];
 
 /**
@@ -182,7 +183,7 @@ export const licenseKeys = mysqlTable("licenseKeys", {
   /** 是否已激活（至少绑定了一台设备）— 兼容旧逻辑 */
   isActivated: boolean("isActivated").default(false).notNull(),
   /** 密钥生命周期状态 */
-  status: mysqlEnum("status", ["ISSUED", "ACTIVATED", "SUSPENDED", "EXPIRED", "RENEWED", "REVOKED"]).default("ISSUED").notNull(),
+  status: mysqlEnum("status", ["ISSUED", "ACTIVATED", "SUSPENDED", "EXPIRED", "RENEWED", "REVOKED", "TAMPERED"]).default("ISSUED").notNull(),
   /** 首次激活时间 */
   activatedAt: timestamp("activatedAt"),
   /** 激活设备信息（兼容旧字段，新流程使用 keyDevices 表） */
@@ -199,6 +200,21 @@ export const licenseKeys = mysqlTable("licenseKeys", {
   renewedAt: timestamp("renewedAt"),
   /** 续期前的到期时间戳（用于记录历史） */
   previousExpireTimestamp: bigint("previousExpireTimestamp", { mode: "number" }),
+  // ===== 防回拨：服务端权威时间高水位 & 异常元数据 =====
+  /** 该 key 历次上报 clientTime 的最大值（可信时间高水位，ms） */
+  lastSeenClientTime: bigint("lastSeenClientTime", { mode: "number" }),
+  /** 最近一次 /licenseCheck 的服务器时间 */
+  lastCheckAt: timestamp("lastCheckAt"),
+  /** 被标记为异常(TAMPERED)的时间 */
+  tamperedAt: timestamp("tamperedAt"),
+  /** 异常触发原因（client上报 / 服务端检测回拨） */
+  tamperReason: text("tamperReason"),
+  /** 触发异常时客户端上报的本机时间 (ms) */
+  reportedClientTime: bigint("reportedClientTime", { mode: "number" }),
+  /** 触发异常时的服务器时间 (ms) */
+  tamperServerTime: bigint("tamperServerTime", { mode: "number" }),
+  /** 被标记异常前的状态（清除异常时恢复用） */
+  statusBeforeTamper: mysqlEnum("statusBeforeTamper", ["ISSUED", "ACTIVATED", "SUSPENDED", "EXPIRED", "RENEWED", "REVOKED", "TAMPERED"]),
   /** 批次号（批量生成时标识同一批） */
   batchId: varchar("batchId", { length: 64 }),
   /** 备注 */
@@ -362,7 +378,7 @@ export const offlineKeys = mysqlTable("offlineKeys", {
   /** 备注 */
   remark: text("remark"),
   /** 密钥生命周期状态 */
-  status: mysqlEnum("status", ["ISSUED", "ACTIVATED", "SUSPENDED", "EXPIRED", "RENEWED", "REVOKED"]).default("ISSUED").notNull(),
+  status: mysqlEnum("status", ["ISSUED", "ACTIVATED", "SUSPENDED", "EXPIRED", "RENEWED", "REVOKED", "TAMPERED"]).default("ISSUED").notNull(),
   /** 暂停时间 */
   suspendedAt: timestamp("suspendedAt"),
   /** 暂停原因 */
@@ -391,9 +407,9 @@ export const keyStatusHistory = mysqlTable("keyStatusHistory", {
   /** 关联的密钥 ID */
   keyId: int("keyId").notNull(),
   /** 变更前状态 */
-  fromStatus: mysqlEnum("fromStatus", ["ISSUED", "ACTIVATED", "SUSPENDED", "EXPIRED", "RENEWED", "REVOKED"]),
+  fromStatus: mysqlEnum("fromStatus", ["ISSUED", "ACTIVATED", "SUSPENDED", "EXPIRED", "RENEWED", "REVOKED", "TAMPERED"]),
   /** 变更后状态 */
-  toStatus: mysqlEnum("toStatus", ["ISSUED", "ACTIVATED", "SUSPENDED", "EXPIRED", "RENEWED", "REVOKED"]).notNull(),
+  toStatus: mysqlEnum("toStatus", ["ISSUED", "ACTIVATED", "SUSPENDED", "EXPIRED", "RENEWED", "REVOKED", "TAMPERED"]).notNull(),
   /** 变更原因 */
   reason: text("reason"),
   /** 操作人 ID */

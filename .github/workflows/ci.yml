@@ -1,0 +1,34 @@
+name: CI
+
+# 每次推送代码、或开 Pull Request 时,自动跑质量检查
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: 安装 Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 类型检查
+        run: pnpm check
+
+      - name: 运行测试
+        run: pnpm test
+
+      - name: 构建(确认能编译)
+        run: pnpm build

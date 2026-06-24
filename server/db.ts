@@ -32,6 +32,7 @@ import {
 } from "../drizzle/schema";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
+import { generateLicenseKey, decodeLicenseKey } from "../shared/crypto";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -130,37 +131,62 @@ export async function ensureDefaultSuperAdmin() {
 }
 
 /** 确保默认传感器类型存在 */
+/**
+ * 桌面端原有的授权传感器类型（权威清单，共 24 个）。
+ * 约束：只增不删、不改 value（value 是桌面端识别键）；label 可改。
+ * 新增类型请继续走管理界面的"新增传感器类型"功能。
+ */
+const DEFAULT_SENSOR_TYPES: InsertSensorType[] = [
+  // 常用
+  { label: "手部检测", value: "hand", groupName: "常用", groupIcon: "🖐️", sortOrder: 1, isActive: true },
+  // 关怀
+  { label: "小床监测", value: "jqbed", groupName: "关怀", groupIcon: "🛏️", sortOrder: 2, isActive: true },
+  { label: "宠物看护", value: "petCare", groupName: "关怀", groupIcon: "🛏️", sortOrder: 3, isActive: true },
+  { label: "mini看护", value: "petCareMini", groupName: "关怀", groupIcon: "🛏️", sortOrder: 4, isActive: true },
+  // lab
+  { label: "OneStep", value: "bed4096", groupName: "lab", groupIcon: "🧪", sortOrder: 5, isActive: true },
+  // 定制
+  { label: "小床检测(数据)", value: "smallBedNoAlg", groupName: "定制", groupIcon: "🛠️", sortOrder: 6, isActive: true },
+  { label: "小床检测(12B)", value: "smallBed12B", groupName: "定制", groupIcon: "🛠️", sortOrder: 7, isActive: true },
+  { label: "温度全床系统", value: "tempFullBed", groupName: "定制", groupIcon: "🛠️", sortOrder: 8, isActive: true },
+  { label: "整椅展示", value: "wholeChair", groupName: "定制", groupIcon: "🛠️", sortOrder: 9, isActive: true },
+  { label: "轮椅", value: "minzhen", groupName: "定制", groupIcon: "🛠️", sortOrder: 10, isActive: true },
+  // 精密
+  { label: "32*32(检测点)", value: "handSinglePoint", groupName: "精密", groupIcon: "🧤", sortOrder: 11, isActive: true },
+  { label: "触觉手套", value: "hand0205", groupName: "精密", groupIcon: "🧤", sortOrder: 12, isActive: true },
+  { label: "触觉手套2", value: "hand0205Double", groupName: "精密", groupIcon: "🧤", sortOrder: 13, isActive: true },
+  { label: "触觉手套(115200)", value: "handGlove115200", groupName: "精密", groupIcon: "🧤", sortOrder: 14, isActive: true },
+  { label: "触觉手套(整包)", value: "handGloveFullPacket", groupName: "精密", groupIcon: "🧤", sortOrder: 15, isActive: true },
+  { label: "10*10小样", value: "smallSample", groupName: "精密", groupIcon: "🧤", sortOrder: 16, isActive: true },
+  { label: "宇树G1触觉上衣", value: "robot1", groupName: "精密", groupIcon: "🧤", sortOrder: 17, isActive: true },
+  { label: "松延N2触觉上衣", value: "robotSY", groupName: "精密", groupIcon: "🧤", sortOrder: 18, isActive: true },
+  { label: "零次方H1触觉上衣", value: "robotLCF", groupName: "精密", groupIcon: "🧤", sortOrder: 19, isActive: true },
+  { label: "触觉足底", value: "footVideo", groupName: "精密", groupIcon: "🧤", sortOrder: 20, isActive: true },
+  { label: "14x20高速", value: "daliegu", groupName: "精密", groupIcon: "🧤", sortOrder: 21, isActive: true },
+  { label: "16x16高速", value: "fast256", groupName: "精密", groupIcon: "🧤", sortOrder: 22, isActive: true },
+  { label: "32x32高速", value: "fast1024", groupName: "精密", groupIcon: "🧤", sortOrder: 23, isActive: true },
+  { label: "人体全身", value: "humanBody", groupName: "精密", groupIcon: "🧤", sortOrder: 24, isActive: true },
+];
+
+/**
+ * 确保权威传感器类型齐全（幂等补齐）。
+ * 不论表是否为空，都会按 value 补插缺失项；已存在的行不删除、不修改（保留管理员对 label/分组的自定义）。
+ */
 export async function ensureDefaultSensorTypes() {
   const db = await getDb();
   if (!db) return;
 
-  // 检查是否已有传感器数据
-  const existing = await db.select().from(sensorTypes).limit(1);
-  if (existing.length > 0) return;
+  const existing = await db.select({ value: sensorTypes.value }).from(sensorTypes);
+  const existingValues = new Set(existing.map((s) => s.value));
 
-  console.log("[Init] Creating default sensor types...");
-  const defaultSensors: InsertSensorType[] = [
-    // 常用
-    { label: "手部检测", value: "hand", groupName: "常用", groupIcon: "🖐️", sortOrder: 1, isActive: true },
-    // 关怀
-    { label: "小床监测", value: "jqbed", groupName: "关怀", groupIcon: "🛏️", sortOrder: 10, isActive: true },
-    // 精密
-    { label: "触觉手套", value: "hand0205", groupName: "精密", groupIcon: "🧤", sortOrder: 20, isActive: true },
-    { label: "触觉手套(115200)", value: "handGlove115200", groupName: "精密", groupIcon: "🧤", sortOrder: 21, isActive: true },
-    { label: "小型样品", value: "smallSample", groupName: "精密", groupIcon: "🧤", sortOrder: 22, isActive: true },
-    { label: "宇树G1触觉上衣", value: "robot1", groupName: "精密", groupIcon: "🧤", sortOrder: 23, isActive: true },
-    { label: "松延N2触觉上衣", value: "robotSY", groupName: "精密", groupIcon: "🧤", sortOrder: 24, isActive: true },
-    { label: "零次方H1触觉上衣", value: "robotLCF", groupName: "精密", groupIcon: "🧤", sortOrder: 25, isActive: true },
-    { label: "触觉足底", value: "footVideo", groupName: "精密", groupIcon: "🧤", sortOrder: 26, isActive: true },
-    { label: "14x20高速", value: "daliegu", groupName: "精密", groupIcon: "🧤", sortOrder: 27, isActive: true },
-    { label: "16x16高速", value: "fast256", groupName: "精密", groupIcon: "🧤", sortOrder: 28, isActive: true },
-    { label: "32x32高速", value: "fast1024", groupName: "精密", groupIcon: "🧤", sortOrder: 29, isActive: true },
-  ];
+  const missing = DEFAULT_SENSOR_TYPES.filter((s) => !existingValues.has(s.value));
+  if (missing.length === 0) return;
 
-  for (const sensor of defaultSensors) {
+  console.log(`[Init] Backfilling ${missing.length} missing sensor type(s): ${missing.map((s) => s.value).join(", ")}`);
+  for (const sensor of missing) {
     await db.insert(sensorTypes).values(sensor);
   }
-  console.log(`[Init] Created ${defaultSensors.length} default sensor types`);
+  console.log(`[Init] Sensor types complete (${existingValues.size + missing.length} total)`);
 }
 
 /** 修改密码 */
@@ -961,6 +987,33 @@ export async function getAllRsaKeyPairs() {
   return all;
 }
 
+/**
+ * 签发"解锁码"（厂商侧）。
+ * 客户端检测到时间回拨会永久锁定，需用此码（RSA-SHA256 签名）解锁。
+ * 客户端用内置公钥 verifyUnlockCode 验签通过即清除锁定（见 shared/crypto-lib.cjs）。
+ * 说明：当前未绑定机器码（与离线版策略一致），同一解锁码可在任意机器解锁；
+ *      如需限制可在 payload 里加 machineId 并在客户端校验。
+ */
+export async function generateUnlockCode() {
+  const keyPair = await ensureRsaKeyPair();
+  if (!keyPair) throw new Error("No RSA key pair available");
+
+  const payloadObj = {
+    type: "unlock",
+    issuedAt: Date.now(),
+    nonce: crypto.randomBytes(8).toString("hex"),
+  };
+  const payloadB64 = Buffer.from(JSON.stringify(payloadObj)).toString("base64");
+
+  const sign = crypto.createSign("RSA-SHA256");
+  sign.update(payloadB64);
+  sign.end();
+  const signature = sign.sign(keyPair.privateKey, "base64");
+
+  const code = Buffer.from(JSON.stringify({ payload: payloadB64, signature })).toString("base64");
+  return { code, issuedAt: payloadObj.issuedAt };
+}
+
 // ===== Offline Key Helpers =====
 
 const LICENSE_VERSION = 2;
@@ -1249,6 +1302,192 @@ export async function getKeyStatusHistoryList(keyType: "online" | "offline", key
   return db.select().from(keyStatusHistory)
     .where(and(eq(keyStatusHistory.keyType, keyType), eq(keyStatusHistory.keyId, keyId)))
     .orderBy(desc(keyStatusHistory.createdAt));
+}
+
+// ===================================================================
+// 防回拨：服务端权威时间高水位 + 异常密钥(TAMPERED)
+// ===================================================================
+
+/** 客户端时间回拨容差：5 分钟内的轻微倒退（NTP/时区）不算异常 */
+const TAMPER_TOLERANCE_MS = 5 * 60 * 1000;
+
+/**
+ * 记录客户端上报时间并检测回拨（在线密钥，由 /licenseCheck 调用）。
+ * - 维护 lastSeenClientTime 高水位；clientTime < 高水位-容差，或客户端上报 tamper=true → 标记 TAMPERED。
+ * - TAMPERED 一旦标记会持久化，需管理员清除异常后才会复位。REVOKED 的 key 不再变更。
+ * @returns { tampered, status } status 为处理后的当前状态
+ */
+export async function recordClientTimeAndDetectTamper(params: {
+  keyId: number;
+  clientTime?: number;
+  tamperReported?: boolean;
+  serverNow?: number;
+}): Promise<{ tampered: boolean; status: KeyStatus } | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const key = await getLicenseKeyById(params.keyId);
+  if (!key) return null;
+
+  const serverNow = params.serverNow ?? Date.now();
+  const clientTime = typeof params.clientTime === "number" && !Number.isNaN(params.clientTime) ? params.clientTime : undefined;
+
+  // 已吊销：服务端权威终态，不再处理
+  if (key.status === "REVOKED") return { tampered: false, status: "REVOKED" };
+
+  // 已是异常：保持异常，仅刷新检查时间，不抬高水位
+  if (key.status === "TAMPERED") {
+    await db.update(licenseKeys).set({ lastCheckAt: new Date(serverNow) }).where(eq(licenseKeys.id, key.id));
+    return { tampered: true, status: "TAMPERED" };
+  }
+
+  const prevHW = key.lastSeenClientTime ?? 0;
+  const rolledBack = clientTime !== undefined && clientTime < prevHW - TAMPER_TOLERANCE_MS;
+  const detected = !!params.tamperReported || rolledBack;
+
+  if (detected) {
+    const reason = params.tamperReported
+      ? "客户端上报时间异常"
+      : `服务端检测时间回拨：上报 ${clientTime} < 高水位 ${prevHW}`;
+    await db.update(licenseKeys).set({
+      status: "TAMPERED",
+      statusBeforeTamper: key.status as KeyStatus,
+      tamperedAt: new Date(serverNow),
+      tamperReason: reason,
+      reportedClientTime: clientTime ?? null,
+      tamperServerTime: serverNow,
+      lastCheckAt: new Date(serverNow),
+    }).where(eq(licenseKeys.id, key.id));
+    await recordKeyStatusChange({
+      keyType: "online",
+      keyId: key.id,
+      fromStatus: key.status as KeyStatus,
+      toStatus: "TAMPERED",
+      reason,
+      actorId: 0,
+      actorName: "系统(回拨检测)",
+    });
+    return { tampered: true, status: "TAMPERED" };
+  }
+
+  // 正常：抬高水位
+  const newHW = clientTime !== undefined && clientTime > prevHW ? clientTime : prevHW;
+  await db.update(licenseKeys).set({
+    lastSeenClientTime: newHW,
+    lastCheckAt: new Date(serverNow),
+  }).where(eq(licenseKeys.id, key.id));
+  return { tampered: false, status: key.status as KeyStatus };
+}
+
+/**
+ * 清除异常 / 重新激活（管理员核实后）。
+ * 清除 TAMPERED 标记，恢复异常前状态，并重置高水位（否则客户时钟未调回会立刻又判异常）。
+ */
+export async function clearKeyTamper(keyId: number, actorId: number, actorName: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const key = await getLicenseKeyById(keyId);
+  if (!key) throw new Error("密钥不存在");
+  if (key.status !== "TAMPERED") throw new Error("该密钥不是异常状态");
+
+  // 恢复到异常前状态；若过期则置 EXPIRED；缺失则按是否激活回退
+  let toStatus: KeyStatus = (key.statusBeforeTamper as KeyStatus) || (key.isActivated ? "ACTIVATED" : "ISSUED");
+  if (key.expireTimestamp < Date.now() && toStatus !== "REVOKED") toStatus = "EXPIRED";
+
+  await db.update(licenseKeys).set({
+    status: toStatus,
+    statusBeforeTamper: null,
+    tamperedAt: null,
+    tamperReason: null,
+    reportedClientTime: null,
+    tamperServerTime: null,
+    lastSeenClientTime: null, // 重置高水位
+  }).where(eq(licenseKeys.id, keyId));
+
+  await recordKeyStatusChange({
+    keyType: "online",
+    keyId,
+    fromStatus: "TAMPERED",
+    toStatus,
+    reason: "管理员清除异常 / 重新激活",
+    actorId,
+    actorName,
+  });
+  return getLicenseKeyById(keyId);
+}
+
+/** 获取异常(TAMPERED)密钥列表（按数据域过滤） */
+export async function getTamperedKeys(userIds: number[]) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(licenseKeys)
+    .where(and(inArray(licenseKeys.createdById, userIds), eq(licenseKeys.status, "TAMPERED")))
+    .orderBy(desc(licenseKeys.tamperedAt));
+}
+
+/** 异常密钥数量（监控用） */
+export async function getTamperedKeyCount(userIds: number[]) {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db.select({ count: count() }).from(licenseKeys)
+    .where(and(inArray(licenseKeys.createdById, userIds), eq(licenseKeys.status, "TAMPERED")));
+  return result[0]?.count ?? 0;
+}
+
+/**
+ * 重新签发新密钥：按原密钥的传感器/天数/客户生成一把【新密文串】（ACTIVATED），
+ * 默认同时把旧密钥吊销。用于异常/盗用后给客户换新 key。
+ */
+export async function reissueLicenseKey(keyId: number, actorId: number, actorName: string, opts?: { revokeOld?: boolean }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const old = await getLicenseKeyById(keyId);
+  if (!old) throw new Error("原密钥不存在");
+
+  // 重建传感器入参并生成新串
+  const sensorsArg: string | string[] = old.sensorType === "all" ? "all" : old.sensorType.split(",");
+  const newKeyString = generateLicenseKey(sensorsArg, old.days, old.category as "production" | "rental");
+  const decoded = decodeLicenseKey(newKeyString);
+  const expireTimestamp = decoded.expireTimestamp ?? (Date.now() + old.days * 24 * 60 * 60 * 1000);
+  const keyHash = crypto.createHash("sha256").update(newKeyString).digest("hex");
+
+  await db.insert(licenseKeys).values({
+    keyString: newKeyString,
+    keyHash,
+    sensorType: old.sensorType,
+    category: old.category,
+    days: old.days,
+    expireTimestamp,
+    createdById: old.createdById,
+    createdByName: old.createdByName,
+    customerId: old.customerId,
+    contractId: old.contractId,
+    contractNo: old.contractNo,
+    customerName: old.customerName,
+    maxDevices: old.maxDevices,
+    isActivated: true,
+    status: "ACTIVATED",
+    activatedAt: new Date(),
+    remark: old.remark ? `${old.remark}（由 #${old.id} 重签）` : `由 #${old.id} 重签`,
+  });
+  const inserted = await db.select().from(licenseKeys).where(eq(licenseKeys.keyHash, keyHash)).orderBy(desc(licenseKeys.id)).limit(1);
+  const newKey = inserted[0];
+
+  await recordKeyStatusChange({
+    keyType: "online",
+    keyId: newKey.id,
+    fromStatus: null,
+    toStatus: "ACTIVATED",
+    reason: `重新签发自 #${old.id}`,
+    actorId,
+    actorName,
+  });
+
+  // 默认吊销旧 key
+  if (opts?.revokeOld !== false) {
+    await revokeLicenseKey(old.id, `已重新签发新密钥 #${newKey.id}`, actorId, actorName);
+  }
+
+  return { newKey, oldKeyId: old.id, revokedOld: opts?.revokeOld !== false };
 }
 
 // ===== Audit Log Helpers =====
