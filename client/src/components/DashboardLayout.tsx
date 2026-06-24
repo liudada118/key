@@ -26,9 +26,7 @@ import { useIsMobile } from "@/hooks/useMobile";
 import {
   AlertTriangle,
   BarChart3,
-  Bell,
   Building2,
-  CheckCircle,
   Cpu,
   FileText,
   Globe,
@@ -42,7 +40,6 @@ import {
   Settings2,
   Shield,
   ShieldCheck,
-  ShieldOff,
   Users,
   UsersRound,
   Wifi,
@@ -124,9 +121,6 @@ const menuSections: MenuSection[] = [
     items: [
       { icon: AlertTriangle, label: "异常密钥", path: "/tampered", roles: ["super_admin", "admin"] },
       { icon: Heart, label: "心跳监控", path: "/heartbeat", roles: ["super_admin", "admin"] },
-      { icon: ShieldOff, label: "离线黑名单", path: "/blacklist", roles: ["super_admin", "admin"] },
-      { icon: Bell, label: "告警中心", path: "/alerts", roles: ["super_admin", "admin"] },
-      { icon: CheckCircle, label: "审批管理", path: "/approvals", roles: ["super_admin", "admin"] },
     ],
   },
   {

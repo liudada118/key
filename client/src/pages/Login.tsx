@@ -103,9 +103,9 @@ export default function Login() {
               <p className="text-xs text-muted-foreground text-center">
                 首次使用请联系超级管理员创建账号
               </p>
-              <p className="text-xs text-muted-foreground text-center mt-1">
+              {/* <p className="text-xs text-muted-foreground text-center mt-1">
                 默认管理员：admin / admin123
-              </p>
+              </p> */}
             </div>
           </CardContent>
         </Card>

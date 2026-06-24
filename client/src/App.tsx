@@ -22,9 +22,6 @@ import DummyDeviceCode from "./pages/DummyDeviceCode";
 import AuditLog from "./pages/AuditLog";
 import ContractManagement from "./pages/ContractManagement";
 import TeamManagement from "./pages/TeamManagement";
-import BlacklistManagement from "./pages/BlacklistManagement";
-import AlertCenter from "./pages/AlertCenter";
-import ApprovalManagement from "./pages/ApprovalManagement";
 import HeartbeatMonitor from "./pages/HeartbeatMonitor";
 import TamperedKeys from "./pages/TamperedKeys";
 import Login from "./pages/Login";
@@ -52,9 +49,6 @@ function AuthenticatedRouter() {
         <Route path={"/audit"} component={AuditLog} />
         <Route path={"/contracts"} component={ContractManagement} />
         <Route path={"/teams"} component={TeamManagement} />
-        <Route path={"/blacklist"} component={BlacklistManagement} />
-        <Route path={"/alerts"} component={AlertCenter} />
-        <Route path={"/approvals"} component={ApprovalManagement} />
         <Route path={"/heartbeat"} component={HeartbeatMonitor} />
         <Route path={"/tampered"} component={TamperedKeys} />
         <Route path={"/404"} component={NotFound} />
