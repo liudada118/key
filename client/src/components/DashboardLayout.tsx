@@ -112,7 +112,7 @@ const menuSections: MenuSection[] = [
     icon: ScrollText,
     items: [
       { icon: Building2, label: "客户管理", path: "/customers" },
-      { icon: ScrollText, label: "合同管理", path: "/contracts", roles: ["super_admin", "admin"] },
+      { icon: ScrollText, label: "合同管理", path: "/contracts" },
     ],
   },
   {

@@ -1065,8 +1065,9 @@ export const appRouter = router({
         page: z.number().min(1).default(1),
         pageSize: z.number().min(1).max(100).default(50),
       }))
-      .query(async ({ input }) => {
-        return getContracts(input);
+      .query(async ({ ctx, input }) => {
+        const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+        return getContracts({ ...input, userIds });
       }),
 
     /** 获取单个合同 */
@@ -1115,7 +1116,7 @@ export const appRouter = router({
       }),
 
     /** 更新合同 */
-    update: adminProcedure
+    update: protectedProcedure
       .input(z.object({
         id: z.number(),
         title: z.string().optional(),

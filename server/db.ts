@@ -1683,6 +1683,7 @@ export async function updateContract(id: number, data: Partial<{
 
 /** 获取合同列表 */
 export async function getContracts(opts?: {
+  userIds?: number[];
   customerId?: number;
   status?: string;
   page?: number;
@@ -1691,6 +1692,7 @@ export async function getContracts(opts?: {
   const db = await getDb();
   if (!db) return { items: [], total: 0 };
   const conditions: any[] = [];
+  if (opts?.userIds) conditions.push(inArray(contracts.createdById, opts.userIds));
   if (opts?.customerId) conditions.push(eq(contracts.customerId, opts.customerId));
   if (opts?.status) conditions.push(eq(contracts.status, opts.status as any));
   const where = conditions.length > 0 ? and(...conditions) : undefined;
