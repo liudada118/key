@@ -545,6 +545,7 @@ export default function KeyList() {
                 <Table>
                   <TableHeader>
                     <TableRow className="border-border/50">
+                      <TableHead className="text-muted-foreground w-[60px]">ID</TableHead>
                       <TableHead className="text-muted-foreground">密钥</TableHead>
                       <TableHead className="text-muted-foreground">类型</TableHead>
                       <TableHead className="text-muted-foreground">传感器</TableHead>
@@ -562,6 +563,7 @@ export default function KeyList() {
                   <TableBody>
                     {data.items.map((key: any) => (
                       <TableRow key={key.id} className="border-border/30">
+                        <TableCell className="font-mono text-xs text-muted-foreground">{key.id}</TableCell>
                         <TableCell className="font-mono text-xs max-w-[180px] truncate text-foreground">
                           <Tooltip>
                             <TooltipTrigger asChild>

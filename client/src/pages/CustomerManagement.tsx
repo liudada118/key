@@ -207,7 +207,6 @@ export default function CustomerManagement() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="w-[50px]">ID</TableHead>
                       <TableHead>客户名称</TableHead>
                       <TableHead>联系人</TableHead>
                       <TableHead>联系电话</TableHead>
@@ -220,7 +219,6 @@ export default function CustomerManagement() {
                   <TableBody>
                     {data.items.map((customer) => (
                       <TableRow key={customer.id}>
-                        <TableCell className="font-mono text-xs">{customer.id}</TableCell>
                         <TableCell className="font-medium">{customer.name}</TableCell>
                         <TableCell>{customer.contactPerson || "-"}</TableCell>
                         <TableCell className="font-mono text-sm">{customer.phone || "-"}</TableCell>
