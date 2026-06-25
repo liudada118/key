@@ -126,9 +126,10 @@ export async function ensureDefaultSuperAdmin() {
 
 /** 确保默认传感器类型存在 */
 /**
- * 桌面端原有的授权传感器类型（权威清单，共 24 个）。
+ * 桌面端原有的授权传感器类型（权威清单，共 26 个）。
+ * 与桌面端 Title.jsx 的 allSensorArr 授权闸对齐（value 逐字一致才能解锁）。
  * 约束：只增不删、不改 value（value 是桌面端识别键）；label 可改。
- * 新增类型请继续走管理界面的"新增传感器类型"功能。
+ * 新增类型必须同时在桌面端 allSensorArr 登记，否则发出的 key 用户选不到。
  */
 const DEFAULT_SENSOR_TYPES: InsertSensorType[] = [
   // 常用
@@ -160,27 +161,82 @@ const DEFAULT_SENSOR_TYPES: InsertSensorType[] = [
   { label: "16x16高速", value: "fast256", groupName: "精密", groupIcon: "🧤", sortOrder: 22, isActive: true },
   { label: "32x32高速", value: "fast1024", groupName: "精密", groupIcon: "🧤", sortOrder: 23, isActive: true },
   { label: "人体全身", value: "humanBody", groupName: "精密", groupIcon: "🧤", sortOrder: 24, isActive: true },
+  { label: "64*64高速", value: "bed4096num", groupName: "精密", groupIcon: "🧤", sortOrder: 25, isActive: true },
+  // 常用（测试）
+  { label: "正常测试", value: "normal", groupName: "常用", groupIcon: "🖐️", sortOrder: 26, isActive: true },
 ];
 
 /**
- * 确保权威传感器类型齐全（幂等补齐）。
- * 不论表是否为空，都会按 value 补插缺失项；已存在的行不删除、不修改（保留管理员对 label/分组的自定义）。
+ * 将传感器类型表校准为权威清单（DEFAULT_SENSOR_TYPES，即桌面端识别的 24 个）。
+ * 以桌面端为唯一标准，保证后台与桌面端完全一致，每次启动幂等执行：
+ *  1. 缺失的权威 value -> 插入；
+ *  2. 已存在的权威 value -> 纠正 label/分组/图标/排序，并确保启用（覆盖历史脏数据，如 smallSample 的旧标签）；
+ *  3. 不在权威清单内的旧类型（早期迁移脚本灌入的 gloves/car/volvo 等）-> 停用（软处理，按 value 授权仍有效，仅从列表隐藏）。
  */
 export async function ensureDefaultSensorTypes() {
   const db = await getDb();
   if (!db) return;
 
-  const existing = await db.select({ value: sensorTypes.value }).from(sensorTypes);
-  const existingValues = new Set(existing.map((s) => s.value));
+  const authoritativeValues = DEFAULT_SENSOR_TYPES.map((s) => s.value);
+  const existing = await db
+    .select({
+      value: sensorTypes.value,
+      label: sensorTypes.label,
+      groupName: sensorTypes.groupName,
+      groupIcon: sensorTypes.groupIcon,
+      sortOrder: sensorTypes.sortOrder,
+      isActive: sensorTypes.isActive,
+    })
+    .from(sensorTypes);
+  const existingByValue = new Map(existing.map((s) => [s.value, s]));
 
-  const missing = DEFAULT_SENSOR_TYPES.filter((s) => !existingValues.has(s.value));
-  if (missing.length === 0) return;
-
-  console.log(`[Init] Backfilling ${missing.length} missing sensor type(s): ${missing.map((s) => s.value).join(", ")}`);
-  for (const sensor of missing) {
-    await db.insert(sensorTypes).values(sensor);
+  let inserted = 0;
+  let corrected = 0;
+  for (const sensor of DEFAULT_SENSOR_TYPES) {
+    const row = existingByValue.get(sensor.value);
+    if (!row) {
+      await db.insert(sensorTypes).values(sensor);
+      inserted++;
+      continue;
+    }
+    // 已存在：若 label/分组/图标/排序/启用状态与权威清单不一致则纠正
+    const needsFix =
+      row.label !== sensor.label ||
+      row.groupName !== sensor.groupName ||
+      row.groupIcon !== sensor.groupIcon ||
+      row.sortOrder !== sensor.sortOrder ||
+      row.isActive !== true;
+    if (needsFix) {
+      await db
+        .update(sensorTypes)
+        .set({
+          label: sensor.label,
+          groupName: sensor.groupName,
+          groupIcon: sensor.groupIcon,
+          sortOrder: sensor.sortOrder,
+          isActive: true,
+        })
+        .where(eq(sensorTypes.value, sensor.value));
+      corrected++;
+    }
   }
-  console.log(`[Init] Sensor types complete (${existingValues.size + missing.length} total)`);
+
+  // 停用不在权威清单内、且当前仍启用的旧类型
+  const staleActiveValues = existing
+    .filter((s) => s.isActive && !authoritativeValues.includes(s.value))
+    .map((s) => s.value);
+  if (staleActiveValues.length > 0) {
+    await db
+      .update(sensorTypes)
+      .set({ isActive: false })
+      .where(inArray(sensorTypes.value, staleActiveValues));
+  }
+
+  if (inserted || corrected || staleActiveValues.length) {
+    console.log(
+      `[Init] Sensor types reconciled to authoritative list: +${inserted} inserted, ${corrected} corrected, ${staleActiveValues.length} deactivated (${authoritativeValues.length} authoritative)`
+    );
+  }
 }
 
 /** 修改密码 */

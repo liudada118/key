@@ -41,14 +41,6 @@ type SensorGroup = {
   items: { label: string; value: string }[];
 };
 
-/** 快捷预设 */
-const PRESETS = [
-  { label: "触觉全套", types: ["hand0205", "robot1", "robotSY", "robotLCF", "footVideo"] },
-  { label: "汽车全套", types: ["car", "car10", "volvo", "carQX", "yanfeng10", "sofa"] },
-  { label: "高速矩阵", types: ["fast256", "fast1024", "fast1024sit", "daliegu"] },
-  { label: "床垫全套", types: ["bigBed", "jqbed", "smallBed", "xiyueReal1"] },
-];
-
 /** 时间预设 */
 const TIME_PRESETS = [
   { label: "30天", days: 30 },
@@ -383,25 +375,6 @@ function KeyGenerator({
             </div>
           </CardHeader>
           <CardContent className="pt-0">
-            {/* 快捷预设 */}
-            <div className="flex flex-wrap items-center gap-2 mb-4 pb-4 border-b border-border/50">
-              <span className="text-xs text-muted-foreground mr-1">快捷预设：</span>
-              {PRESETS.map((p) => (
-                <Button
-                  key={p.label}
-                  size="sm"
-                  variant="outline"
-                  className="h-6 text-xs px-2"
-                  onClick={() => {
-                    setSelectedTypes(p.types);
-                    setIsAll(false);
-                  }}
-                >
-                  {p.label}
-                </Button>
-              ))}
-            </div>
-
             {/* 分组传感器选择 */}
             <ScrollArea className="h-[460px] pr-3">
               <div className="space-y-4">
