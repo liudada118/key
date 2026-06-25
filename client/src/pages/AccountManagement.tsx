@@ -225,6 +225,7 @@ export default function AccountManagement() {
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
                   placeholder="输入显示名称"
+                  maxLength={30}
                   className="bg-secondary/50"
                 />
               </div>
@@ -251,6 +252,7 @@ export default function AccountManagement() {
                   value={newRemark}
                   onChange={(e) => setNewRemark(e.target.value)}
                   placeholder="输入备注"
+                  maxLength={200}
                   className="bg-secondary/50 resize-none"
                   rows={2}
                 />
@@ -387,6 +389,7 @@ export default function AccountManagement() {
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
                 placeholder="输入名称"
+                maxLength={30}
                 className="bg-secondary/50"
               />
             </div>
@@ -400,6 +403,7 @@ export default function AccountManagement() {
                 value={editRemark}
                 onChange={(e) => setEditRemark(e.target.value)}
                 placeholder="输入备注"
+                maxLength={200}
                 className="bg-secondary/50 resize-none"
                 rows={2}
               />

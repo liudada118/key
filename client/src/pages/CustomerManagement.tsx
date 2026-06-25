@@ -317,6 +317,7 @@ export default function CustomerManagement() {
               <Input
                 id="name"
                 placeholder="输入客户名称或公司名"
+                maxLength={50}
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
               />
@@ -330,6 +331,7 @@ export default function CustomerManagement() {
                 <Input
                   id="contactPerson"
                   placeholder="联系人姓名"
+                  maxLength={20}
                   value={formData.contactPerson}
                   onChange={(e) => setFormData({ ...formData, contactPerson: e.target.value })}
                 />
@@ -342,6 +344,7 @@ export default function CustomerManagement() {
                 <Input
                   id="phone"
                   placeholder="手机号或座机"
+                  maxLength={20}
                   value={formData.phone}
                   onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
                 />
@@ -355,6 +358,7 @@ export default function CustomerManagement() {
               <Input
                 id="email"
                 placeholder="客户邮箱"
+                maxLength={100}
                 value={formData.email}
                 onChange={(e) => setFormData({ ...formData, email: e.target.value })}
               />
@@ -367,6 +371,7 @@ export default function CustomerManagement() {
               <Input
                 id="address"
                 placeholder="客户地址"
+                maxLength={200}
                 value={formData.address}
                 onChange={(e) => setFormData({ ...formData, address: e.target.value })}
               />
@@ -376,6 +381,7 @@ export default function CustomerManagement() {
               <Textarea
                 id="remark"
                 placeholder="备注信息（可选）"
+                maxLength={200}
                 value={formData.remark}
                 onChange={(e) => setFormData({ ...formData, remark: e.target.value })}
                 rows={3}

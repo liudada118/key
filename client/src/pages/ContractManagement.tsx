@@ -265,7 +265,7 @@ export default function ContractManagement() {
             </div>
             <div>
               <label className="text-sm font-medium">备注</label>
-              <Input value={form.remark} onChange={(e) => setForm({ ...form, remark: e.target.value })} placeholder="备注信息" />
+              <Input value={form.remark} onChange={(e) => setForm({ ...form, remark: e.target.value })} placeholder="备注信息" maxLength={200} />
             </div>
             <Button
               className="w-full"
