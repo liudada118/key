@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/tooltip";
 import { trpc } from "@/lib/trpc";
 import {
+  Ban,
   Loader2,
   Plus,
   RotateCcw,
@@ -112,6 +113,15 @@ export default function SensorTypeManagement() {
   const restoreMutation = trpc.sensors.restore.useMutation({
     onSuccess: () => {
       toast.success("传感器类型已恢复");
+      utils.sensors.all.invalidate();
+      utils.sensors.groups.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const hardDeleteMutation = trpc.sensors.hardDelete.useMutation({
+    onSuccess: () => {
+      toast.success("传感器类型已删除");
       utils.sensors.all.invalidate();
       utils.sensors.groups.invalidate();
     },
@@ -310,26 +320,46 @@ export default function SensorTypeManagement() {
                                       }}
                                       disabled={deleteMutation.isPending}
                                     >
-                                      <Trash2 className="h-3.5 w-3.5" />
+                                      <Ban className="h-3.5 w-3.5" />
                                     </Button>
                                   </TooltipTrigger>
                                   <TooltipContent>禁用</TooltipContent>
                                 </Tooltip>
                               ) : (
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <Button
-                                      size="sm"
-                                      variant="ghost"
-                                      className="h-7 w-7 p-0 text-chart-2 hover:text-chart-2"
-                                      onClick={() => restoreMutation.mutate({ id: sensor.id })}
-                                      disabled={restoreMutation.isPending}
-                                    >
-                                      <RotateCcw className="h-3.5 w-3.5" />
-                                    </Button>
-                                  </TooltipTrigger>
-                                  <TooltipContent>恢复</TooltipContent>
-                                </Tooltip>
+                                <div className="flex items-center gap-1">
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-7 w-7 p-0 text-chart-2 hover:text-chart-2"
+                                        onClick={() => restoreMutation.mutate({ id: sensor.id })}
+                                        disabled={restoreMutation.isPending}
+                                      >
+                                        <RotateCcw className="h-3.5 w-3.5" />
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>恢复</TooltipContent>
+                                  </Tooltip>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                                        onClick={() => {
+                                          if (confirm(`确定要彻底删除「${sensor.label}」吗？此操作不可恢复。`)) {
+                                            hardDeleteMutation.mutate({ id: sensor.id });
+                                          }
+                                        }}
+                                        disabled={hardDeleteMutation.isPending}
+                                      >
+                                        <Trash2 className="h-3.5 w-3.5" />
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>删除</TooltipContent>
+                                  </Tooltip>
+                                </div>
                               )}
                             </TableCell>
                           </TableRow>

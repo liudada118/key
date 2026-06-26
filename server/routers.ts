@@ -51,6 +51,7 @@ import {
   addSensorType,
   deleteSensorType,
   restoreSensorType,
+  hardDeleteSensorType,
   updateSensorType,
   getSensorGroups,
   ensureRsaKeyPair,
@@ -415,6 +416,14 @@ export const appRouter = router({
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await restoreSensorType(input.id);
+        return { success: true };
+      }),
+
+    /** 硬删除传感器类型（彻底删除该行） */
+    hardDelete: superAdminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await hardDeleteSensorType(input.id);
         return { success: true };
       }),
 

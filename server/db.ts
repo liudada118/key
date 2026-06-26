@@ -976,6 +976,13 @@ export async function restoreSensorType(id: number) {
   await db.update(sensorTypes).set({ isActive: true }).where(eq(sensorTypes.id, id));
 }
 
+/** 硬删除传感器类型（彻底从库中删除该行） */
+export async function hardDeleteSensorType(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(sensorTypes).where(eq(sensorTypes.id, id));
+}
+
 /** 更新传感器类型 */
 export async function updateSensorType(id: number, data: {
   label?: string;
