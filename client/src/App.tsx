@@ -19,6 +19,7 @@ import ApiDocs from "./pages/ApiDocs";
 import FootDeviceCode from "./pages/FootDeviceCode";
 import SeatDeviceCode from "./pages/SeatDeviceCode";
 import DummyDeviceCode from "./pages/DummyDeviceCode";
+import DeviceCodeRecords from "./pages/DeviceCodeRecords";
 import AuditLog from "./pages/AuditLog";
 import ContractManagement from "./pages/ContractManagement";
 import HeartbeatMonitor from "./pages/HeartbeatMonitor";
@@ -45,6 +46,7 @@ function AuthenticatedRouter() {
         <Route path={"/foot-device-code"} component={FootDeviceCode} />
         <Route path={"/seat-device-code"} component={SeatDeviceCode} />
         <Route path={"/dummy-device-code"} component={DummyDeviceCode} />
+        <Route path={"/device-records"} component={DeviceCodeRecords} />
         <Route path={"/audit"} component={AuditLog} />
         <Route path={"/contracts"} component={ContractManagement} />
         <Route path={"/heartbeat"} component={HeartbeatMonitor} />

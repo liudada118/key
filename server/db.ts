@@ -13,6 +13,7 @@ import {
   rsaKeyPairs,
   sensorTypes,
   users,
+  deviceCodeRecords,
   type InsertCustomer,
   type InsertKeyDevice,
   type InsertLicenseKey,
@@ -22,6 +23,7 @@ import {
   type InsertKeyStatusHistory,
   type KeyStatus,
   type InsertContract,
+  type InsertDeviceCodeRecord,
 } from "../drizzle/schema";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
@@ -102,6 +104,30 @@ export async function createUserWithPassword(data: {
 
   const result = await db.select().from(users).where(eq(users.username, data.username)).limit(1);
   return result[0];
+}
+
+/**
+ * 确保 deviceCodeRecords 表存在（幂等建表）。
+ * 该表是后加的，且本项目迁移快照存在历史漂移导致 drizzle generate 需交互、CI 无法自动建表，
+ * 故在启动时用 CREATE TABLE IF NOT EXISTS 自愈，保证本地/线上都可用。
+ */
+export async function ensureDeviceCodeRecordsTable() {
+  const db = await getDb();
+  if (!db) return;
+  await db.execute(sql.raw(`CREATE TABLE IF NOT EXISTS \`deviceCodeRecords\` (
+    \`id\` int AUTO_INCREMENT NOT NULL,
+    \`deviceType\` varchar(32) NOT NULL,
+    \`slot\` varchar(64) NOT NULL,
+    \`slotLabel\` varchar(64),
+    \`mac\` varchar(128),
+    \`success\` boolean NOT NULL DEFAULT false,
+    \`contractId\` int,
+    \`contractNo\` varchar(128),
+    \`createdById\` int NOT NULL,
+    \`createdByName\` varchar(128),
+    \`createdAt\` timestamp NOT NULL DEFAULT (now()),
+    CONSTRAINT \`deviceCodeRecords_id\` PRIMARY KEY(\`id\`)
+  )`));
 }
 
 /** 初始化默认超级管理员（如果不存在） */
@@ -1961,6 +1987,52 @@ export async function incrementContractUsedKeys(contractId: number, count_: numb
   await db.update(contracts).set({
     usedKeys: sql`${contracts.usedKeys} + ${count_}`,
   }).where(eq(contracts.id, contractId));
+}
+
+// ===== 设备码读取记录 =====
+
+/** 新增一条设备码读取记录 */
+export async function createDeviceCodeRecord(data: InsertDeviceCodeRecord) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.insert(deviceCodeRecords).values(data);
+}
+
+/** 设备码读取记录列表（按操作人范围分页倒序） */
+export async function getDeviceCodeRecords(opts: {
+  userIds: number[];
+  page: number;
+  pageSize: number;
+  deviceType?: string;
+}) {
+  const db = await getDb();
+  if (!db) return { items: [], total: 0 };
+
+  const conditions = [inArray(deviceCodeRecords.createdById, opts.userIds)];
+  if (opts.deviceType) conditions.push(eq(deviceCodeRecords.deviceType, opts.deviceType));
+  const where = and(...conditions);
+  const offset = (opts.page - 1) * opts.pageSize;
+
+  const [items, totalResult] = await Promise.all([
+    db.select().from(deviceCodeRecords).where(where).orderBy(desc(deviceCodeRecords.createdAt)).limit(opts.pageSize).offset(offset),
+    db.select({ count: count() }).from(deviceCodeRecords).where(where),
+  ]);
+  return { items, total: totalResult[0]?.count ?? 0 };
+}
+
+/** 获取单条设备码记录 */
+export async function getDeviceCodeRecordById(id: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const result = await db.select().from(deviceCodeRecords).where(eq(deviceCodeRecords.id, id)).limit(1);
+  return result[0] || null;
+}
+
+/** 删除设备码读取记录 */
+export async function deleteDeviceCodeRecord(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(deviceCodeRecords).where(eq(deviceCodeRecords.id, id));
 }
 
 

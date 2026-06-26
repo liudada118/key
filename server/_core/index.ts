@@ -7,7 +7,7 @@ import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { ensureDefaultSuperAdmin, ensureDefaultSensorTypes, ensureRsaKeyPair, getLicenseKeyByString, markLicenseKeyActivated, markLicenseKeyExpired, recordClientTimeAndDetectTamper, getSensorTypesGrouped } from "../db";
+import { ensureDefaultSuperAdmin, ensureDefaultSensorTypes, ensureRsaKeyPair, ensureDeviceCodeRecordsTable, getLicenseKeyByString, markLicenseKeyActivated, markLicenseKeyExpired, recordClientTimeAndDetectTamper, getSensorTypesGrouped } from "../db";
 import { decodeLicenseKey } from "../../shared/crypto";
 
 function isPortAvailable(port: number): Promise<boolean> {
@@ -41,6 +41,7 @@ async function startServer() {
     await ensureDefaultSuperAdmin();
     await ensureDefaultSensorTypes();
     await ensureRsaKeyPair();
+    await ensureDeviceCodeRecordsTable();
     console.log("[Init] Database initialization complete");
   } catch (error) {
     console.warn("[Init] Database initialization failed (will retry on first request):", error);

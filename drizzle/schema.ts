@@ -406,3 +406,33 @@ export const auditLogs = mysqlTable("auditLogs", {
 
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type InsertAuditLog = typeof auditLogs.$inferInsert;
+
+/**
+ * 设备码读取记录表
+ * 记录每一次"连接并读取 MAC"的结果（成功/失败都记），可关联合同
+ */
+export const deviceCodeRecords = mysqlTable("deviceCodeRecords", {
+  id: int("id").autoincrement().primaryKey(),
+  /** 设备类型：foot(脚垫) / seat(坐垫) / dummy(假人) */
+  deviceType: varchar("deviceType", { length: 32 }).notNull(),
+  /** 插槽标识（如 foot1 / back / jacket） */
+  slot: varchar("slot", { length: 64 }).notNull(),
+  /** 插槽中文名（如 脚垫 1） */
+  slotLabel: varchar("slotLabel", { length: 64 }),
+  /** 读取到的 MAC / uniqueId，失败为 null */
+  mac: varchar("mac", { length: 128 }),
+  /** 本次读取是否成功 */
+  success: boolean("success").default(false).notNull(),
+  /** 关联合同 ID */
+  contractId: int("contractId"),
+  /** 合同编号（冗余，便于显示） */
+  contractNo: varchar("contractNo", { length: 128 }),
+  /** 操作人用户 ID */
+  createdById: int("createdById").notNull(),
+  /** 操作人名称 */
+  createdByName: varchar("createdByName", { length: 128 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type DeviceCodeRecord = typeof deviceCodeRecords.$inferSelect;
+export type InsertDeviceCodeRecord = typeof deviceCodeRecords.$inferInsert;

@@ -70,6 +70,10 @@ import {
   getContractById,
   getContractByNo,
   incrementContractUsedKeys,
+  createDeviceCodeRecord,
+  getDeviceCodeRecords,
+  getDeviceCodeRecordById,
+  deleteDeviceCodeRecord,
   getTamperedKeys,
   getTamperedKeyCount,
   clearKeyTamper,
@@ -1265,6 +1269,68 @@ export const appRouter = router({
           ip: ctx.req?.headers?.['x-forwarded-for'] as string || ctx.req?.socket?.remoteAddress || null,
           userAgent: ctx.req?.headers?.['user-agent'] || null,
         });
+        return { success: true };
+      }),
+  }),
+
+  // ===== 设备码读取记录 =====
+  deviceCodes: router({
+    /** 记录一次"连接并读取 MAC"（成功/失败都记） */
+    record: protectedProcedure
+      .input(z.object({
+        deviceType: z.enum(["foot", "seat", "dummy"]),
+        slot: z.string().min(1),
+        slotLabel: z.string().optional(),
+        mac: z.string().optional(),
+        success: z.boolean(),
+        contractId: z.number().optional(),
+        contractNo: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        await createDeviceCodeRecord({
+          deviceType: input.deviceType,
+          slot: input.slot,
+          slotLabel: input.slotLabel || null,
+          mac: input.mac || null,
+          success: input.success,
+          contractId: input.contractId ?? null,
+          contractNo: input.contractNo || null,
+          createdById: ctx.user.id,
+          createdByName: ctx.user.name || ctx.user.username,
+        });
+        return { success: true };
+      }),
+
+    /** 设备码读取记录列表 */
+    list: protectedProcedure
+      .input(z.object({
+        page: z.number().min(1).default(1),
+        pageSize: z.number().min(1).max(100).default(20),
+        deviceType: z.enum(["foot", "seat", "dummy"]).optional(),
+      }))
+      .query(async ({ ctx, input }) => {
+        const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+        return getDeviceCodeRecords({
+          userIds,
+          page: input.page,
+          pageSize: input.pageSize,
+          deviceType: input.deviceType,
+        });
+      }),
+
+    /** 删除一条设备码读取记录 */
+    delete: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const rec = await getDeviceCodeRecordById(input.id);
+        if (!rec) throw new TRPCError({ code: "NOT_FOUND", message: "记录不存在" });
+        if (ctx.user.role !== "super_admin") {
+          const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+          if (!userIds.includes(rec.createdById)) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "无权删除此记录" });
+          }
+        }
+        await deleteDeviceCodeRecord(input.id);
         return { success: true };
       }),
   }),

@@ -20,6 +20,8 @@ import {
   type MacResult,
   type LogEntry,
 } from "@/lib/SerialMacService";
+import { trpc } from "@/lib/trpc";
+import { ContractPicker, type ContractValue } from "@/components/ContractPicker";
 
 // ===== 坐垫插槽定义 =====
 type SeatSlot = "back" | "seat";
@@ -208,6 +210,25 @@ export default function SeatDeviceCode() {
   const logEndRef = useRef<HTMLDivElement>(null);
   const macCallbackRef = useRef<((result: MacResult) => void) | null>(null);
 
+  // 关联合同（可选）+ 读取记录
+  const [contract, setContract] = useState<ContractValue>({});
+  const contractRef = useRef<ContractValue>({});
+  contractRef.current = contract;
+  const recordMutation = trpc.deviceCodes.record.useMutation();
+  const recordRef = useRef(recordMutation);
+  recordRef.current = recordMutation;
+  const recordRead = (slot: SeatSlot, mac: string | null, success: boolean) => {
+    recordRef.current.mutate({
+      deviceType: "seat",
+      slot,
+      slotLabel: SLOT_LABELS[slot],
+      mac: mac || undefined,
+      success,
+      contractId: contractRef.current.contractId,
+      contractNo: contractRef.current.contractNo || undefined,
+    });
+  };
+
   // 滚动日志到底部
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -254,6 +275,7 @@ export default function SeatDeviceCode() {
         setActiveSlot(null);
         macCallbackRef.current = null;
         toast.success(`${SLOT_LABELS[slot]} MAC 读取成功: ${result.uniqueId}`);
+        recordRead(slot, result.uniqueId, true);
 
         // 读取完成后自动断开
         try {
@@ -274,6 +296,7 @@ export default function SeatDeviceCode() {
         setActiveSlot(null);
         macCallbackRef.current = null;
         toast.error("连接失败，请检查设备连接");
+        recordRead(slot, null, false);
       }
     },
     []
@@ -467,6 +490,13 @@ export default function SeatDeviceCode() {
 
         {/* 右侧 - 输出结果 + 日志 */}
         <div className="space-y-4">
+          {/* 关联合同 */}
+          <Card className="border-border/50">
+            <CardContent className="pt-4">
+              <ContractPicker value={contract} onChange={setContract} />
+            </CardContent>
+          </Card>
+
           {/* 输出结果 */}
           <Card
             className={`${allDone ? "border-amber-300 bg-amber-50/30" : "border-border/50"}`}
