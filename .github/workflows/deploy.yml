@@ -43,8 +43,9 @@ jobs:
             EOF
             echo "==> 安装依赖"
             pnpm install --frozen-lockfile
-            echo "==> 同步数据库表结构"
-            pnpm db:push
+            echo "==> 应用数据库迁移(仅应用已提交的迁移,不在服务器上重新生成,避免漂移导致重复建表失败)"
+            # 表结构以已提交的迁移为准;新增表(如 deviceCodeRecords)由服务启动时的 ensure* 幂等自愈
+            pnpm db:migrate
             echo "==> 构建项目"
             pnpm build
             echo "==> 重启服务"
