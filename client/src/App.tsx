@@ -21,7 +21,6 @@ import SeatDeviceCode from "./pages/SeatDeviceCode";
 import DummyDeviceCode from "./pages/DummyDeviceCode";
 import AuditLog from "./pages/AuditLog";
 import ContractManagement from "./pages/ContractManagement";
-import TeamManagement from "./pages/TeamManagement";
 import HeartbeatMonitor from "./pages/HeartbeatMonitor";
 import TamperedKeys from "./pages/TamperedKeys";
 import Login from "./pages/Login";
@@ -48,7 +47,6 @@ function AuthenticatedRouter() {
         <Route path={"/dummy-device-code"} component={DummyDeviceCode} />
         <Route path={"/audit"} component={AuditLog} />
         <Route path={"/contracts"} component={ContractManagement} />
-        <Route path={"/teams"} component={TeamManagement} />
         <Route path={"/heartbeat"} component={HeartbeatMonitor} />
         <Route path={"/tampered"} component={TamperedKeys} />
         <Route path={"/404"} component={NotFound} />

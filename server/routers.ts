@@ -39,6 +39,12 @@ import {
   resetPassword,
   updateAccount,
   updateCustomer,
+  deleteCustomer,
+  getCustomerActiveKeyCount,
+  deleteContract,
+  getContractActiveKeyCount,
+  deleteAccount,
+  getAccountDependents,
   verifyUserCredentials,
   getSensorTypesGrouped,
   getAllSensorTypes,
@@ -63,11 +69,6 @@ import {
   getContractById,
   getContractByNo,
   incrementContractUsedKeys,
-  createTeam,
-  updateTeam,
-  getTeams,
-  getTeamMembers,
-  setUserTeam,
   getTamperedKeys,
   getTamperedKeyCount,
   clearKeyTamper,
@@ -207,6 +208,51 @@ export const appRouter = router({
         await resetPassword(input.id, input.newPassword);
         return { success: true };
       }),
+
+    /** 删除账号（硬删除，名下有关联数据则拦截） */
+    delete: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const target = await getUserById(input.id);
+        if (!target) throw new TRPCError({ code: "NOT_FOUND", message: "账号不存在" });
+
+        if (target.id === ctx.user.id) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "不能删除自己的账号" });
+        }
+        if (target.role === "super_admin") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "无权删除超级管理员" });
+        }
+        if (ctx.user.role === "admin" && target.createdById !== ctx.user.id) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "无权操作此账号" });
+        }
+
+        const dep = await getAccountDependents(input.id);
+        if (dep.total > 0) {
+          const parts: string[] = [];
+          if (dep.subordinates) parts.push(`${dep.subordinates} 个下级账号`);
+          if (dep.onlineKeys) parts.push(`${dep.onlineKeys} 个在线密钥`);
+          if (dep.offlineKeys) parts.push(`${dep.offlineKeys} 个离线密钥`);
+          if (dep.customers) parts.push(`${dep.customers} 个客户`);
+          if (dep.contracts) parts.push(`${dep.contracts} 个合同`);
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: `该账号名下还有 ${parts.join("、")}，无法删除`,
+          });
+        }
+
+        await deleteAccount(input.id);
+        await createAuditLog({
+          userId: ctx.user.id,
+          userName: ctx.user.name || ctx.user.username,
+          action: "DELETE",
+          resourceType: "account",
+          resourceId: input.id,
+          description: `删除账号 ${target.username}`,
+          ip: ctx.req?.headers?.['x-forwarded-for'] as string || ctx.req?.socket?.remoteAddress || null,
+          userAgent: ctx.req?.headers?.['user-agent'] || null,
+        });
+        return { success: true };
+      }),
   }),
 
   // ===== 客户管理 =====
@@ -293,6 +339,35 @@ export const appRouter = router({
           remark: input.remark,
           isActive: input.isActive,
         });
+      }),
+
+    /** 删除客户（硬删除，名下有关联密钥则拦截） */
+    delete: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const existing = await getCustomerById(input.id);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "客户不存在" });
+
+        // 权限：管理员/子账号只能删自己创建的；超级管理员不限
+        if (ctx.user.role !== "super_admin") {
+          const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+          if (!userIds.includes(existing.createdById)) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "无权删除此客户" });
+          }
+        }
+
+        // 存在未吊销的关联密钥时拦截，需先吊销密钥
+        const activeKeyCount = await getCustomerActiveKeyCount(input.id);
+        if (activeKeyCount > 0) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "当前客户存在关联密钥！请先吊销密钥后再删除客户。",
+          });
+        }
+
+        // 删除客户：自动解除已吊销密钥的客户归属（密钥仍保留，归属显示 "-"）
+        await deleteCustomer(input.id);
+        return { success: true };
       }),
   }),
 
@@ -1144,88 +1219,40 @@ export const appRouter = router({
         });
         return { success: true };
       }),
-  }),
 
-  // ===== 团队管理 =====
-  teams: router({
-    /** 获取所有团队 */
-    list: protectedProcedure.query(async () => {
-      return getTeams();
-    }),
-
-    /** 获取团队成员 */
-    members: adminProcedure
-      .input(z.object({ teamId: z.number() }))
-      .query(async ({ input }) => {
-        return getTeamMembers(input.teamId);
-      }),
-
-    /** 创建团队 */
-    create: superAdminProcedure
-      .input(z.object({
-        name: z.string().min(1, "团队名称不能为空"),
-        description: z.string().optional(),
-        leaderId: z.number().optional(),
-        leaderName: z.string().optional(),
-        parentTeamId: z.number().optional(),
-      }))
+    /** 删除合同（硬删除，关联密钥则拦截） */
+    delete: protectedProcedure
+      .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const result = await createTeam(input);
+        const existing = await getContractById(input.id);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "合同不存在" });
+
+        // 权限：非超级管理员只能删自己创建的
+        if (ctx.user.role !== "super_admin") {
+          const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+          if (!userIds.includes(existing.createdById)) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "无权删除此合同" });
+          }
+        }
+
+        // 存在未吊销的关联密钥时拦截，需先吊销密钥
+        const activeKeyCount = await getContractActiveKeyCount(input.id);
+        if (activeKeyCount > 0) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "当前合同存在关联密钥！请先吊销密钥后再删除合同。",
+          });
+        }
+
+        // 删除合同：自动解除已吊销密钥的合同归属（密钥仍保留，归属显示 "-"）
+        await deleteContract(input.id);
         await createAuditLog({
           userId: ctx.user.id,
           userName: ctx.user.name || ctx.user.username,
-          action: "CREATE",
-          resourceType: "team",
-          resourceId: result?.id,
-          description: `创建团队: ${input.name}`,
-          ip: ctx.req?.headers?.['x-forwarded-for'] as string || ctx.req?.socket?.remoteAddress || null,
-          userAgent: ctx.req?.headers?.['user-agent'] || null,
-        });
-        return { success: true, team: result };
-      }),
-
-    /** 更新团队 */
-    update: superAdminProcedure
-      .input(z.object({
-        id: z.number(),
-        name: z.string().optional(),
-        description: z.string().nullable().optional(),
-        leaderId: z.number().nullable().optional(),
-        leaderName: z.string().nullable().optional(),
-        parentTeamId: z.number().nullable().optional(),
-        isActive: z.boolean().optional(),
-      }))
-      .mutation(async ({ ctx, input }) => {
-        const { id, ...data } = input;
-        await updateTeam(id, data);
-        await createAuditLog({
-          userId: ctx.user.id,
-          userName: ctx.user.name || ctx.user.username,
-          action: "UPDATE",
-          resourceType: "team",
-          resourceId: id,
-          description: `更新团队 #${id}`,
-          ip: ctx.req?.headers?.['x-forwarded-for'] as string || ctx.req?.socket?.remoteAddress || null,
-          userAgent: ctx.req?.headers?.['user-agent'] || null,
-        });
-        return { success: true };
-      }),
-
-    /** 设置用户所属团队 */
-    setMember: superAdminProcedure
-      .input(z.object({
-        userId: z.number(),
-        teamId: z.number().nullable(),
-      }))
-      .mutation(async ({ ctx, input }) => {
-        await setUserTeam(input.userId, input.teamId);
-        await createAuditLog({
-          userId: ctx.user.id,
-          userName: ctx.user.name || ctx.user.username,
-          action: "UPDATE",
-          resourceType: "user",
-          resourceId: input.userId,
-          description: `设置用户 #${input.userId} 所属团队为 ${input.teamId || '无'}`,
+          action: "DELETE",
+          resourceType: "contract",
+          resourceId: input.id,
+          description: `删除合同 ${existing.contractNo}`,
           ip: ctx.req?.headers?.['x-forwarded-for'] as string || ctx.req?.socket?.remoteAddress || null,
           userAgent: ctx.req?.headers?.['user-agent'] || null,
         });

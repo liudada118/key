@@ -28,8 +28,6 @@ export const users = mysqlTable("users", {
   role: mysqlEnum("role", ["user", "admin", "super_admin"]).default("user").notNull(),
   /** 创建者 ID，super_admin 为 null */
   createdById: int("createdById"),
-  /** 所属团队 ID */
-  teamId: int("teamId"),
   /** 账号是否启用 */
   isActive: boolean("isActive").default(true).notNull(),
   /** 账号备注 */
@@ -41,31 +39,6 @@ export const users = mysqlTable("users", {
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
-
-/**
- * 团队表
- * 支持多级团队结构，用于数据域权限隔离
- */
-export const teams = mysqlTable("teams", {
-  id: int("id").autoincrement().primaryKey(),
-  /** 团队名称 */
-  name: varchar("name", { length: 128 }).notNull(),
-  /** 团队描述 */
-  description: text("description"),
-  /** 团队负责人 ID */
-  leaderId: int("leaderId"),
-  /** 负责人名称 */
-  leaderName: varchar("leaderName", { length: 128 }),
-  /** 上级团队 ID（支持多级） */
-  parentTeamId: int("parentTeamId"),
-  /** 是否启用 */
-  isActive: boolean("isActive").default(true).notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
-
-export type Team = typeof teams.$inferSelect;
-export type InsertTeam = typeof teams.$inferInsert;
 
 /**
  * 客户表

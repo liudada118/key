@@ -18,7 +18,17 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Edit, Ban, CheckCircle2 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Edit, Ban, CheckCircle2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 const STATUS_MAP: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
@@ -73,6 +83,18 @@ export default function ContractManagement() {
       refetch();
     },
     onError: () => toast.error("更新失败"),
+  });
+
+  const [deleteTarget, setDeleteTarget] = useState<any>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+
+  const deleteMutation = trpc.contracts.delete.useMutation({
+    onSuccess: () => {
+      toast.success("合同已删除");
+      setDeleteOpen(false);
+      refetch();
+    },
+    onError: (err) => toast.error(err.message),
   });
 
   const openCreate = () => {
@@ -196,6 +218,16 @@ export default function ContractManagement() {
                           启用
                         </Button>
                       )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => { setDeleteTarget(contract); setDeleteOpen(true); }}
+                        disabled={deleteMutation.isPending}
+                      >
+                        <Trash2 className="h-3.5 w-3.5 mr-1" />
+                        删除
+                      </Button>
                     </div>
                   </TableCell>
                 </TableRow>
@@ -216,6 +248,31 @@ export default function ContractManagement() {
           <Button size="sm" variant="outline" disabled={page * 20 >= data.total} onClick={() => setPage(page + 1)}>下一页</Button>
         </div>
       )}
+
+      {/* 删除确认弹窗 */}
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除合同</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteTarget?.keyCount > 0
+                ? "当前合同存在关联密钥！请先吊销密钥后再删除合同。"
+                : `确定删除合同「${deleteTarget?.contractNo}」吗？此操作不可恢复。`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            {!(deleteTarget?.keyCount > 0) && (
+              <AlertDialogAction
+                className="bg-destructive text-white hover:bg-destructive/90"
+                onClick={() => deleteTarget && deleteMutation.mutate({ id: deleteTarget.id })}
+              >
+                删除
+              </AlertDialogAction>
+            )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* 新建 / 编辑 合同对话框 */}
       <Dialog open={showDialog} onOpenChange={(v) => { setShowDialog(v); if (!v) setEditing(null); }}>

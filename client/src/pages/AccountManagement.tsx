@@ -1,4 +1,14 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -30,7 +40,7 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
-import { KeyRound, Loader2, Pencil, Plus, ShieldCheck, Users } from "lucide-react";
+import { KeyRound, Loader2, Pencil, Plus, ShieldCheck, Trash2, Users } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -110,6 +120,18 @@ export default function AccountManagement() {
       setResetPwdOpen(false);
       setResetTarget(null);
       setResetNewPwd("");
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const [deleteTarget, setDeleteTarget] = useState<{ id: number; username: string; name: string | null } | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+
+  const deleteMutation = trpc.accounts.delete.useMutation({
+    onSuccess: () => {
+      toast.success("账号已删除");
+      setDeleteOpen(false);
+      utils.accounts.list.invalidate();
     },
     onError: (err) => toast.error(err.message),
   });
@@ -363,6 +385,18 @@ export default function AccountManagement() {
                           >
                             <KeyRound className="h-3 w-3" />
                           </Button>
+                          {acc.id !== user?.id && acc.role !== "super_admin" && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                              onClick={() => { setDeleteTarget(acc); setDeleteOpen(true); }}
+                              disabled={deleteMutation.isPending}
+                              title="删除"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </Button>
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>
@@ -460,6 +494,27 @@ export default function AccountManagement() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 删除确认弹窗 */}
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent className="bg-card border-border">
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除账号</AlertDialogTitle>
+            <AlertDialogDescription>
+              确定删除账号「{deleteTarget?.name || deleteTarget?.username}」吗？此操作不可恢复。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              onClick={() => deleteTarget && deleteMutation.mutate({ id: deleteTarget.id })}
+            >
+              删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

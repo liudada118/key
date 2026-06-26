@@ -7,7 +7,7 @@ import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { ensureDefaultSuperAdmin, ensureDefaultSensorTypes, ensureRsaKeyPair, getLicenseKeyByString, markLicenseKeyActivated, recordClientTimeAndDetectTamper, getSensorTypesGrouped } from "../db";
+import { ensureDefaultSuperAdmin, ensureDefaultSensorTypes, ensureRsaKeyPair, getLicenseKeyByString, markLicenseKeyActivated, markLicenseKeyExpired, recordClientTimeAndDetectTamper, getSensorTypesGrouped } from "../db";
 import { decodeLicenseKey } from "../../shared/crypto";
 
 function isPortAvailable(port: number): Promise<boolean> {
@@ -104,6 +104,12 @@ async function startServer() {
         } else if (status === "TAMPERED") {
           valid = false;
           reason = rec.tamperReason || "密钥异常：检测到时间回拨或客户端篡改";
+        } else if (!decoded.valid) {
+          // 已过期：统一返回 EXPIRED 并持久化，避免客户端凭库里旧状态(ISSUED/ACTIVATED)继续使用
+          valid = false;
+          status = "EXPIRED";
+          reason = "密钥已过期";
+          await markLicenseKeyExpired(rec.id);
         } else if (valid && !rec.isActivated) {
           // 首次有效校验 → 标记为已激活（在线版"使用即激活"）
           await markLicenseKeyActivated(key);

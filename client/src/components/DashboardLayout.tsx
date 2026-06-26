@@ -41,7 +41,6 @@ import {
   Shield,
   ShieldCheck,
   Users,
-  UsersRound,
   Wifi,
   WifiOff,
   Footprints,
@@ -128,7 +127,6 @@ const menuSections: MenuSection[] = [
     icon: Settings2,
     items: [
       { icon: Users, label: "账号管理", path: "/accounts", roles: ["super_admin", "admin"] },
-      { icon: UsersRound, label: "团队管理", path: "/teams", roles: ["super_admin"] },
       { icon: Settings2, label: "传感器管理", path: "/sensor-types", roles: ["super_admin"] },
       { icon: Cpu, label: "MAC 读取", path: "/mac-reader" },
       { icon: Footprints, label: "脚垫设备码", path: "/foot-device-code" },

@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gte, inArray, isNull, isNotNull, like, lte, or, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, isNull, isNotNull, like, lte, ne, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
@@ -12,7 +12,6 @@ import {
   offlineKeys,
   rsaKeyPairs,
   sensorTypes,
-  teams,
   users,
   type InsertCustomer,
   type InsertKeyDevice,
@@ -253,6 +252,42 @@ export async function resetPassword(userId: number, newPassword: string) {
   return changePassword(userId, newPassword);
 }
 
+/**
+ * 账号名下的关联数据统计（用于删除前拦截）。
+ * 包含：下级账号、创建的在线密钥、离线密钥、客户、合同。
+ */
+export async function getAccountDependents(userId: number) {
+  const db = await getDb();
+  if (!db) return { subordinates: 0, onlineKeys: 0, offlineKeys: 0, customers: 0, contracts: 0, total: 0 };
+  const [sub, onKeys, offKeys, custs, conts] = await Promise.all([
+    db.select({ count: count() }).from(users).where(eq(users.createdById, userId)),
+    db.select({ count: count() }).from(licenseKeys).where(eq(licenseKeys.createdById, userId)),
+    db.select({ count: count() }).from(offlineKeys).where(eq(offlineKeys.createdById, userId)),
+    db.select({ count: count() }).from(customers).where(eq(customers.createdById, userId)),
+    db.select({ count: count() }).from(contracts).where(eq(contracts.createdById, userId)),
+  ]);
+  const subordinates = sub[0]?.count ?? 0;
+  const onlineKeys = onKeys[0]?.count ?? 0;
+  const offlineKeysCount = offKeys[0]?.count ?? 0;
+  const customersCount = custs[0]?.count ?? 0;
+  const contractsCount = conts[0]?.count ?? 0;
+  return {
+    subordinates,
+    onlineKeys,
+    offlineKeys: offlineKeysCount,
+    customers: customersCount,
+    contracts: contractsCount,
+    total: subordinates + onlineKeys + offlineKeysCount + customersCount + contractsCount,
+  };
+}
+
+/** 硬删除账号 */
+export async function deleteAccount(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(users).where(eq(users.id, id));
+}
+
 /** 获取用户管理的下级账号 */
 export async function getSubordinateUsers(userId: number, role: string) {
   const db = await getDb();
@@ -446,7 +481,23 @@ export async function getCustomers(opts: {
     db.select({ count: count() }).from(customers).where(where),
   ]);
 
-  return { items, total: totalResult[0]?.count ?? 0 };
+  // 为本页每个客户统计"未吊销"的关联密钥数（在线 + 离线），供前端删除拦截判断
+  const ids = items.map((c) => c.id);
+  const keyCountMap = new Map<number, number>();
+  if (ids.length > 0) {
+    const [onlineCounts, offlineCounts] = await Promise.all([
+      db.select({ id: licenseKeys.customerId, c: count() }).from(licenseKeys)
+        .where(and(inArray(licenseKeys.customerId, ids), ne(licenseKeys.status, "REVOKED"))).groupBy(licenseKeys.customerId),
+      db.select({ id: offlineKeys.customerId, c: count() }).from(offlineKeys)
+        .where(and(inArray(offlineKeys.customerId, ids), ne(offlineKeys.status, "REVOKED"))).groupBy(offlineKeys.customerId),
+    ]);
+    for (const r of [...onlineCounts, ...offlineCounts]) {
+      if (r.id != null) keyCountMap.set(r.id, (keyCountMap.get(r.id) ?? 0) + Number(r.c));
+    }
+  }
+  const itemsWithCount = items.map((c) => ({ ...c, keyCount: keyCountMap.get(c.id) ?? 0 }));
+
+  return { items: itemsWithCount, total: totalResult[0]?.count ?? 0 };
 }
 
 export async function getAllCustomers(userIds: number[]) {
@@ -467,6 +518,39 @@ export async function getCustomerKeyCount(customerId: number) {
   if (!db) return 0;
   const result = await db.select({ count: count() }).from(licenseKeys).where(eq(licenseKeys.customerId, customerId));
   return result[0]?.count ?? 0;
+}
+
+/**
+ * 客户名下"未吊销"的关联密钥数（在线 + 离线）。
+ * 已吊销(REVOKED)视为已解除关联、不计入。用于删除前拦截：> 0 时要求先吊销密钥。
+ */
+export async function getCustomerActiveKeyCount(customerId: number) {
+  const db = await getDb();
+  if (!db) return 0;
+  const online = await db.select({ count: count() }).from(licenseKeys)
+    .where(and(eq(licenseKeys.customerId, customerId), ne(licenseKeys.status, "REVOKED")));
+  const offline = await db.select({ count: count() }).from(offlineKeys)
+    .where(and(eq(offlineKeys.customerId, customerId), ne(offlineKeys.status, "REVOKED")));
+  return (online[0]?.count ?? 0) + (offline[0]?.count ?? 0);
+}
+
+/**
+ * 解除客户与所有关联密钥的绑定：仅置空 customerId（外键），保留 customerName。
+ * 这样密钥列表仍能显示原客户名，并据 customerId 为空判断该客户已删除（显示“xxx（该客户已删除）”）。
+ */
+export async function detachCustomerFromKeys(customerId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(licenseKeys).set({ customerId: null }).where(eq(licenseKeys.customerId, customerId));
+  await db.update(offlineKeys).set({ customerId: null }).where(eq(offlineKeys.customerId, customerId));
+}
+
+/** 硬删除客户（先解除密钥绑定，再删除客户行） */
+export async function deleteCustomer(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await detachCustomerFromKeys(id);
+  await db.delete(customers).where(eq(customers.id, id));
 }
 
 // ===== License Key Helpers =====
@@ -491,6 +575,25 @@ export async function insertLicenseKeys(dataList: InsertLicenseKey[]) {
   await db.insert(licenseKeys).values(dataWithHash);
 }
 
+/**
+ * 惰性过期：把"已到期但仍处于活动状态(ISSUED/ACTIVATED/RENEWED)"的密钥批量置为 EXPIRED。
+ * 与"激活时自动过期"的逻辑一致；REVOKED/SUSPENDED/TAMPERED 等终态/异常态保持不变。
+ * 在查询列表/统计前调用，保证状态显示、筛选、仪表盘统计三处一致。
+ */
+export async function expireStaleKeys(userIds: number[]) {
+  const db = await getDb();
+  if (!db || userIds.length === 0) return;
+  const now = Date.now();
+  const activeStatuses: KeyStatus[] = ["ISSUED", "ACTIVATED", "RENEWED"];
+  await db.update(licenseKeys).set({ status: "EXPIRED" }).where(
+    and(
+      inArray(licenseKeys.createdById, userIds),
+      sql`${licenseKeys.expireTimestamp} < ${now}`,
+      inArray(licenseKeys.status, activeStatuses),
+    )
+  );
+}
+
 export async function getLicenseKeys(opts: {
   userIds: number[];
   page: number;
@@ -505,6 +608,9 @@ export async function getLicenseKeys(opts: {
 }) {
   const db = await getDb();
   if (!db) return { items: [], total: 0 };
+
+  // 先把到期的活动密钥置为 EXPIRED，确保列表状态/筛选准确
+  await expireStaleKeys(opts.userIds);
 
   const conditions = [inArray(licenseKeys.createdById, opts.userIds)];
 
@@ -557,6 +663,15 @@ export async function markLicenseKeyActivated(keyString: string): Promise<boolea
   if (rec.status === "ISSUED") patch.status = "ACTIVATED";
   await db.update(licenseKeys).set(patch).where(eq(licenseKeys.id, rec.id));
   return true;
+}
+
+/** 将指定密钥标记为已过期（保留 REVOKED 终态；已是 EXPIRED 则跳过） */
+export async function markLicenseKeyExpired(keyId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(licenseKeys).set({ status: "EXPIRED" }).where(
+    and(eq(licenseKeys.id, keyId), ne(licenseKeys.status, "REVOKED"), ne(licenseKeys.status, "EXPIRED"))
+  );
 }
 
 /**
@@ -735,6 +850,9 @@ export async function verifyKeyOnDevice(keyString: string, deviceCode: string) {
 export async function getKeyStats(userIds: number[]) {
   const db = await getDb();
   if (!db) return { total: 0, activated: 0, production: 0, rental: 0, expired: 0, suspended: 0, revoked: 0 };
+
+  // 与列表口径一致：先把到期的活动密钥置为 EXPIRED
+  await expireStaleKeys(userIds);
 
   const where = inArray(licenseKeys.createdById, userIds);
   const now = Date.now();
@@ -1760,7 +1878,24 @@ export async function getContracts(opts?: {
     db.select().from(contracts).where(where).orderBy(desc(contracts.createdAt)).limit(pageSize).offset(offset),
     db.select({ count: count() }).from(contracts).where(where),
   ]);
-  return { items, total: totalResult[0]?.count ?? 0 };
+
+  // 为本页每个合同统计关联密钥数（在线 + 离线），供前端删除提示判断
+  const ids = items.map((c) => c.id);
+  const keyCountMap = new Map<number, number>();
+  if (ids.length > 0) {
+    const [onlineCounts, offlineCounts] = await Promise.all([
+      db.select({ id: licenseKeys.contractId, c: count() }).from(licenseKeys)
+        .where(and(inArray(licenseKeys.contractId, ids), ne(licenseKeys.status, "REVOKED"))).groupBy(licenseKeys.contractId),
+      db.select({ id: offlineKeys.contractId, c: count() }).from(offlineKeys)
+        .where(and(inArray(offlineKeys.contractId, ids), ne(offlineKeys.status, "REVOKED"))).groupBy(offlineKeys.contractId),
+    ]);
+    for (const r of [...onlineCounts, ...offlineCounts]) {
+      if (r.id != null) keyCountMap.set(r.id, (keyCountMap.get(r.id) ?? 0) + Number(r.c));
+    }
+  }
+  const itemsWithCount = items.map((c) => ({ ...c, keyCount: keyCountMap.get(c.id) ?? 0 }));
+
+  return { items: itemsWithCount, total: totalResult[0]?.count ?? 0 };
 }
 
 /** 获取单个合同 */
@@ -1779,6 +1914,39 @@ export async function getContractByNo(contractNo: string) {
   return result[0] || null;
 }
 
+/**
+ * 合同关联的"未吊销"密钥数（在线 + 离线）。
+ * 已吊销(REVOKED)视为已解除关联、不计入。用于删除前拦截。
+ */
+export async function getContractActiveKeyCount(contractId: number) {
+  const db = await getDb();
+  if (!db) return 0;
+  const online = await db.select({ count: count() }).from(licenseKeys)
+    .where(and(eq(licenseKeys.contractId, contractId), ne(licenseKeys.status, "REVOKED")));
+  const offline = await db.select({ count: count() }).from(offlineKeys)
+    .where(and(eq(offlineKeys.contractId, contractId), ne(offlineKeys.status, "REVOKED")));
+  return (online[0]?.count ?? 0) + (offline[0]?.count ?? 0);
+}
+
+/**
+ * 解除合同与所有关联密钥的绑定：仅置空 contractId（外键），保留 contractNo。
+ * 密钥列表据 contractId 为空判断该合同已删除（显示“xxx（该合同已删除）”）。
+ */
+export async function detachContractFromKeys(contractId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(licenseKeys).set({ contractId: null }).where(eq(licenseKeys.contractId, contractId));
+  await db.update(offlineKeys).set({ contractId: null }).where(eq(offlineKeys.contractId, contractId));
+}
+
+/** 硬删除合同（先解除密钥绑定，再删除合同行） */
+export async function deleteContract(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await detachContractFromKeys(id);
+  await db.delete(contracts).where(eq(contracts.id, id));
+}
+
 /** 增加合同已用密钥数 */
 export async function incrementContractUsedKeys(contractId: number, count_: number = 1) {
   const db = await getDb();
@@ -1788,71 +1956,4 @@ export async function incrementContractUsedKeys(contractId: number, count_: numb
   }).where(eq(contracts.id, contractId));
 }
 
-// ===================================================================
-// 阶段三：团队管理
-// ===================================================================
-
-/** 创建团队 */
-export async function createTeam(data: {
-  name: string;
-  description?: string;
-  leaderId?: number;
-  leaderName?: string;
-  parentTeamId?: number;
-}) {
-  const db = await getDb();
-  if (!db) return null;
-  const [result] = await db.insert(teams).values({
-    name: data.name,
-    description: data.description || null,
-    leaderId: data.leaderId || null,
-    leaderName: data.leaderName || null,
-    parentTeamId: data.parentTeamId || null,
-  });
-  return { id: result.insertId, ...data };
-}
-
-/** 更新团队 */
-export async function updateTeam(id: number, data: Partial<{
-  name: string;
-  description: string | null;
-  leaderId: number | null;
-  leaderName: string | null;
-  parentTeamId: number | null;
-  isActive: boolean;
-}>) {
-  const db = await getDb();
-  if (!db) return;
-  await db.update(teams).set(data as any).where(eq(teams.id, id));
-}
-
-/** 获取所有团队 */
-export async function getTeams(activeOnly: boolean = true) {
-  const db = await getDb();
-  if (!db) return [];
-  if (activeOnly) {
-    return db.select().from(teams).where(eq(teams.isActive, true)).orderBy(teams.name);
-  }
-  return db.select().from(teams).orderBy(teams.name);
-}
-
-/** 获取团队成员 */
-export async function getTeamMembers(teamId: number) {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select({
-    id: users.id,
-    username: users.username,
-    name: users.name,
-    role: users.role,
-    isActive: users.isActive,
-  }).from(users).where(eq(users.teamId, teamId));
-}
-
-/** 设置用户团队 */
-export async function setUserTeam(userId: number, teamId: number | null) {
-  const db = await getDb();
-  if (!db) return;
-  await db.update(users).set({ teamId }).where(eq(users.id, userId));
-}
 

@@ -613,10 +613,18 @@ export default function KeyList() {
                           {renderStatus(key)}
                         </TableCell>
                         <TableCell className="text-sm text-foreground">
-                          {key.customerName || "-"}
+                          {key.customerName
+                            ? key.customerId
+                              ? key.customerName
+                              : `${key.customerName}（该客户已删除）`
+                            : "-"}
                         </TableCell>
                         <TableCell className="text-sm text-foreground">
-                          {key.contractNo || "-"}
+                          {key.contractNo
+                            ? key.contractId
+                              ? key.contractNo
+                              : `${key.contractNo}（该合同已删除）`
+                            : "-"}
                         </TableCell>
                         <TableCell className="text-sm text-foreground">
                           {key.createdByName || "-"}

@@ -172,8 +172,20 @@ export default function OfflineKeyList() {
                           <TableCell className="text-xs">
                             {new Date(item.expireDate).toLocaleDateString("zh-CN")}
                           </TableCell>
-                          <TableCell className="text-sm">{item.customerName || "-"}</TableCell>
-                          <TableCell className="text-sm">{item.contractNo || "-"}</TableCell>
+                          <TableCell className="text-sm">
+                            {item.customerName
+                              ? item.customerId
+                                ? item.customerName
+                                : `${item.customerName}（该客户已删除）`
+                              : "-"}
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            {item.contractNo
+                              ? item.contractId
+                                ? item.contractNo
+                                : `${item.contractNo}（该合同已删除）`
+                              : "-"}
+                          </TableCell>
                           <TableCell className="text-sm">{item.createdByName || "-"}</TableCell>
                           <TableCell className="text-xs">
                             {new Date(item.createdAt).toLocaleDateString("zh-CN")}

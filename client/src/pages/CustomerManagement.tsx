@@ -10,6 +10,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -31,6 +41,7 @@ import {
   Search,
   ToggleLeft,
   ToggleRight,
+  Trash2,
   User,
   Mail,
   MapPin,
@@ -77,6 +88,18 @@ export default function CustomerManagement() {
       toast.success("客户信息已更新");
       setShowDialog(false);
       resetForm();
+      refetch();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const [deleteTarget, setDeleteTarget] = useState<any>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+
+  const deleteMutation = trpc.customers.delete.useMutation({
+    onSuccess: () => {
+      toast.success("客户已删除");
+      setDeleteOpen(false);
       refetch();
     },
     onError: (err) => toast.error(err.message),
@@ -260,6 +283,16 @@ export default function CustomerManagement() {
                                 </>
                               )}
                             </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => { setDeleteTarget(customer); setDeleteOpen(true); }}
+                              disabled={deleteMutation.isPending}
+                              className="gap-1 text-destructive hover:text-destructive"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              删除
+                            </Button>
                           </div>
                         </TableCell>
                       </TableRow>
@@ -298,6 +331,31 @@ export default function CustomerManagement() {
           )}
         </CardContent>
       </Card>
+
+      {/* 删除确认弹窗 */}
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除客户</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteTarget?.keyCount > 0
+                ? "当前客户存在关联密钥！请先吊销密钥后再删除客户。"
+                : `确定删除客户「${deleteTarget?.name}」吗？此操作不可恢复。`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            {!(deleteTarget?.keyCount > 0) && (
+              <AlertDialogAction
+                className="bg-destructive text-white hover:bg-destructive/90"
+                onClick={() => deleteTarget && deleteMutation.mutate({ id: deleteTarget.id })}
+              >
+                删除
+              </AlertDialogAction>
+            )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* 创建/编辑客户对话框 */}
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
