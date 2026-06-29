@@ -778,7 +778,25 @@ export const appRouter = router({
         const clientIp = ctx.req?.headers?.['x-forwarded-for'] as string || ctx.req?.socket?.remoteAddress || undefined;
 
         // 3. 尝试激活绑定（activateLicenseKey 内部已以数据库 expireTimestamp 判过期）
-        const activateResult = await activateLicenseKey(input.keyString.trim(), input.deviceCode, input.deviceName, clientIp);
+        let activateResult;
+        try {
+          activateResult = await activateLicenseKey(input.keyString.trim(), input.deviceCode, input.deviceName, clientIp);
+        } catch (e) {
+          // 数据库不可用时退回按密钥串自身到期判定（离线兜底）：串里已过期直接拒绝；串有效但 DB 异常则上抛
+          if (!decoded.valid) {
+            return {
+              success: false,
+              error: decoded.error || "密钥已过期",
+              sensorType: decoded.sensorType || null,
+              sensorTypes: decoded.sensorTypes || [],
+              isAllTypes: decoded.isAllTypes || false,
+              expireDate: decoded.expireDate || null,
+              remainingDays: decoded.remainingDays ?? 0,
+              category: decoded.category || null,
+            };
+          }
+          throw e;
+        }
 
         // 4. 激活失败（过期/吊销/暂停/超限）：保持与旧版完全一致的返回结构，
         //    剩余天数用密钥串解出的真实值（过期时为负，客户端据此判过期），不返回“看似有效”的载荷
