@@ -82,11 +82,19 @@ async function startServer() {
     let status: string = "UNKNOWN";
     let reason: string | undefined = decoded.valid ? undefined : "密钥已过期";
     let valid = decoded.valid;
+    // 在线密钥到期以数据库 expireTimestamp 为权威（支持后台续期延长当前密钥）；
+    // 无数据库记录或数据库异常时，退回密钥串里编码的日期（离线兜底）
+    let effectiveExpire: number | null = decoded.expireTimestamp ?? null;
 
     try {
       const rec = await getLicenseKeyByString(key);
       if (rec) {
         status = rec.status;
+        // 到期改以数据库为准（续期会更新这个字段）
+        effectiveExpire = rec.expireTimestamp;
+        const notExpired = now < rec.expireTimestamp;
+        valid = notExpired;
+        reason = notExpired ? undefined : "密钥已过期";
         // 防回拨/篡改检测：维护可信时间高水位；检测到回拨或客户端上报篡改 → 标记 TAMPERED（持久化）
         const tamperResult = await recordClientTimeAndDetectTamper({
           keyId: rec.id,
@@ -105,13 +113,13 @@ async function startServer() {
         } else if (status === "TAMPERED") {
           valid = false;
           reason = rec.tamperReason || "密钥异常：检测到时间回拨或客户端篡改";
-        } else if (!decoded.valid) {
-          // 已过期：统一返回 EXPIRED 并持久化，避免客户端凭库里旧状态(ISSUED/ACTIVATED)继续使用
+        } else if (!notExpired) {
+          // 已过期（按数据库到期判定）：统一返回 EXPIRED 并持久化
           valid = false;
           status = "EXPIRED";
           reason = "密钥已过期";
           await markLicenseKeyExpired(rec.id);
-        } else if (valid && !rec.isActivated) {
+        } else if (!rec.isActivated) {
           // 首次有效校验 → 标记为已激活（在线版"使用即激活"）
           await markLicenseKeyActivated(key);
           status = "ACTIVATED";
@@ -122,13 +130,17 @@ async function startServer() {
       status = "DB_ERROR";
     }
 
+    const effectiveRemainingDays = effectiveExpire != null
+      ? Math.ceil((effectiveExpire - now) / (1000 * 60 * 60 * 24))
+      : null;
+
     res.json({
       time: now,
       valid,
       status,
       reason,
-      expireTimestamp: decoded.expireTimestamp ?? null,
-      remainingDays: decoded.remainingDays ?? null,
+      expireTimestamp: effectiveExpire,
+      remainingDays: effectiveRemainingDays,
       sensorTypes: decoded.sensorTypes ?? null,
       isAllTypes: decoded.isAllTypes ?? false,
     });

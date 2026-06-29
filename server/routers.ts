@@ -695,7 +695,10 @@ export const appRouter = router({
 
         // 生命周期状态以数据库为权威：吊销/暂停/异常会覆盖"按到期时间算的有效性"
         const dbStatus = dbRecord?.status ?? (dbRecord ? "ISSUED" : "UNKNOWN");
-        let valid = decoded.valid;
+        const now = Date.now();
+        // 在线密钥到期以数据库 expireTimestamp 为权威（支持续期延长当前密钥）；无记录时退回密钥串日期
+        const effectiveExpire = dbRecord ? dbRecord.expireTimestamp : (decoded.expireTimestamp ?? null);
+        let valid = effectiveExpire != null ? now < effectiveExpire : decoded.valid;
         let statusReason: string | null = null;
         if (dbRecord) {
           if (dbStatus === "REVOKED") {
@@ -710,9 +713,16 @@ export const appRouter = router({
           }
         }
 
+        const effectiveRemainingDays = effectiveExpire != null
+          ? Math.ceil((effectiveExpire - now) / (1000 * 60 * 60 * 24))
+          : (decoded.remainingDays ?? 0);
+
         return {
           ...decoded,
           valid,
+          expireTimestamp: effectiveExpire,
+          remainingDays: effectiveRemainingDays,
+          expireDate: effectiveExpire != null ? new Date(effectiveExpire).toISOString() : (decoded.expireDate ?? null),
           status: dbStatus,
           statusReason,
           isActivated: dbRecord?.isActivated ?? false,
@@ -748,10 +758,12 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         // 1. 解密密钥获取授权信息
         const decoded = decodeLicenseKey(input.keyString);
-        if (!decoded.valid) {
+        // 仅当密钥串完全无法解密（连到期都解不出）才直接拒绝；
+        // 能解密但“串里已过期”的情况交给数据库判定（支持续期延长当前密钥）
+        if (!decoded.expireTimestamp) {
           return {
             success: false,
-            error: decoded.error || "密钥无效或已过期",
+            error: decoded.error || "密钥无效",
             // 仍然返回部分信息方便客户端展示
             sensorType: decoded.sensorType || null,
             sensorTypes: decoded.sensorTypes || [],
@@ -765,20 +777,40 @@ export const appRouter = router({
         // 2. 获取客户端 IP
         const clientIp = ctx.req?.headers?.['x-forwarded-for'] as string || ctx.req?.socket?.remoteAddress || undefined;
 
-        // 3. 尝试激活绑定
+        // 3. 尝试激活绑定（activateLicenseKey 内部已以数据库 expireTimestamp 判过期）
         const activateResult = await activateLicenseKey(input.keyString.trim(), input.deviceCode, input.deviceName, clientIp);
 
-        // 4. 无论绑定成功还是失败，都返回完整的授权信息
+        // 4. 激活失败（过期/吊销/暂停/超限）：保持与旧版完全一致的返回结构，
+        //    剩余天数用密钥串解出的真实值（过期时为负，客户端据此判过期），不返回“看似有效”的载荷
+        if (!activateResult.success) {
+          return {
+            ...activateResult,
+            sensorType: decoded.sensorType || null,
+            sensorTypes: decoded.sensorTypes || [],
+            isAllTypes: decoded.isAllTypes || false,
+            expireDate: decoded.expireDate || null,
+            remainingDays: decoded.remainingDays ?? 0,
+            category: decoded.category || null,
+          };
+        }
+
+        // 5. 激活成功：到期以数据库为权威（支持续期延长当前密钥）
+        const dbRec = await getLicenseKeyByString(input.keyString.trim());
+        const now = Date.now();
+        const effectiveExpire = dbRec ? dbRec.expireTimestamp : (decoded.expireTimestamp ?? null);
+        const effectiveRemainingDays = effectiveExpire != null
+          ? Math.max(0, Math.ceil((effectiveExpire - now) / (1000 * 60 * 60 * 24)))
+          : 0;
         return {
           ...activateResult,
           // 授权信息
           sensorType: decoded.sensorType || null,
           sensorTypes: decoded.sensorTypes || [],
           isAllTypes: decoded.isAllTypes || false,
-          expireDate: decoded.expireDate || null,
-          expireTimestamp: decoded.expireTimestamp || null,
-          remainingDays: decoded.remainingDays || 0,
-          category: decoded.category || null,
+          expireDate: effectiveExpire != null ? new Date(effectiveExpire).toISOString() : (decoded.expireDate || null),
+          expireTimestamp: effectiveExpire,
+          remainingDays: effectiveRemainingDays,
+          category: (dbRec?.category as string | null) || decoded.category || null,
         };
       }),
 

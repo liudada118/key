@@ -7,6 +7,7 @@ import {
   mysqlTable,
   text,
   timestamp,
+  uniqueIndex,
   varchar,
 } from "drizzle-orm/mysql-core";
 
@@ -194,7 +195,10 @@ export const licenseKeys = mysqlTable("licenseKeys", {
   remark: text("remark"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  // keyHash 唯一：从数据库层面杜绝重复密钥串（keyString 是 text 不便直接唯一，改用其 sha256）
+  keyHashUnique: uniqueIndex("licenseKeys_keyHash_unique").on(table.keyHash),
+}));
 
 export type LicenseKey = typeof licenseKeys.$inferSelect;
 export type InsertLicenseKey = typeof licenseKeys.$inferInsert;

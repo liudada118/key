@@ -183,6 +183,8 @@ function generateLicenseKey(sensorTypes, days, category) {
     file: file,
     cat: category,
     v: 2,
+    // 随机 nonce：ECB 确定性加密，加随机字段保证每把密钥串唯一（解密端自动忽略）
+    n: CryptoJS.lib.WordArray.random(8).toString(),
   });
   return aesEncrypt(payload);
 }

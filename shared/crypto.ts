@@ -208,6 +208,9 @@ export function generateLicenseKey(
     file,
     cat: category,
     v: 2,
+    // 随机 nonce：ECB 是确定性加密，相同参数会产出相同密文；加随机字段保证每把密钥串唯一。
+    // 桌面端解密后只读 date/file/cat，自动忽略该字段，无需改动。
+    n: CryptoJS.lib.WordArray.random(8).toString(),
   });
   return aesEncrypt(payload);
 }
