@@ -14,6 +14,10 @@ import {
   sensorTypes,
   users,
   deviceCodeRecords,
+  feedback,
+  type Feedback,
+  type InsertFeedback,
+  type FeedbackStatus,
   type InsertCustomer,
   type InsertKeyDevice,
   type InsertLicenseKey,
@@ -2033,6 +2037,120 @@ export async function deleteDeviceCodeRecord(id: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   await db.delete(deviceCodeRecords).where(eq(deviceCodeRecords.id, id));
+}
+
+// ─── 用户反馈（feedback） ─────────────────────────────────────────────────────
+
+/** 确保 feedback 表存在（运行时兜底，免迁移即可用） */
+export async function ensureFeedbackTable() {
+  const db = await getDb();
+  if (!db) return;
+  await db.execute(sql.raw(`CREATE TABLE IF NOT EXISTS \`feedback\` (
+    \`id\` int AUTO_INCREMENT NOT NULL,
+    \`type\` varchar(32) NOT NULL,
+    \`content\` text NOT NULL,
+    \`contact\` varchar(128),
+    \`licenseKeyTail\` varchar(32),
+    \`solution\` varchar(64),
+    \`appVersion\` varchar(32),
+    \`platform\` varchar(32),
+    \`source\` varchar(64) NOT NULL DEFAULT 'desktop-portal',
+    \`userAgent\` varchar(512),
+    \`ipAddress\` varchar(64),
+    \`status\` enum('pending','processing','resolved','closed') NOT NULL DEFAULT 'pending',
+    \`remark\` text,
+    \`handledById\` int,
+    \`handledByName\` varchar(128),
+    \`handledAt\` timestamp NULL,
+    \`createdAt\` timestamp NOT NULL DEFAULT (now()),
+    CONSTRAINT \`feedback_id\` PRIMARY KEY(\`id\`)
+  )`));
+}
+
+/** 新增一条反馈（REST /feedback 调用），返回插入后的 id */
+export async function createFeedback(input: InsertFeedback): Promise<number | null> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result: any = await db.insert(feedback).values(input);
+  // mysql2 driver: insertId 在结果首元素
+  const insertId = Array.isArray(result) ? result[0]?.insertId : result?.insertId;
+  return insertId != null ? Number(insertId) : null;
+}
+
+/** 反馈列表（分页 + 可选状态/类型筛选 + 关键字搜索，倒序） */
+export async function getFeedbackList(opts: {
+  page: number;
+  pageSize: number;
+  status?: FeedbackStatus;
+  type?: string;
+  keyword?: string;
+}): Promise<{ items: Feedback[]; total: number }> {
+  const db = await getDb();
+  if (!db) return { items: [], total: 0 };
+
+  const conditions = [] as any[];
+  if (opts.status) conditions.push(eq(feedback.status, opts.status));
+  if (opts.type) conditions.push(eq(feedback.type, opts.type));
+  if (opts.keyword) {
+    const kw = `%${opts.keyword}%`;
+    conditions.push(or(like(feedback.content, kw), like(feedback.contact, kw)));
+  }
+  const where = conditions.length ? and(...conditions) : undefined;
+  const offset = (opts.page - 1) * opts.pageSize;
+
+  const [items, totalResult] = await Promise.all([
+    db.select().from(feedback).where(where).orderBy(desc(feedback.createdAt)).limit(opts.pageSize).offset(offset),
+    db.select({ count: count() }).from(feedback).where(where),
+  ]);
+  return { items, total: totalResult[0]?.count ?? 0 };
+}
+
+/** 各状态计数（仪表展示用） */
+export async function getFeedbackStats(): Promise<Record<FeedbackStatus, number> & { total: number }> {
+  const db = await getDb();
+  const empty = { pending: 0, processing: 0, resolved: 0, closed: 0, total: 0 };
+  if (!db) return empty;
+  const rows = await db.select({ status: feedback.status, c: count() }).from(feedback).groupBy(feedback.status);
+  const stats = { ...empty };
+  for (const row of rows as Array<{ status: FeedbackStatus; c: number }>) {
+    stats[row.status] = Number(row.c) || 0;
+    stats.total += Number(row.c) || 0;
+  }
+  return stats;
+}
+
+/** 获取单条反馈 */
+export async function getFeedbackById(id: number): Promise<Feedback | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const result = await db.select().from(feedback).where(eq(feedback.id, id)).limit(1);
+  return result[0] || null;
+}
+
+/** 更新反馈处理状态 / 备注 / 处理人 */
+export async function updateFeedback(
+  id: number,
+  patch: { status?: FeedbackStatus; remark?: string; handledById?: number; handledByName?: string }
+): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const values: Record<string, unknown> = {};
+  if (patch.status !== undefined) {
+    values.status = patch.status;
+    values.handledAt = new Date();
+  }
+  if (patch.remark !== undefined) values.remark = patch.remark;
+  if (patch.handledById !== undefined) values.handledById = patch.handledById;
+  if (patch.handledByName !== undefined) values.handledByName = patch.handledByName;
+  if (Object.keys(values).length === 0) return;
+  await db.update(feedback).set(values).where(eq(feedback.id, id));
+}
+
+/** 删除反馈 */
+export async function deleteFeedback(id: number): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(feedback).where(eq(feedback.id, id));
 }
 
 

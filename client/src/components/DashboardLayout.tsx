@@ -35,6 +35,7 @@ import {
   KeyRound,
   LayoutDashboard,
   LogOut,
+  MessageSquare,
   PanelLeft,
   ScrollText,
   Search,
@@ -121,6 +122,7 @@ const menuSections: MenuSection[] = [
     items: [
       { icon: AlertTriangle, label: "异常密钥", path: "/tampered", roles: ["super_admin", "admin"] },
       { icon: Heart, label: "心跳监控", path: "/heartbeat", roles: ["super_admin", "admin"] },
+      { icon: MessageSquare, label: "反馈管理", path: "/feedback" },
     ],
   },
   {

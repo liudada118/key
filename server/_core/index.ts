@@ -7,7 +7,7 @@ import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { ensureDefaultSuperAdmin, ensureDefaultSensorTypes, ensureRsaKeyPair, ensureDeviceCodeRecordsTable, getLicenseKeyByString, markLicenseKeyActivated, markLicenseKeyExpired, recordClientTimeAndDetectTamper, getSensorTypesGrouped } from "../db";
+import { ensureDefaultSuperAdmin, ensureDefaultSensorTypes, ensureRsaKeyPair, ensureDeviceCodeRecordsTable, ensureFeedbackTable, createFeedback, getLicenseKeyByString, markLicenseKeyActivated, markLicenseKeyExpired, recordClientTimeAndDetectTamper, getSensorTypesGrouped } from "../db";
 import { decodeLicenseKey } from "../../shared/crypto";
 
 function isPortAvailable(port: number): Promise<boolean> {
@@ -42,6 +42,7 @@ async function startServer() {
     await ensureDefaultSensorTypes();
     await ensureRsaKeyPair();
     await ensureDeviceCodeRecordsTable();
+    await ensureFeedbackTable();
     console.log("[Init] Database initialization complete");
   } catch (error) {
     console.warn("[Init] Database initialization failed (will retry on first request):", error);
@@ -167,6 +168,58 @@ async function startServer() {
     } catch (e) {
       // DB 不可用时返回空清单 + 错误标记，桌面端可回退到本地缓存
       res.status(500).json({ time: Date.now(), groups: [], flat: [], map: {}, error: "DB_ERROR" });
+    }
+  });
+
+  // 用户反馈接收接口（桌面端开屏门户页提交）
+  // 与 /sensorTypes 同款：纯 REST + CORS，桌面端一次 fetch 即可；无需鉴权（公开提交）
+  // 请求: POST /feedback  body: { type, content, contact?, licenseKeyTail?, solution?, appVersion?, platform?, source?, userAgent? }
+  // 返回: { ok: true, id } | { ok: false, error }
+  app.options("/feedback", (_req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.sendStatus(204);
+  });
+  app.post("/feedback", async (req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Cache-Control", "no-store");
+    try {
+      const body = req.body || {};
+      const content = (body.content != null ? String(body.content) : "").trim();
+      if (!content) {
+        return res.status(400).json({ ok: false, error: "缺少反馈内容" });
+      }
+      const allowedTypes = ["功能建议", "问题反馈", "商务合作", "其他"];
+      const type = allowedTypes.includes(body.type) ? body.type : "其他";
+
+      // 取来源 IP（兼容反向代理）
+      const xff = req.headers["x-forwarded-for"];
+      const ipAddress = (Array.isArray(xff) ? xff[0] : xff || req.socket.remoteAddress || "")
+        .toString()
+        .split(",")[0]
+        .trim()
+        .slice(0, 64);
+
+      const truncate = (val: unknown, max: number) =>
+        val != null ? String(val).slice(0, max) : undefined;
+
+      const id = await createFeedback({
+        type,
+        content: content.slice(0, 2000),
+        contact: truncate(body.contact, 128),
+        licenseKeyTail: truncate(body.licenseKeyTail, 32),
+        solution: truncate(body.solution, 64),
+        appVersion: truncate(body.appVersion, 32),
+        platform: truncate(body.platform, 32),
+        source: truncate(body.source, 64) || "desktop-portal",
+        userAgent: truncate(body.userAgent, 512),
+        ipAddress,
+      });
+      res.json({ ok: true, id });
+    } catch (e) {
+      console.error("[Feedback] 提交失败:", e);
+      res.status(500).json({ ok: false, error: "服务暂不可用，请稍后重试" });
     }
   });
 

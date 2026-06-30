@@ -78,6 +78,11 @@ import {
   getTamperedKeyCount,
   clearKeyTamper,
   reissueLicenseKey,
+  getFeedbackList,
+  getFeedbackStats,
+  getFeedbackById,
+  updateFeedback,
+  deleteFeedback,
 } from "./db";
 import {
   decodeLicenseKey,
@@ -1381,6 +1386,56 @@ export const appRouter = router({
           }
         }
         await deleteDeviceCodeRecord(input.id);
+        return { success: true };
+      }),
+  }),
+
+  // ─── 用户反馈管理 ───────────────────────────────────────────────────────────
+  feedback: router({
+    /** 反馈列表（分页 + 状态/类型筛选 + 关键字搜索） */
+    list: protectedProcedure
+      .input(z.object({
+        page: z.number().min(1).default(1),
+        pageSize: z.number().min(1).max(100).default(20),
+        status: z.enum(["pending", "processing", "resolved", "closed"]).optional(),
+        type: z.string().max(32).optional(),
+        keyword: z.string().max(128).optional(),
+      }))
+      .query(async ({ input }) => {
+        return getFeedbackList(input);
+      }),
+
+    /** 各状态计数 */
+    stats: protectedProcedure.query(async () => {
+      return getFeedbackStats();
+    }),
+
+    /** 更新反馈处理状态 / 备注 */
+    update: protectedProcedure
+      .input(z.object({
+        id: z.number(),
+        status: z.enum(["pending", "processing", "resolved", "closed"]).optional(),
+        remark: z.string().max(2000).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const rec = await getFeedbackById(input.id);
+        if (!rec) throw new TRPCError({ code: "NOT_FOUND", message: "反馈不存在" });
+        await updateFeedback(input.id, {
+          status: input.status,
+          remark: input.remark,
+          handledById: ctx.user.id,
+          handledByName: ctx.user.name || ctx.user.username,
+        });
+        return { success: true };
+      }),
+
+    /** 删除反馈（仅管理员及以上） */
+    delete: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        const rec = await getFeedbackById(input.id);
+        if (!rec) throw new TRPCError({ code: "NOT_FOUND", message: "反馈不存在" });
+        await deleteFeedback(input.id);
         return { success: true };
       }),
   }),

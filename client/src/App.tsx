@@ -24,6 +24,7 @@ import AuditLog from "./pages/AuditLog";
 import ContractManagement from "./pages/ContractManagement";
 import HeartbeatMonitor from "./pages/HeartbeatMonitor";
 import TamperedKeys from "./pages/TamperedKeys";
+import FeedbackManagement from "./pages/FeedbackManagement";
 import Login from "./pages/Login";
 import { useAuth } from "./_core/hooks/useAuth";
 import { Loader2 } from "lucide-react";
@@ -51,6 +52,7 @@ function AuthenticatedRouter() {
         <Route path={"/contracts"} component={ContractManagement} />
         <Route path={"/heartbeat"} component={HeartbeatMonitor} />
         <Route path={"/tampered"} component={TamperedKeys} />
+        <Route path={"/feedback"} component={FeedbackManagement} />
         <Route path={"/404"} component={NotFound} />
         <Route component={NotFound} />
       </Switch>

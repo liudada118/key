@@ -440,3 +440,46 @@ export const deviceCodeRecords = mysqlTable("deviceCodeRecords", {
 
 export type DeviceCodeRecord = typeof deviceCodeRecords.$inferSelect;
 export type InsertDeviceCodeRecord = typeof deviceCodeRecords.$inferInsert;
+
+/**
+ * 用户反馈表 - 接收桌面端开屏门户页（Shroom Vision）提交的反馈
+ * 来源：桌面端 LicensePortal 的反馈浮窗 → POST /feedback
+ */
+export const feedback = mysqlTable("feedback", {
+  id: int("id").autoincrement().primaryKey(),
+  /** 反馈类型：功能建议 / 问题反馈 / 商务合作 / 其他 */
+  type: varchar("type", { length: 32 }).notNull(),
+  /** 反馈内容 */
+  content: text("content").notNull(),
+  /** 联系方式（选填）：邮箱 / 手机号 / 微信号 */
+  contact: varchar("contact", { length: 128 }),
+  /** 密钥尾段（脱敏，仅尾部片段，便于关联来源用户） */
+  licenseKeyTail: varchar("licenseKeyTail", { length: 32 }),
+  /** 当前选中的行业方案 key（如 care / vehicle / embodied / customLab） */
+  solution: varchar("solution", { length: 64 }),
+  /** 桌面端应用版本 */
+  appVersion: varchar("appVersion", { length: 32 }),
+  /** 平台：win32 / darwin / web 等 */
+  platform: varchar("platform", { length: 32 }),
+  /** 来源标识（如 desktop-portal） */
+  source: varchar("source", { length: 64 }).default("desktop-portal").notNull(),
+  /** 浏览器/客户端 UA */
+  userAgent: varchar("userAgent", { length: 512 }),
+  /** 提交方 IP（后台从请求中解析记录） */
+  ipAddress: varchar("ipAddress", { length: 64 }),
+  /** 处理状态：pending(待处理) / processing(处理中) / resolved(已解决) / closed(已关闭) */
+  status: mysqlEnum("status", ["pending", "processing", "resolved", "closed"]).default("pending").notNull(),
+  /** 后台处理备注 */
+  remark: text("remark"),
+  /** 处理人用户 ID */
+  handledById: int("handledById"),
+  /** 处理人名称 */
+  handledByName: varchar("handledByName", { length: 128 }),
+  /** 处理时间 */
+  handledAt: timestamp("handledAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type Feedback = typeof feedback.$inferSelect;
+export type InsertFeedback = typeof feedback.$inferInsert;
+export type FeedbackStatus = "pending" | "processing" | "resolved" | "closed";
