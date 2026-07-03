@@ -16,8 +16,6 @@ import {
   getCustomerById,
   getCustomerKeyCount,
   getCustomers,
-  getKeyDeviceCount,
-  getKeyDevices,
   getKeyStats,
   getKeyStatusHistoryList,
   getLicenseKeyById,
@@ -30,7 +28,6 @@ import {
   restoreLicenseKey,
   revokeLicenseKey,
   suspendLicenseKey,
-  unbindKeyDevice,
   updateLicenseKeyCategory,
   getUserById,
   getUserByUsername,
@@ -80,6 +77,7 @@ import {
   reissueLicenseKey,
   getFeedbackList,
   getFeedbackStats,
+  isFeedbackInScope,
   getFeedbackById,
   updateFeedback,
   deleteFeedback,
@@ -550,7 +548,6 @@ export const appRouter = router({
           sensorTypes: z.union([z.string(), z.array(z.string())]),
           days: z.number().min(1).max(36500),
           category: z.enum(["production", "rental"]),
-          maxDevices: z.number().min(0).max(9999).default(1),
           customerId: z.number().optional(),
           customerName: z.string().optional(),
           contractId: z.number().optional(),
@@ -578,7 +575,6 @@ export const appRouter = router({
           category: input.category,
           days: input.days,
           expireTimestamp,
-          maxDevices: input.maxDevices,
           createdById: ctx.user.id,
           createdByName: ctx.user.name || "未知",
           customerId: input.customerId || null,
@@ -588,7 +584,7 @@ export const appRouter = router({
           remark: input.remark || null,
         });
 
-        return { keyString, expireTimestamp, maxDevices: input.maxDevices };
+        return { keyString, expireTimestamp };
       }),
 
     batchGenerate: protectedProcedure
@@ -598,7 +594,6 @@ export const appRouter = router({
           days: z.number().min(1).max(36500),
           category: z.enum(["production", "rental"]),
           count: z.number().min(1).max(500),
-          maxDevices: z.number().min(0).max(9999).default(1),
           customerId: z.number().optional(),
           customerName: z.string().optional(),
           contractId: z.number().optional(),
@@ -631,7 +626,6 @@ export const appRouter = router({
             category: input.category,
             days: input.days,
             expireTimestamp,
-            maxDevices: input.maxDevices,
             createdById: ctx.user.id,
             createdByName: ctx.user.name || "未知",
             customerId: input.customerId || null,
@@ -686,18 +680,6 @@ export const appRouter = router({
         const decoded = decodeLicenseKey(input.keyString);
         const dbRecord = await getLicenseKeyByString(input.keyString.trim());
 
-        // 获取设备绑定信息
-        let devices: Awaited<ReturnType<typeof getKeyDevices>> = [];
-        let deviceCount = 0;
-        let deviceBound = false;
-        if (dbRecord) {
-          devices = await getKeyDevices(dbRecord.id);
-          deviceCount = devices.length;
-          if (input.deviceCode) {
-            deviceBound = devices.some(d => d.deviceCode === input.deviceCode!.trim());
-          }
-        }
-
         // 生命周期状态以数据库为权威：吊销/暂停/异常会覆盖"按到期时间算的有效性"
         const dbStatus = dbRecord?.status ?? (dbRecord ? "ISSUED" : "UNKNOWN");
         const now = Date.now();
@@ -744,19 +726,15 @@ export const appRouter = router({
           createdAt: dbRecord?.createdAt ?? null,
           category: dbRecord?.category ?? decoded.category,
           dbRemark: dbRecord?.remark ?? null,
-          maxDevices: dbRecord?.maxDevices ?? 1,
-          deviceCount,
-          devices,
-          deviceBound,
         };
       }),
 
-    /** 客户端统一接口：激活绑定 + 验证 + 返回授权信息 */
+    /** 客户端统一接口：验证 + 首次使用激活 + 返回授权信息 */
     activate: publicProcedure
       .input(
         z.object({
           keyString: z.string().min(1),
-          deviceCode: z.string().min(1, "设备码不能为空"),
+          deviceCode: z.string().optional(),
           deviceName: z.string().optional(),
         })
       )
@@ -836,25 +814,6 @@ export const appRouter = router({
           category: (dbRec?.category as string | null) || decoded.category || null,
         };
       }),
-
-    /** 获取密钥的已绑定设备列表 */
-    devices: protectedProcedure
-      .input(z.object({ keyId: z.number() }))
-      .query(async ({ input }) => {
-        return getKeyDevices(input.keyId);
-      }),
-
-    /** 解绑设备（管理员操作） */
-    unbindDevice: adminProcedure
-      .input(z.object({
-        keyId: z.number(),
-        deviceId: z.number(),
-      }))
-      .mutation(async ({ input }) => {
-        return unbindKeyDevice(input.keyId, input.deviceId);
-      }),
-
-    // verifyOnDevice 已合并到 activate 接口中
 
     stats: protectedProcedure.query(async ({ ctx }) => {
       const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
@@ -1401,16 +1360,23 @@ export const appRouter = router({
         type: z.string().max(32).optional(),
         keyword: z.string().max(128).optional(),
       }))
-      .query(async ({ input }) => {
-        return getFeedbackList(input);
+      .query(async ({ ctx, input }) => {
+        // 数据域:超管看全部;管理员看自己+下属;子账号仅看自己创建密钥回来的反馈
+        const scopeUserIds = ctx.user.role === "super_admin"
+          ? undefined
+          : await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+        return getFeedbackList({ ...input, scopeUserIds });
       }),
 
-    /** 各状态计数 */
-    stats: protectedProcedure.query(async () => {
-      return getFeedbackStats();
+    /** 各状态计数（同样按数据域过滤） */
+    stats: protectedProcedure.query(async ({ ctx }) => {
+      const scopeUserIds = ctx.user.role === "super_admin"
+        ? undefined
+        : await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+      return getFeedbackStats(scopeUserIds);
     }),
 
-    /** 更新反馈处理状态 / 备注 */
+    /** 更新反馈处理状态 / 备注（仅限本数据域内） */
     update: protectedProcedure
       .input(z.object({
         id: z.number(),
@@ -1420,6 +1386,12 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const rec = await getFeedbackById(input.id);
         if (!rec) throw new TRPCError({ code: "NOT_FOUND", message: "反馈不存在" });
+        const scopeUserIds = ctx.user.role === "super_admin"
+          ? undefined
+          : await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+        if (!(await isFeedbackInScope(input.id, scopeUserIds))) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "无权操作此反馈" });
+        }
         await updateFeedback(input.id, {
           status: input.status,
           remark: input.remark,
@@ -1429,12 +1401,18 @@ export const appRouter = router({
         return { success: true };
       }),
 
-    /** 删除反馈（仅管理员及以上） */
+    /** 删除反馈（管理员及以上，且仅限本数据域内） */
     delete: adminProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const rec = await getFeedbackById(input.id);
         if (!rec) throw new TRPCError({ code: "NOT_FOUND", message: "反馈不存在" });
+        const scopeUserIds = ctx.user.role === "super_admin"
+          ? undefined
+          : await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+        if (!(await isFeedbackInScope(input.id, scopeUserIds))) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "无权操作此反馈" });
+        }
         await deleteFeedback(input.id);
         return { success: true };
       }),

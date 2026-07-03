@@ -31,7 +31,6 @@ import {
   Cpu,
   FileText,
   Globe,
-  Heart,
   KeyRound,
   LayoutDashboard,
   LogOut,
@@ -121,7 +120,6 @@ const menuSections: MenuSection[] = [
     icon: Shield,
     items: [
       { icon: AlertTriangle, label: "异常密钥", path: "/tampered", roles: ["super_admin", "admin"] },
-      { icon: Heart, label: "心跳监控", path: "/heartbeat", roles: ["super_admin", "admin"] },
       { icon: MessageSquare, label: "反馈管理", path: "/feedback" },
     ],
   },

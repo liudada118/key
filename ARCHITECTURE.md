@@ -6,7 +6,7 @@
 
 **密钥管理系统（Key Manager）** 是一个基于 Shroom1.0 传感器项目衍生的独立 Web 应用，用于管理传感器设备的授权密钥。系统采用**三级权限体系**（超级管理员 → 管理员 → 子账号），支持两种密钥类型（**量产密钥**和**在线租赁密钥**）。核心加密算法使用 **AES-256-GCM** 模式，比原 Shroom1.0 的 AES-ECB 更安全，旧密钥不再兼容。
 
-系统支持**在线密钥**和**离线密钥**两种模式。在线密钥采用"客户自助激活绑定"模式：后台生成密钥时设置最大设备数，客户通过密钥和设备码自助绑定设备，达到上限后不可再绑定新设备。离线密钥使用 RSA-SHA256 签名，支持机器码绑定的离线激活。
+系统支持**在线密钥**和**离线密钥**两种模式。在线密钥采用"使用即激活"模式：后台生成密钥后发给客户，客户端通过 `keys.activate` 接口校验密钥有效性，首次调用即标记为已激活。离线密钥使用 RSA-SHA256 签名，支持机器码绑定的离线激活。
 
 ## 2. 技术栈
 
@@ -40,8 +40,8 @@ key-manager/
 │   │   ├── lib/                # 工具库（trpc 客户端、utils）
 │   │   ├── pages/              # 页面级组件
 │   │   │   ├── Home.tsx        # 仪表盘（统计卡片 + 快速操作）
-│   │   │   ├── GenerateKey.tsx # 在线密钥生成（单个 + 批量 + 设备数量限制）
-│   │   │   ├── KeyList.tsx     # 在线密钥管理列表（筛选 + 分页 + 导出 + 设备管理）
+│   │   │   ├── GenerateKey.tsx # 在线密钥生成（单个 + 批量）
+│   │   │   ├── KeyList.tsx     # 在线密钥管理列表（筛选 + 分页 + 导出）
 │   │   │   ├── VerifyKey.tsx   # 密钥验证（在线 + 离线 Tab）
 │   │   │   ├── OfflineKeyGenerate.tsx # 离线密钥生成
 │   │   │   ├── OfflineKeyList.tsx     # 离线密钥管理
@@ -59,14 +59,13 @@ key-manager/
 │   ├── _core/                  # 框架核心（OAuth、上下文、Vite 桥接）
 │   │   ├── trpc.ts             # tRPC 初始化 + 三级权限中间件
 │   │   └── ...                 # 其他核心模块
-│   ├── db.ts                   # 数据库查询 helpers（账号 + 密钥 + 设备 CRUD）
+│   ├── db.ts                   # 数据库查询 helpers（账号 + 密钥 CRUD）
 │   ├── routers.ts              # tRPC 路由定义（keys + accounts + auth + sensors + customers + offline）
 │   ├── storage.ts              # S3 文件存储
 │   ├── crypto.test.ts          # 加密模块测试（24 个用例）
-│   ├── auth.logout.test.ts     # 登出测试（1 个用例）
-│   └── device-binding.test.ts  # 设备绑定功能测试（6 个用例）
+│   └── auth.logout.test.ts     # 登出测试（1 个用例）
 ├── drizzle/                    # 数据库 schema 与迁移
-│   └── schema.ts               # users + licenseKeys + keyDevices + customers + sensorTypes + offlineKeys + rsaKeyPairs
+│   └── schema.ts               # users + licenseKeys + customers + sensorTypes + offlineKeys + rsaKeyPairs
 ├── shared/                     # 前后端共享
 │   ├── crypto.ts               # AES-256-GCM 加密模块（ESM）
 │   ├── crypto-lib.cjs          # AES-256-GCM 加密模块（CJS，Electron 可用）
@@ -84,8 +83,8 @@ key-manager/
 | `client/src/pages/` | 10+ 个页面组件，对应多个路由 |
 | `client/src/components/DashboardLayout.tsx` | 侧边栏布局，根据角色动态显示菜单，分在线/离线密钥板块 |
 | `server/routers.ts` | tRPC 路由，包含 keys、accounts、auth、sensors、customers、offline 多组 |
-| `server/db.ts` | 数据库查询函数，含分级权限过滤、设备绑定管理逻辑 |
-| `drizzle/schema.ts` | 7 张表：users、licenseKeys、keyDevices、customers、sensorTypes、offlineKeys、rsaKeyPairs |
+| `server/db.ts` | 数据库查询函数，含分级权限过滤 |
+| `drizzle/schema.ts` | 6 张表：users、licenseKeys、customers、sensorTypes、offlineKeys、rsaKeyPairs |
 | `shared/crypto.ts` | AES-256-GCM 加密核心，ESM 格式 |
 | `shared/crypto-lib.cjs` | 同上，CJS 格式，供 Electron 项目 `require()` |
 
@@ -111,8 +110,8 @@ graph TD
     subgraph tRPC 通信层
         C --> J1[keys.stats]
         D --> J2[keys.generate / keys.batchGenerate]
-        E --> J3[keys.list / keys.export / keys.devices / keys.unbindDevice]
-        F --> J4[keys.verify / keys.activate / keys.verifyOnDevice]
+        E --> J3[keys.list / keys.export]
+        F --> J4[keys.verify / keys.activate]
         G --> J5[accounts.*]
         H1 --> J6[offline.generate]
         I1 --> J7[customers.*]
@@ -131,7 +130,6 @@ graph TD
         M --> N[server/db.ts]
         M --> O[shared/crypto.ts AES-256-GCM]
         N --> P[(MySQL / TiDB)]
-        N --> Q[keyDevices 设备绑定表]
     end
 
     subgraph 认证与权限
@@ -147,11 +145,9 @@ graph TD
 
 **用户认证流程**：用户通过 Manus OAuth 或本地账号密码登录，系统根据 `openId` 或用户名匹配用户记录。首次登录的 Owner 自动设为 `super_admin` 角色，后续用户由上级创建并分配角色。被禁用的账号无法登录。
 
-**在线密钥生成流程**：用户选择传感器类型、有效期天数、密钥类型（量产/租赁）和**设备数量限制**，后端使用 AES-256-GCM 加密生成 hex 格式密钥字符串。密钥元数据（含 maxDevices）同步写入数据库。生成时不绑定设备，密钥可直接发给客户。
+**在线密钥生成流程**：用户选择传感器类型、有效期天数、密钥类型（量产/租赁），后端使用 AES-256-GCM 加密生成 hex 格式密钥字符串。密钥元数据同步写入数据库，密钥可直接发给客户。
 
-**客户端统一接口流程**：客户收到密钥后，通过唯一的 `keys.activate` API 提交密钥和设备码。系统自动处理所有逻辑：未绑定→自动绑定，已绑定→直接返回授权信息，设备满→拒绝。无论成功还是失败，都会返回完整的授权信息（传感器类型、到期时间、剩余天数等）。客户端每次启动时只需调用这一个接口即可。
-
-**设备解绑流程**：管理员可通过 `keys.unbindDevice` API 解绑设备。如果所有设备都被解绑，密钥状态重置为"未激活"。
+**客户端统一接口流程**：客户收到密钥后，通过唯一的 `keys.activate` API 提交密钥。系统校验密钥有效性并在首次调用时标记为"已激活"，返回完整的授权信息（传感器类型、到期时间、剩余天数等）；被吊销/暂停/过期则返回失败。客户端每次启动时只需调用这一个接口即可。
 
 **离线密钥流程**：通过机器码 + RSA-SHA256 签名生成离线激活码，客户端使用公钥验证签名。
 
@@ -164,13 +160,11 @@ graph TD
 | `tRPC` | `auth.me` | 公开 | 获取当前登录用户信息 |
 | `tRPC` | `auth.logout` | 公开 | 用户登出 |
 | `tRPC` | `auth.login` | 公开 | 本地账号密码登录 |
-| `tRPC` | `keys.generate` | 登录 | 生成单个密钥（含 maxDevices） |
-| `tRPC` | `keys.batchGenerate` | 登录 | 批量生成密钥（含 maxDevices） |
+| `tRPC` | `keys.generate` | 登录 | 生成单个密钥 |
+| `tRPC` | `keys.batchGenerate` | 登录 | 批量生成密钥 |
 | `tRPC` | `keys.list` | 登录 | 分页查询密钥列表（分级过滤） |
-| `tRPC` | `keys.verify` | 登录 | 验证/解密密钥（含设备绑定信息） |
-| `tRPC` | `keys.activate` | **公开** | 客户端统一接口：激活绑定 + 验证 + 返回授权信息 |
-| `tRPC` | `keys.devices` | 登录 | 获取密钥已绑定设备列表 |
-| `tRPC` | `keys.unbindDevice` | 管理员+ | 解绑设备 |
+| `tRPC` | `keys.verify` | 登录 | 验证/解密密钥 |
+| `tRPC` | `keys.activate` | **公开** | 客户端统一接口：验证 + 首次激活 + 返回授权信息 |
 | `tRPC` | `keys.changeCategory` | 超级管理员 | 更改密钥类型 |
 | `tRPC` | `keys.stats` | 登录 | 获取密钥统计数据 |
 | `tRPC` | `keys.export` | 登录 | 导出密钥（CSV/JSON） |
@@ -185,8 +179,7 @@ graph TD
 | 表名 | 主要字段 | 说明 |
 | :--- | :--- | :--- |
 | `users` | id, openId, username, password, role, parentId, isActive | 三级角色用户表 |
-| `license_keys` | id, keyString, sensorType, days, category, maxDevices, isActivated, customerId | 在线密钥表（含设备数量限制） |
-| `key_devices` | id, keyId, deviceCode, deviceName, boundAt, boundIp | 设备绑定记录表 |
+| `license_keys` | id, keyString, sensorType, days, category, isActivated, customerId | 在线密钥表 |
 | `customers` | id, name, contactPerson, phone, isActive | 客户表 |
 | `sensor_types` | id, value, label, groupName, groupIcon, sortOrder | 传感器类型表 |
 | `offline_keys` | id, machineId, activationCode, sensorType, days | 离线密钥表 |
@@ -257,6 +250,7 @@ graph TD
 | 2026-03-19 19:25 | main | 优化重构 | 在线密钥从“后台绑定设备”改为“客户自助激活绑定”模式：新增 keyDevices 设备绑定表、maxDevices 设备数量限制、公开激活 API、管理员解绑功能 |
 | 2026-03-20 11:55 | main | 优化重构 | 合并客户端 3 个接口为 1 个统一 activate 接口（自动绑定+验证+返回授权信息）；移除 verifyOnDevice 接口 |
 | 2026-03-20 11:55 | main | 新增功能 | API 文档页面添加一键复制功能（HTTP 调用示例 + Python 代码示例） |
+| 2026-07-02 | main | 优化重构 | 移除设备绑定/设备数量限制：删除 keyDevices 表、maxDevices 字段、keys.devices/unbindDevice 接口及前端相关展示；activate 保留为"使用即激活"（不再绑定设备） |
 
 *变更类型：`新增功能` / `优化重构` / `修复缺陷` / `配置变更` / `文档更新` / `依赖升级` / `初始化`*
 

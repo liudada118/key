@@ -62,25 +62,23 @@ type ApiGroup = {
 const clientApiGroups: ApiGroup[] = [
   {
     title: "密钥激活与验证（统一接口）",
-    desc: "客户端只需调用这一个接口，自动处理绑定、验证和授权信息返回",
+    desc: "客户端只需调用这一个接口，自动处理验证、激活和授权信息返回",
     endpoints: [
       {
         name: "keys.activate",
         method: "mutation",
         auth: "public",
-        desc: "客户端统一接口 —— 激活绑定 + 验证 + 返回授权信息",
+        desc: "客户端统一接口 —— 验证 + 首次使用激活 + 返回授权信息",
         params: [
           { name: "keyString", type: "string", required: true, desc: "密钥字符串（由管理员提供）" },
-          { name: "deviceCode", type: "string", required: true, desc: "设备码（如 MAC 地址、机器码等）" },
+          { name: "deviceCode", type: "string", required: false, desc: "设备码（可选，仅用于记录首次激活来源）" },
           { name: "deviceName", type: "string", required: false, desc: "设备名称/备注（可选）" },
         ],
         response: [
-          { name: "success", type: "boolean", desc: "是否成功（绑定成功或已绑定时为 true）" },
+          { name: "success", type: "boolean", desc: "是否成功（密钥有效时为 true）" },
           { name: "message", type: "string", desc: "结果消息" },
           { name: "error", type: "string", desc: "错误信息（失败时）" },
-          { name: "alreadyBound", type: "boolean", desc: "是否已经绑定过（重复调用时）" },
-          { name: "currentDevices", type: "number", desc: "当前已绑定设备数" },
-          { name: "maxDevices", type: "number", desc: "最大设备数" },
+          { name: "alreadyActivated", type: "boolean", desc: "是否此前已激活过" },
           { name: "sensorType", type: "string", desc: "授权的传感器类型（逗号分隔，或 all）" },
           { name: "sensorTypes", type: "string[]", desc: "授权的传感器类型数组" },
           { name: "isAllTypes", type: "boolean", desc: "是否全部授权" },
@@ -89,12 +87,11 @@ const clientApiGroups: ApiGroup[] = [
           { name: "remainingDays", type: "number", desc: "剩余天数" },
           { name: "category", type: "string", desc: "密钥类型：production / rental" },
         ],
-        responseExample: `// ✅ 绑定成功（首次激活）
+        responseExample: `// ✅ 首次使用激活成功
 {
   "success": true,
-  "message": "设备绑定成功",
-  "currentDevices": 1,
-  "maxDevices": 3,
+  "message": "激活成功",
+  "alreadyActivated": false,
   "sensorType": "hand0205,car_seat",
   "sensorTypes": ["hand0205", "car_seat"],
   "isAllTypes": false,
@@ -104,11 +101,11 @@ const clientApiGroups: ApiGroup[] = [
   "category": "rental"
 }
 
-// ✅ 已绑定（重复调用，同样返回授权信息）
+// ✅ 已激活（重复调用，同样返回授权信息）
 {
   "success": true,
-  "message": "该设备已绑定此密钥，无需重复激活",
-  "alreadyBound": true,
+  "message": "密钥有效",
+  "alreadyActivated": true,
   "sensorType": "all",
   "sensorTypes": ["hand", "hand0205", ...],
   "isAllTypes": true,
@@ -118,36 +115,19 @@ const clientApiGroups: ApiGroup[] = [
   "category": "production"
 }
 
-// ❌ 设备数已满
-{
-  "success": false,
-  "error": "设备绑定数量已达上限（3台）",
-  "currentDevices": 3,
-  "maxDevices": 3,
-  "sensorType": "hand0205",
-  "sensorTypes": ["hand0205"],
-  "isAllTypes": false,
-  "expireDate": "2027-03-20T00:00:00.000Z",
-  "expireTimestamp": 1805500800000,
-  "remainingDays": 365,
-  "category": "rental"
-}
-
 // ❌ 密钥无效或已过期
 {
   "success": false,
   "error": "密钥无效或已过期"
 }`,
-        notes: "公开接口，无需登录。客户端每次启动时调用此接口即可，系统自动处理：未绑定→自动绑定，已绑定→直接返回授权信息，设备满→拒绝。",
+        notes: "公开接口，无需登录。客户端每次启动时调用此接口即可：密钥有效则返回授权信息（首次调用会标记为已激活），被吊销/暂停/过期则返回失败。",
         callExample: `// Python 调用示例
 import requests
 
 url = "https://your-domain.com/api/trpc/keys.activate"
 payload = {
     "json": {
-        "keyString": "你的密钥字符串",
-        "deviceCode": "你的设备码",
-        "deviceName": "工位1"  # 可选
+        "keyString": "你的密钥字符串"
     }
 }
 response = requests.post(url, json=payload)
@@ -158,7 +138,6 @@ if result["success"]:
     print(f"传感器类型: {result['sensorType']}")
     print(f"到期时间: {result['expireDate']}")
     print(f"剩余天数: {result['remainingDays']}")
-    print(f"设备数: {result['currentDevices']}/{result['maxDevices']}")
 else:
     print(f"失败: {result['error']}")`,
       },
@@ -323,7 +302,7 @@ const adminApiGroups: ApiGroup[] = [
   },
   {
     title: "在线密钥管理 (keys)",
-    desc: "密钥的生成、查询、导出和设备管理",
+    desc: "密钥的生成、查询和导出",
     endpoints: [
       {
         name: "keys.categories",
@@ -344,7 +323,6 @@ const adminApiGroups: ApiGroup[] = [
           { name: "sensorTypes", type: "string | string[]", required: true, desc: "传感器类型标识符，单个字符串或数组" },
           { name: "days", type: "number", required: true, desc: "有效期天数（1-36500）" },
           { name: "category", type: "enum", required: true, desc: "密钥类型：production / rental" },
-          { name: "maxDevices", type: "number", required: false, desc: "最大可绑定设备数（0=不限）", default: "1" },
           { name: "customerId", type: "number", required: false, desc: "关联客户 ID" },
           { name: "customerName", type: "string", required: false, desc: "客户名称" },
           { name: "remark", type: "string", required: false, desc: "备注" },
@@ -352,12 +330,10 @@ const adminApiGroups: ApiGroup[] = [
         response: [
           { name: "keyString", type: "string", desc: "生成的密钥字符串（hex 编码）" },
           { name: "expireTimestamp", type: "number", desc: "到期时间戳（毫秒）" },
-          { name: "maxDevices", type: "number", desc: "最大设备数" },
         ],
         responseExample: `{
   "keyString": "a1b2c3d4e5f6...（hex 密钥）",
-  "expireTimestamp": 1743465600000,
-  "maxDevices": 3
+  "expireTimestamp": 1743465600000
 }`,
       },
       {
@@ -370,7 +346,6 @@ const adminApiGroups: ApiGroup[] = [
           { name: "days", type: "number", required: true, desc: "有效期天数（1-36500）" },
           { name: "category", type: "enum", required: true, desc: "密钥类型：production / rental" },
           { name: "count", type: "number", required: true, desc: "生成数量（1-500）" },
-          { name: "maxDevices", type: "number", required: false, desc: "最大可绑定设备数（0=不限）", default: "1" },
           { name: "customerId", type: "number", required: false, desc: "关联客户 ID" },
           { name: "customerName", type: "string", required: false, desc: "客户名称" },
           { name: "remark", type: "string", required: false, desc: "备注" },
@@ -414,38 +389,6 @@ const adminApiGroups: ApiGroup[] = [
           { name: "production", type: "number", desc: "量产密钥数" },
           { name: "rental", type: "number", desc: "租赁密钥数" },
         ],
-      },
-      {
-        name: "keys.devices",
-        method: "query",
-        auth: "protected",
-        desc: "获取密钥已绑定的设备列表",
-        params: [
-          { name: "keyId", type: "number", required: true, desc: "密钥 ID" },
-        ],
-        response: [
-          { name: "id", type: "number", desc: "设备记录 ID" },
-          { name: "keyId", type: "number", desc: "密钥 ID" },
-          { name: "deviceCode", type: "string", desc: "设备码" },
-          { name: "deviceName", type: "string | null", desc: "设备名称" },
-          { name: "boundAt", type: "string", desc: "绑定时间" },
-          { name: "boundIp", type: "string | null", desc: "绑定时 IP" },
-        ],
-      },
-      {
-        name: "keys.unbindDevice",
-        method: "mutation",
-        auth: "admin",
-        desc: "解绑设备（管理员操作）",
-        params: [
-          { name: "keyId", type: "number", required: true, desc: "密钥 ID" },
-          { name: "deviceId", type: "number", required: true, desc: "设备记录 ID" },
-        ],
-        response: [
-          { name: "success", type: "boolean", desc: "是否成功" },
-          { name: "remainingDevices", type: "number", desc: "剩余绑定设备数" },
-        ],
-        notes: "如果所有设备都被解绑，密钥状态会重置为【未激活】",
       },
       {
         name: "keys.changeCategory",
@@ -1119,7 +1062,7 @@ export default function ApiDocs() {
                     客户端接口均为<strong className="text-emerald-600">公开接口</strong>，无需登录即可调用。客户端软件通过 HTTP 请求直接调用。
                   </p>
                   <p>
-                    <strong>典型使用流程：</strong>管理员生成密钥 &rarr; 发送给客户 &rarr; 客户端每次启动调用 <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">keys.activate</code> 即可（自动绑定 + 验证 + 返回授权信息）
+                    <strong>典型使用流程：</strong>管理员生成密钥 &rarr; 发送给客户 &rarr; 客户端每次启动调用 <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">keys.activate</code> 即可（验证 + 首次激活 + 返回授权信息）
                   </p>
                 </div>
                 <pre className="bg-slate-950 text-slate-50 rounded-lg p-4 text-xs overflow-x-auto font-mono leading-relaxed">{`# 客户端核心接口（只需这一个）
@@ -1127,13 +1070,11 @@ POST /api/trpc/keys.activate
 Content-Type: application/json
 {
   "json": {
-    "keyString": "你的密钥字符串",
-    "deviceCode": "你的设备码",
-    "deviceName": "工位1"  // 可选
+    "keyString": "你的密钥字符串"
   }
 }
 # 返回: success + 授权信息(sensorType/expireDate/remainingDays...)
-# 未绑定 → 自动绑定，已绑定 → 直接返回授权信息
+# 密钥有效 → 返回授权信息（首次调用标记为已激活）；吊销/暂停/过期 → 返回失败
 
 # 其他辅助接口
 GET /api/trpc/offlineKeys.publicKey   # RSA 公钥（离线密钥用）
@@ -1163,8 +1104,7 @@ Content-Type: application/json
   "json": {
     "sensorTypes": ["hand0205"],
     "days": 365,
-    "category": "rental",
-    "maxDevices": 3
+    "category": "rental"
   }
 }`}</pre>
               </>

@@ -6,7 +6,6 @@ import {
   contracts,
   customers,
   deviceHeartbeats,
-  keyDevices,
   keyStatusHistory,
   licenseKeys,
   offlineKeys,
@@ -19,7 +18,6 @@ import {
   type InsertFeedback,
   type FeedbackStatus,
   type InsertCustomer,
-  type InsertKeyDevice,
   type InsertLicenseKey,
   type InsertOfflineKey,
   type InsertSensorType,
@@ -705,8 +703,8 @@ export async function markLicenseKeyExpired(keyId: number): Promise<void> {
 }
 
 /**
- * 客户自助激活密钥（绑定设备）
- * 流程：验证密钥有效性 → 检查设备是否已绑定 → 检查设备数量上限 → 绑定设备
+ * 客户端"使用即激活"：验证密钥有效性 → 首次使用时标记为已激活
+ * 不再绑定设备/限制设备数量，deviceCode 仅用于记录首次激活来源（可选）
  */
 export async function activateLicenseKey(keyString: string, deviceCode?: string, deviceName?: string, clientIp?: string) {
   const db = await getDb();
@@ -732,43 +730,9 @@ export async function activateLicenseKey(keyString: string, deviceCode?: string,
     return { success: false, error: "密钥已过期" };
   }
 
-  if (!deviceCode) {
-    return { success: false, error: "设备码不能为空" };
-  }
+  const trimmedDeviceCode = deviceCode?.trim() || null;
 
-  const trimmedDeviceCode = deviceCode.trim();
-
-  // 检查该设备是否已绑定此密钥
-  const existingDevice = await db.select().from(keyDevices)
-    .where(and(eq(keyDevices.keyId, existing.id), eq(keyDevices.deviceCode, trimmedDeviceCode)))
-    .limit(1);
-  if (existingDevice.length > 0) {
-    return { success: true, message: "该设备已绑定此密钥，无需重复激活", alreadyBound: true };
-  }
-
-  // 检查设备数量上限
-  const boundDevices = await db.select({ count: count() }).from(keyDevices)
-    .where(eq(keyDevices.keyId, existing.id));
-  const currentCount = boundDevices[0]?.count ?? 0;
-
-  if (existing.maxDevices > 0 && currentCount >= existing.maxDevices) {
-    return {
-      success: false,
-      error: `设备绑定数量已达上限（${existing.maxDevices}台）`,
-      currentDevices: currentCount,
-      maxDevices: existing.maxDevices,
-    };
-  }
-
-  // 绑定设备
-  await db.insert(keyDevices).values({
-    keyId: existing.id,
-    deviceCode: trimmedDeviceCode,
-    deviceName: deviceName || null,
-    boundIp: clientIp || null,
-  });
-
-  // 更新密钥激活状态（首次绑定时设置）
+  // 首次使用时标记为已激活
   if (!existing.isActivated) {
     await db.update(licenseKeys).set({
       isActivated: true,
@@ -782,99 +746,14 @@ export async function activateLicenseKey(keyString: string, deviceCode?: string,
       keyId: existing.id,
       fromStatus: existing.status as KeyStatus,
       toStatus: "ACTIVATED",
-      reason: `设备 ${trimmedDeviceCode} 首次激活`,
+      reason: "首次使用激活",
       actorId: 0, // 客户端自助激活
       actorName: "客户端",
     });
+    return { success: true, message: "激活成功", alreadyActivated: false };
   }
 
-  return {
-    success: true,
-    message: "设备绑定成功",
-    currentDevices: currentCount + 1,
-    maxDevices: existing.maxDevices,
-  };
-}
-
-/** 获取密钥已绑定的设备列表 */
-export async function getKeyDevices(keyId: number) {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(keyDevices)
-    .where(eq(keyDevices.keyId, keyId))
-    .orderBy(desc(keyDevices.boundAt));
-}
-
-/** 获取密钥已绑定设备数量 */
-export async function getKeyDeviceCount(keyId: number) {
-  const db = await getDb();
-  if (!db) return 0;
-  const result = await db.select({ count: count() }).from(keyDevices)
-    .where(eq(keyDevices.keyId, keyId));
-  return result[0]?.count ?? 0;
-}
-
-/** 解绑设备 */
-export async function unbindKeyDevice(keyId: number, deviceId: number) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  await db.delete(keyDevices).where(
-    and(eq(keyDevices.keyId, keyId), eq(keyDevices.id, deviceId))
-  );
-  // 检查是否还有绑定设备，如果没有则重置激活状态
-  const remaining = await getKeyDeviceCount(keyId);
-  if (remaining === 0) {
-    await db.update(licenseKeys).set({
-      isActivated: false,
-      status: "ISSUED",
-      activatedAt: null,
-      activatedDevice: null,
-    }).where(eq(licenseKeys.id, keyId));
-  }
-  return { success: true, remainingDevices: remaining };
-}
-
-/** 检查密钥在指定设备上是否有效 */
-export async function verifyKeyOnDevice(keyString: string, deviceCode: string) {
-  const db = await getDb();
-  if (!db) return { valid: false, error: "Database not available" };
-
-  const key = await getLicenseKeyByString(keyString.trim());
-  if (!key) return { valid: false, error: "密钥不存在" };
-
-  // 检查生命周期状态
-  if (key.status === "REVOKED") {
-    return { valid: false, error: "密钥已被吊销", revoked: true };
-  }
-  if (key.status === "SUSPENDED") {
-    return { valid: false, error: "密钥已被暂停", suspended: true };
-  }
-
-  // 检查过期
-  if (key.expireTimestamp < Date.now()) {
-    return { valid: false, error: "密钥已过期", expired: true };
-  }
-
-  // 检查设备是否已绑定
-  const device = await db.select().from(keyDevices)
-    .where(and(eq(keyDevices.keyId, key.id), eq(keyDevices.deviceCode, deviceCode.trim())))
-    .limit(1);
-
-  if (device.length === 0) {
-    // 设备未绑定，检查是否可以绑定
-    const deviceCount = await getKeyDeviceCount(key.id);
-    const canBind = key.maxDevices === 0 || deviceCount < key.maxDevices;
-    return {
-      valid: false,
-      error: "该设备未绑定此密钥",
-      notBound: true,
-      canBind,
-      currentDevices: deviceCount,
-      maxDevices: key.maxDevices,
-    };
-  }
-
-  return { valid: true, boundAt: device[0].boundAt };
+  return { success: true, message: "密钥有效", alreadyActivated: true };
 }
 
 export async function getKeyStats(userIds: number[]) {
@@ -1668,7 +1547,6 @@ export async function reissueLicenseKey(keyId: number, actorId: number, actorNam
     contractId: old.contractId,
     contractNo: old.contractNo,
     customerName: old.customerName,
-    maxDevices: old.maxDevices,
     isActivated: true,
     status: "ACTIVATED",
     activatedAt: new Date(),
@@ -2078,12 +1956,33 @@ export async function createFeedback(input: InsertFeedback): Promise<number | nu
 }
 
 /** 反馈列表（分页 + 可选状态/类型筛选 + 关键字搜索，倒序） */
+/**
+ * 反馈数据域过滤条件:只保留“尾号能匹配到 scopeUserIds 所创建密钥”的反馈。
+ * - scopeUserIds 为 undefined：不限制（超级管理员看全部，含无尾号/无法归属的反馈）
+ * - scopeUserIds 为空数组：无可见范围（返回空）
+ */
+function feedbackScopeCondition(scopeUserIds?: number[]) {
+  if (!scopeUserIds) return undefined;
+  const ids = scopeUserIds.map((n) => Number(n)).filter((n) => Number.isFinite(n));
+  if (ids.length === 0) return sql`1 = 0`;
+  return sql`(
+    feedback.licenseKeyTail IS NOT NULL AND feedback.licenseKeyTail <> ''
+    AND EXISTS (
+      SELECT 1 FROM licenseKeys lk
+      WHERE lk.createdById IN (${sql.raw(ids.join(","))})
+        AND lk.keyString LIKE CONCAT('%', feedback.licenseKeyTail)
+    )
+  )`;
+}
+
 export async function getFeedbackList(opts: {
   page: number;
   pageSize: number;
   status?: FeedbackStatus;
   type?: string;
   keyword?: string;
+  /** 数据域:仅返回这些用户所创建密钥的反馈;undefined=全部(超级管理员) */
+  scopeUserIds?: number[];
 }): Promise<{ items: Feedback[]; total: number }> {
   const db = await getDb();
   if (!db) return { items: [], total: 0 };
@@ -2095,6 +1994,8 @@ export async function getFeedbackList(opts: {
     const kw = `%${opts.keyword}%`;
     conditions.push(or(like(feedback.content, kw), like(feedback.contact, kw)));
   }
+  const scopeCond = feedbackScopeCondition(opts.scopeUserIds);
+  if (scopeCond) conditions.push(scopeCond);
   const where = conditions.length ? and(...conditions) : undefined;
   const offset = (opts.page - 1) * opts.pageSize;
 
@@ -2105,18 +2006,31 @@ export async function getFeedbackList(opts: {
   return { items, total: totalResult[0]?.count ?? 0 };
 }
 
-/** 各状态计数（仪表展示用） */
-export async function getFeedbackStats(): Promise<Record<FeedbackStatus, number> & { total: number }> {
+/** 各状态计数（仪表展示用，按数据域过滤） */
+export async function getFeedbackStats(scopeUserIds?: number[]): Promise<Record<FeedbackStatus, number> & { total: number }> {
   const db = await getDb();
   const empty = { pending: 0, processing: 0, resolved: 0, closed: 0, total: 0 };
   if (!db) return empty;
-  const rows = await db.select({ status: feedback.status, c: count() }).from(feedback).groupBy(feedback.status);
+  const scopeCond = feedbackScopeCondition(scopeUserIds);
+  const rows = await db.select({ status: feedback.status, c: count() }).from(feedback).where(scopeCond).groupBy(feedback.status);
   const stats = { ...empty };
   for (const row of rows as Array<{ status: FeedbackStatus; c: number }>) {
     stats[row.status] = Number(row.c) || 0;
     stats.total += Number(row.c) || 0;
   }
   return stats;
+}
+
+/** 某条反馈是否在数据域内（用于更新/删除的越权校验）。scopeUserIds=undefined 表示超级管理员，始终可见。 */
+export async function isFeedbackInScope(feedbackId: number, scopeUserIds?: number[]): Promise<boolean> {
+  if (!scopeUserIds) return true;
+  const db = await getDb();
+  if (!db) return false;
+  const scopeCond = feedbackScopeCondition(scopeUserIds);
+  if (!scopeCond) return true;
+  const rows = await db.select({ id: feedback.id }).from(feedback)
+    .where(and(eq(feedback.id, feedbackId), scopeCond)).limit(1);
+  return rows.length > 0;
 }
 
 /** 获取单条反馈 */
