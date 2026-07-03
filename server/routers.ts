@@ -126,9 +126,14 @@ export const appRouter = router({
 
   // ===== 账号管理 =====
   accounts: router({
-    list: protectedProcedure.query(async ({ ctx }) => {
-      return getSubordinateUsers(ctx.user.id, ctx.user.role);
-    }),
+    list: protectedProcedure
+      .input(z.object({
+        page: z.number().min(1).default(1),
+        pageSize: z.number().min(1).max(100).default(20),
+      }))
+      .query(async ({ ctx, input }) => {
+        return getSubordinateUsers(ctx.user.id, ctx.user.role, { page: input.page, pageSize: input.pageSize });
+      }),
 
     all: superAdminProcedure.query(async () => {
       return getAllUsers();
@@ -1018,10 +1023,15 @@ export const appRouter = router({
     // ===== 异常密钥（TAMPERED）管理 =====
 
     /** 异常密钥列表（按数据域过滤） */
-    tamperedList: adminProcedure.query(async ({ ctx }) => {
-      const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
-      return getTamperedKeys(userIds);
-    }),
+    tamperedList: adminProcedure
+      .input(z.object({
+        page: z.number().min(1).default(1),
+        pageSize: z.number().min(1).max(100).default(20),
+      }))
+      .query(async ({ ctx, input }) => {
+        const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+        return getTamperedKeys(userIds, { page: input.page, pageSize: input.pageSize });
+      }),
 
     /** 异常密钥数量（监控/角标） */
     tamperedCount: protectedProcedure.query(async ({ ctx }) => {

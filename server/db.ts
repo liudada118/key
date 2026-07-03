@@ -317,44 +317,44 @@ export async function deleteAccount(id: number) {
 }
 
 /** 获取用户管理的下级账号 */
-export async function getSubordinateUsers(userId: number, role: string) {
+export async function getSubordinateUsers(
+  userId: number,
+  role: string,
+  opts?: { page?: number; pageSize?: number }
+) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) return { items: [] as any[], total: 0 };
 
+  let where;
   if (role === "super_admin") {
-    return db.select({
-      id: users.id,
-      username: users.username,
-      name: users.name,
-      email: users.email,
-      role: users.role,
-      createdById: users.createdById,
-      isActive: users.isActive,
-      remark: users.remark,
-      createdAt: users.createdAt,
-      updatedAt: users.updatedAt,
-      lastSignedIn: users.lastSignedIn,
-    }).from(users).where(
-      or(eq(users.role, "admin"), eq(users.role, "user"))
-    ).orderBy(desc(users.createdAt));
+    where = or(eq(users.role, "admin"), eq(users.role, "user"));
   } else if (role === "admin") {
-    return db.select({
-      id: users.id,
-      username: users.username,
-      name: users.name,
-      email: users.email,
-      role: users.role,
-      createdById: users.createdById,
-      isActive: users.isActive,
-      remark: users.remark,
-      createdAt: users.createdAt,
-      updatedAt: users.updatedAt,
-      lastSignedIn: users.lastSignedIn,
-    }).from(users).where(
-      and(eq(users.createdById, userId), eq(users.role, "user"))
-    ).orderBy(desc(users.createdAt));
+    where = and(eq(users.createdById, userId), eq(users.role, "user"));
+  } else {
+    return { items: [] as any[], total: 0 };
   }
-  return [];
+
+  const cols = {
+    id: users.id,
+    username: users.username,
+    name: users.name,
+    email: users.email,
+    role: users.role,
+    createdById: users.createdById,
+    isActive: users.isActive,
+    remark: users.remark,
+    createdAt: users.createdAt,
+    updatedAt: users.updatedAt,
+    lastSignedIn: users.lastSignedIn,
+  };
+  const page = opts?.page ?? 1;
+  const pageSize = opts?.pageSize ?? 20;
+  const offset = (page - 1) * pageSize;
+  const [items, totalResult] = await Promise.all([
+    db.select(cols).from(users).where(where).orderBy(desc(users.createdAt)).limit(pageSize).offset(offset),
+    db.select({ count: count() }).from(users).where(where),
+  ]);
+  return { items, total: totalResult[0]?.count ?? 0 };
 }
 
 /** 获取某用户及其所有下级的 ID 列表（用于密钥查询） */
@@ -1500,12 +1500,21 @@ export async function clearKeyTamper(keyId: number, actorId: number, actorName: 
 }
 
 /** 获取异常(TAMPERED)密钥列表（按数据域过滤） */
-export async function getTamperedKeys(userIds: number[]) {
+export async function getTamperedKeys(
+  userIds: number[],
+  opts?: { page?: number; pageSize?: number }
+) {
   const db = await getDb();
-  if (!db) return [];
-  return db.select().from(licenseKeys)
-    .where(and(inArray(licenseKeys.createdById, userIds), eq(licenseKeys.status, "TAMPERED")))
-    .orderBy(desc(licenseKeys.tamperedAt));
+  if (!db) return { items: [] as any[], total: 0 };
+  const where = and(inArray(licenseKeys.createdById, userIds), eq(licenseKeys.status, "TAMPERED"));
+  const page = opts?.page ?? 1;
+  const pageSize = opts?.pageSize ?? 20;
+  const offset = (page - 1) * pageSize;
+  const [items, totalResult] = await Promise.all([
+    db.select().from(licenseKeys).where(where).orderBy(desc(licenseKeys.tamperedAt)).limit(pageSize).offset(offset),
+    db.select({ count: count() }).from(licenseKeys).where(where),
+  ]);
+  return { items, total: totalResult[0]?.count ?? 0 };
 }
 
 /** 异常密钥数量（监控用） */

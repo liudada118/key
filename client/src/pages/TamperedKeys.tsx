@@ -31,7 +31,12 @@ function mask(keyString: string) {
 }
 
 export default function TamperedKeys() {
-  const { data: keys, refetch, isLoading } = trpc.keys.tamperedList.useQuery();
+  const [page, setPage] = useState(1);
+  const pageSize = 20;
+  const { data, refetch, isLoading } = trpc.keys.tamperedList.useQuery({ page, pageSize });
+  const keys = data?.items ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = Math.ceil(total / pageSize);
 
   // 吊销原因弹窗
   const [revokeTarget, setRevokeTarget] = useState<number | null>(null);
@@ -82,7 +87,7 @@ export default function TamperedKeys() {
 
       <Card>
         <CardHeader>
-          <CardTitle>异常密钥列表（{keys?.length ?? 0} 把）</CardTitle>
+          <CardTitle>异常密钥列表（{total} 把）</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
@@ -136,6 +141,15 @@ export default function TamperedKeys() {
               )}
             </TableBody>
           </Table>
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between mt-4">
+              <p className="text-sm text-muted-foreground">共 {total} 把，第 {page}/{totalPages} 页</p>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>上一页</Button>
+                <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage(page + 1)}>下一页</Button>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 

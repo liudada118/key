@@ -59,7 +59,12 @@ const ROLE_COLORS: Record<string, string> = {
 export default function AccountManagement() {
   const { user } = useAuth();
   const utils = trpc.useUtils();
-  const { data: accounts, isLoading } = trpc.accounts.list.useQuery();
+  const [page, setPage] = useState(1);
+  const pageSize = 20;
+  const { data, isLoading } = trpc.accounts.list.useQuery({ page, pageSize });
+  const accounts = data?.items ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = Math.ceil(total / pageSize);
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [resetPwdOpen, setResetPwdOpen] = useState(false);
@@ -403,6 +408,15 @@ export default function AccountManagement() {
                   ))}
                 </TableBody>
               </Table>
+            </div>
+          )}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between mt-4">
+              <p className="text-sm text-muted-foreground">共 {total} 个账号，第 {page}/{totalPages} 页</p>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>上一页</Button>
+                <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage(page + 1)}>下一页</Button>
+              </div>
             </div>
           )}
         </CardContent>
