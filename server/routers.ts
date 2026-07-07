@@ -21,6 +21,7 @@ import {
   getLicenseKeyById,
   getLicenseKeyByString,
   getLicenseKeys,
+  getSensorValuesByGroups,
   getSubordinateUsers,
   getUserAndSubordinateIds,
   maskKeyString,
@@ -662,6 +663,11 @@ export const appRouter = router({
       )
       .query(async ({ ctx, input }) => {
         const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+        // 事业部管理员：密钥用到其管理分组的传感器 → 跨部门可见（超管的 userIds 已含全部，无需此项）
+        const managed = String((ctx.user as any).managedGroups || "").split(",").map((s) => s.trim()).filter(Boolean);
+        const visibleSensorValues = ctx.user.role !== "super_admin" && managed.length
+          ? await getSensorValuesByGroups(managed)
+          : [];
         return getLicenseKeys({
           userIds,
           page: input.page,
@@ -673,6 +679,7 @@ export const appRouter = router({
           status: input.status,
           search: input.search,
           customerId: input.customerId,
+          visibleSensorValues,
         });
       }),
 

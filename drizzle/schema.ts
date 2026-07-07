@@ -33,6 +33,10 @@ export const users = mysqlTable("users", {
   isActive: boolean("isActive").default(true).notNull(),
   /** 账号备注 */
   remark: text("remark"),
+  /** 手机号 */
+  phone: varchar("phone", { length: 32 }),
+  /** 管理的传感器分组（逗号分隔，事业部管理员用；仅密钥管理模块据此做跨部门可见） */
+  managedGroups: varchar("managedGroups", { length: 256 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),

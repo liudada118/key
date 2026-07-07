@@ -622,6 +622,16 @@ export async function expireStaleKeys(userIds: number[]) {
   );
 }
 
+/** 取某些传感器分组下的所有传感器 value（用于密钥管理“按分组跨部门可见”）。分组是动态的（超管可在传感器管理里改 groupName），故查询时实时读取。 */
+export async function getSensorValuesByGroups(groups: string[]): Promise<string[]> {
+  if (!groups.length) return [];
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select({ value: sensorTypes.value }).from(sensorTypes)
+    .where(inArray(sensorTypes.groupName, groups));
+  return rows.map((r) => r.value);
+}
+
 export async function getLicenseKeys(opts: {
   userIds: number[];
   page: number;
@@ -633,6 +643,8 @@ export async function getLicenseKeys(opts: {
   status?: string;
   search?: string;
   customerId?: number;
+  /** 传感器分组可见：密钥用到这些传感器值（或 all）也可见（事业部管理员跨部门看，仅密钥管理模块） */
+  visibleSensorValues?: string[];
 }) {
   const db = await getDb();
   if (!db) return { items: [], total: 0 };
@@ -640,7 +652,16 @@ export async function getLicenseKeys(opts: {
   // 先把到期的活动密钥置为 EXPIRED，确保列表状态/筛选准确
   await expireStaleKeys(opts.userIds);
 
-  const conditions = [inArray(licenseKeys.createdById, opts.userIds)];
+  // 基础可见：自己 + 下属（createdById）；再叠加“传感器属于我管理分组”的跨部门可见
+  let visibility: any = inArray(licenseKeys.createdById, opts.userIds);
+  if (opts.visibleSensorValues && opts.visibleSensorValues.length) {
+    const sensorConds: any[] = [sql`${licenseKeys.sensorType} = 'all'`];
+    for (const v of opts.visibleSensorValues) {
+      sensorConds.push(sql`FIND_IN_SET(${v}, ${licenseKeys.sensorType}) > 0`);
+    }
+    visibility = or(visibility, or(...sensorConds));
+  }
+  const conditions: any[] = [visibility];
 
   if (opts.category) conditions.push(eq(licenseKeys.category, opts.category as "production" | "rental"));
   // 单个生成 = batchId 为空；批量生成 = batchId 非空

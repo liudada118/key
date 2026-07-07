@@ -101,6 +101,15 @@ export default function SensorTypeManagement() {
     onError: (err) => toast.error(err.message),
   });
 
+  const updateMutation = trpc.sensors.update.useMutation({
+    onSuccess: () => {
+      toast.success("已更新分组");
+      utils.sensors.all.invalidate();
+      utils.sensors.groups.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
   const deleteMutation = trpc.sensors.delete.useMutation({
     onSuccess: () => {
       toast.success("传感器类型已禁用");
@@ -307,24 +316,37 @@ export default function SensorTypeManagement() {
                             </TableCell>
                             <TableCell>
                               {sensor.isActive ? (
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <Button
-                                      size="sm"
-                                      variant="ghost"
-                                      className="h-7 w-7 p-0 text-destructive hover:text-destructive"
-                                      onClick={() => {
-                                        if (confirm(`确定要禁用「${sensor.label}」吗？`)) {
-                                          deleteMutation.mutate({ id: sensor.id });
-                                        }
-                                      }}
-                                      disabled={deleteMutation.isPending}
-                                    >
-                                      <Ban className="h-3.5 w-3.5" />
-                                    </Button>
-                                  </TooltipTrigger>
-                                  <TooltipContent>禁用</TooltipContent>
-                                </Tooltip>
+                                <div className="flex items-center gap-1">
+                                  <Select
+                                    value={sensor.groupName}
+                                    onValueChange={(g) => { if (g !== sensor.groupName) updateMutation.mutate({ id: sensor.id, groupName: g }); }}
+                                  >
+                                    <SelectTrigger className="h-7 w-24 text-xs"><SelectValue /></SelectTrigger>
+                                    <SelectContent>
+                                      {groupNames.map((name) => (
+                                        <SelectItem key={name} value={name} className="text-xs">{name}</SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                                        onClick={() => {
+                                          if (confirm(`确定要禁用「${sensor.label}」吗？`)) {
+                                            deleteMutation.mutate({ id: sensor.id });
+                                          }
+                                        }}
+                                        disabled={deleteMutation.isPending}
+                                      >
+                                        <Ban className="h-3.5 w-3.5" />
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>禁用</TooltipContent>
+                                  </Tooltip>
+                                </div>
                               ) : (
                                 <div className="flex items-center gap-1">
                                   <Tooltip>
