@@ -1,4 +1,3 @@
-import { useAuth } from "@/_core/hooks/useAuth";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -52,8 +51,6 @@ const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
 };
 
 export default function KeyList() {
-  const { user } = useAuth();
-  const isAdmin = user?.role === "super_admin" || user?.role === "admin";
 
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
@@ -337,7 +334,8 @@ export default function KeyList() {
           <TooltipContent>状态历史</TooltipContent>
         </Tooltip>
 
-        {isAdmin && (
+        {/* 密钥控制：所有角色一致（暂停/恢复/续期/吊销） */}
+        {(
           <>
             {/* 暂停/恢复 */}
             {status === "SUSPENDED" ? (

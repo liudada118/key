@@ -988,7 +988,7 @@ export const appRouter = router({
     // ===== 密钥生命周期管理 =====
 
     /** 暂停密钥 */
-    suspend: adminProcedure
+    suspend: protectedProcedure
       .input(z.object({
         keyId: z.number(),
         reason: z.string().min(1, "暂停原因不能为空"),
@@ -1009,7 +1009,7 @@ export const appRouter = router({
       }),
 
     /** 恢复密钥（从暂停状态） */
-    restore: adminProcedure
+    restore: protectedProcedure
       .input(z.object({
         keyId: z.number(),
         reason: z.string().min(1, "恢复原因不能为空"),
@@ -1030,7 +1030,7 @@ export const appRouter = router({
       }),
 
     /** 吊销密钥（永久作废） */
-    revoke: adminProcedure
+    revoke: protectedProcedure
       .input(z.object({
         keyId: z.number(),
         reason: z.string().min(1, "吊销原因不能为空"),
@@ -1079,7 +1079,7 @@ export const appRouter = router({
       }),
 
     /** 续期密钥 */
-    renew: adminProcedure
+    renew: protectedProcedure
       .input(z.object({
         keyId: z.number(),
         additionalDays: z.number().min(1).max(36500),
