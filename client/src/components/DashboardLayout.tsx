@@ -127,7 +127,8 @@ const menuSections: MenuSection[] = [
     title: "系统管理",
     icon: Settings2,
     items: [
-      { icon: Users, label: "账号管理", path: "/accounts", roles: ["super_admin", "admin"] },
+      { icon: Users, label: "账号管理", path: "/accounts" },
+      { icon: Building2, label: "部门管理", path: "/departments", roles: ["super_admin"] },
       { icon: Settings2, label: "传感器管理", path: "/sensor-types", roles: ["super_admin"] },
       { icon: Cpu, label: "MAC 读取", path: "/mac-reader" },
       { icon: Footprints, label: "脚垫设备码", path: "/foot-device-code" },

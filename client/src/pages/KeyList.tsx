@@ -32,8 +32,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { Checkbox } from "@/components/ui/checkbox";
 import { trpc } from "@/lib/trpc";
-import { BarChart3, Copy, Download, Loader2, Pause, Play, RefreshCw, Search, ShieldX, History } from "lucide-react";
+import { BarChart3, Copy, Download, Loader2, Pause, Play, RefreshCw, Search, ShieldX, History, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { copyText } from "@/lib/clipboard";
@@ -70,6 +71,11 @@ export default function KeyList() {
   // 状态历史弹窗
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
   const [historyKeyId, setHistoryKeyId] = useState<number | null>(null);
+
+  // 批量选择 + 删除
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteIds, setDeleteIds] = useState<number[]>([]);
 
   // 获取传感器分组用于 label 映射和筛选
   const { data: sensorGroups } = trpc.sensors.groups.useQuery();
@@ -172,7 +178,40 @@ export default function KeyList() {
     onError: (err) => toast.error(err.message),
   });
 
+  const batchDeleteMutation = trpc.keys.batchDelete.useMutation({
+    onSuccess: (r: { deleted: number }) => {
+      toast.success(`已删除 ${r.deleted} 个密钥`);
+      setDeleteOpen(false);
+      setDeleteIds([]);
+      setSelectedIds([]);
+      utils.keys.list.invalidate();
+      utils.keys.stats.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
   const totalPages = data ? Math.ceil(data.total / 20) : 0;
+
+  // 批量选择：当前页的 id
+  const pageIds: number[] = (data?.items ?? []).map((k: any) => k.id);
+  const allChecked = pageIds.length > 0 && pageIds.every((id) => selectedIds.includes(id));
+  const toggleAll = () => {
+    setSelectedIds(
+      allChecked
+        ? selectedIds.filter((id) => !pageIds.includes(id))
+        : Array.from(new Set([...selectedIds, ...pageIds])),
+    );
+  };
+  const toggleOne = (id: number) => {
+    setSelectedIds(
+      selectedIds.includes(id) ? selectedIds.filter((x) => x !== id) : [...selectedIds, id],
+    );
+  };
+  const openDelete = (ids: number[]) => {
+    if (!ids.length) return;
+    setDeleteIds(ids);
+    setDeleteOpen(true);
+  };
 
   const closeLifecycleDialog = () => {
     setLifecycleAction(null);
@@ -379,6 +418,21 @@ export default function KeyList() {
           </>
         )}
 
+        {/* 删除（谁能看到谁就能删） */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+              onClick={() => openDelete([key.id])}
+            >
+              <Trash2 className="h-3 w-3" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>删除密钥</TooltipContent>
+        </Tooltip>
+
       </div>
     );
   };
@@ -391,6 +445,17 @@ export default function KeyList() {
           <p className="text-muted-foreground mt-1">查看和管理所有密钥</p>
         </div>
         <div className="flex gap-2">
+          {selectedIds.length > 0 && (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => openDelete(selectedIds)}
+              disabled={batchDeleteMutation.isPending}
+            >
+              <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+              删除选中（{selectedIds.length}）
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -515,6 +580,9 @@ export default function KeyList() {
                 <Table>
                   <TableHeader>
                     <TableRow className="border-border/50">
+                      <TableHead className="w-[40px]">
+                        <Checkbox checked={allChecked} onCheckedChange={toggleAll} aria-label="全选本页" />
+                      </TableHead>
                       <TableHead className="text-muted-foreground w-[60px]">ID</TableHead>
                       <TableHead className="text-muted-foreground">密钥</TableHead>
                       <TableHead className="text-muted-foreground">类型</TableHead>
@@ -532,6 +600,13 @@ export default function KeyList() {
                   <TableBody>
                     {data.items.map((key: any) => (
                       <TableRow key={key.id} className="border-border/30">
+                        <TableCell>
+                          <Checkbox
+                            checked={selectedIds.includes(key.id)}
+                            onCheckedChange={() => toggleOne(key.id)}
+                            aria-label={`选择密钥 ${key.id}`}
+                          />
+                        </TableCell>
                         <TableCell className="font-mono text-xs text-muted-foreground">{key.id}</TableCell>
                         <TableCell className="font-mono text-xs max-w-[180px] truncate text-foreground">
                           <Tooltip>
@@ -681,6 +756,31 @@ export default function KeyList() {
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />
               )}
               确认
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 删除确认弹窗 */}
+      <Dialog open={deleteOpen} onOpenChange={(open) => { if (!open) { setDeleteOpen(false); setDeleteIds([]); } }}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>删除密钥</DialogTitle>
+            <DialogDescription>
+              该操作会先<span className="text-destructive font-medium">吊销</span>选中的 {deleteIds.length} 个密钥（使其立即失效、验证不再通过）。删除后密钥将无法使用，且不可恢复，确定要删除吗？
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setDeleteOpen(false); setDeleteIds([]); }}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => batchDeleteMutation.mutate({ ids: deleteIds })}
+              disabled={batchDeleteMutation.isPending}
+            >
+              {batchDeleteMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+              确认删除
             </Button>
           </DialogFooter>
         </DialogContent>

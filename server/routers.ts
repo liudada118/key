@@ -22,12 +22,19 @@ import {
   getLicenseKeyByString,
   getLicenseKeys,
   getSensorValuesByGroups,
+  getManagedSensorGroups,
+  getDepartments,
+  getDepartmentById,
+  createDepartment,
+  updateDepartment,
+  deleteDepartment,
   getSubordinateUsers,
   getUserAndSubordinateIds,
   maskKeyString,
   renewLicenseKey,
   restoreLicenseKey,
   revokeLicenseKey,
+  deleteLicenseKeysVisible,
   suspendLicenseKey,
   updateLicenseKeyCategory,
   getUserById,
@@ -59,6 +66,7 @@ import {
   generateOfflineActivationCode,
   getOfflineKeys,
   getOfflineKeyStats,
+  deleteOfflineKeysVisible,
   recordHeartbeat,
   getKeyHeartbeats,
   getLostHeartbeatDevices,
@@ -148,6 +156,7 @@ export const appRouter = router({
           name: z.string().min(1, "名称不能为空"),
           role: z.enum(["admin", "user"]),
           remark: z.string().optional(),
+          departmentId: z.number().optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -159,13 +168,24 @@ export const appRouter = router({
         if (existing) {
           throw new TRPCError({ code: "CONFLICT", message: "用户名已存在" });
         }
+        // 部门归属：管理员只能在本部门下建子账号；仅超管可指定其他部门。
+        let departmentId = input.departmentId ?? null;
+        let createdById = ctx.user.id;
+        if (ctx.user.role === "admin") {
+          departmentId = ctx.user.departmentId ?? null; // 强制本部门，忽略传入
+        } else if (departmentId) {
+          // 超管代建 → 挂到该部门管理员名下，归属正确
+          const dept = await getDepartmentById(departmentId);
+          if (dept?.managerId) createdById = dept.managerId;
+        }
         return createAccount({
           username: input.username,
           password: input.password,
           name: input.name,
           role: input.role,
-          createdById: ctx.user.id,
+          createdById,
           remark: input.remark,
+          departmentId,
         });
       }),
 
@@ -196,6 +216,18 @@ export const appRouter = router({
           isActive: input.isActive,
           remark: input.remark,
         });
+      }),
+
+    /** 修改自己的资料（名称/备注）——所有角色可用 */
+    updateSelf: protectedProcedure
+      .input(
+        z.object({
+          name: z.string().max(30).optional(),
+          remark: z.string().max(200).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        return updateAccount(ctx.user.id, { name: input.name, remark: input.remark });
       }),
 
     /** 重置下级账号密码（管理员操作） */
@@ -518,6 +550,27 @@ export const appRouter = router({
       return getOfflineKeyStats(userIds);
     }),
 
+    /** 删除离线密钥（仅从列表移除；离线激活码无法服务端作废）——谁能看到谁能删 */
+    batchDelete: protectedProcedure
+      .input(z.object({ ids: z.array(z.number()).min(1, "请选择要删除的密钥") }))
+      .mutation(async ({ ctx, input }) => {
+        const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+        const res = await deleteOfflineKeysVisible(input.ids, { userIds });
+        if (res.deleted > 0) {
+          await createAuditLog({
+            userId: ctx.user.id,
+            userName: ctx.user.name || ctx.user.username,
+            action: "DELETE",
+            resourceType: "offlineKey",
+            resourceId: res.ids[0],
+            description: `删除离线密钥 ${res.ids.length} 个：#${res.ids.join("、#")}`,
+            ip: ctx.req?.headers?.['x-forwarded-for'] as string || ctx.req?.socket?.remoteAddress || null,
+            userAgent: ctx.req?.headers?.['user-agent'] || null,
+          });
+        }
+        return { success: true, deleted: res.deleted };
+      }),
+
     /** 获取公钥（供客户端下载） */
     publicKey: publicProcedure.query(async () => {
       const keyPair = await getActiveRsaKeyPair();
@@ -663,11 +716,9 @@ export const appRouter = router({
       )
       .query(async ({ ctx, input }) => {
         const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
-        // 事业部管理员：密钥用到其管理分组的传感器 → 跨部门可见（超管的 userIds 已含全部，无需此项）
-        const managed = String((ctx.user as any).managedGroups || "").split(",").map((s) => s.trim()).filter(Boolean);
-        const visibleSensorValues = ctx.user.role !== "super_admin" && managed.length
-          ? await getSensorValuesByGroups(managed)
-          : [];
+        // 部门管理员：密钥用到其“所管理部门的传感器分组” → 跨部门可见（超管的 userIds 已含全部，无需此项）
+        const managedGroups = ctx.user.role !== "super_admin" ? await getManagedSensorGroups(ctx.user.id) : [];
+        const visibleSensorValues = managedGroups.length ? await getSensorValuesByGroups(managedGroups) : [];
         return getLicenseKeys({
           userIds,
           page: input.page,
@@ -829,7 +880,10 @@ export const appRouter = router({
 
     stats: protectedProcedure.query(async ({ ctx }) => {
       const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
-      return getKeyStats(userIds);
+      // 与密钥管理列表同口径：叠加部门管理员的跨部门可见（管理分组 + all）
+      const managedGroups = ctx.user.role !== "super_admin" ? await getManagedSensorGroups(ctx.user.id) : [];
+      const visibleSensorValues = managedGroups.length ? await getSensorValuesByGroups(managedGroups) : [];
+      return getKeyStats(userIds, visibleSensorValues);
     }),
 
     /** 超级管理员更改密钥类型 */
@@ -994,6 +1048,34 @@ export const appRouter = router({
           userAgent: ctx.req?.headers?.['user-agent'] || null,
         });
         return { success: true, key: result };
+      }),
+
+    /** 删除密钥（硬删除，单个或批量）——谁能看到谁就能删，只删可见范围内的 id */
+    batchDelete: protectedProcedure
+      .input(z.object({ ids: z.array(z.number()).min(1, "请选择要删除的密钥") }))
+      .mutation(async ({ ctx, input }) => {
+        const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+        const managedGroups = ctx.user.role !== "super_admin" ? await getManagedSensorGroups(ctx.user.id) : [];
+        const visibleSensorValues = managedGroups.length ? await getSensorValuesByGroups(managedGroups) : [];
+        const res = await deleteLicenseKeysVisible(input.ids, {
+          userIds,
+          visibleSensorValues,
+          actorId: ctx.user.id,
+          actorName: ctx.user.name || ctx.user.username,
+        });
+        if (res.deleted > 0) {
+          await createAuditLog({
+            userId: ctx.user.id,
+            userName: ctx.user.name || ctx.user.username,
+            action: "DELETE",
+            resourceType: "licenseKey",
+            resourceId: res.ids[0],
+            description: `删除密钥 ${res.ids.length} 个：#${res.ids.join("、#")}`,
+            ip: ctx.req?.headers?.['x-forwarded-for'] as string || ctx.req?.socket?.remoteAddress || null,
+            userAgent: ctx.req?.headers?.['user-agent'] || null,
+          });
+        }
+        return { success: true, deleted: res.deleted };
       }),
 
     /** 续期密钥 */
@@ -1431,6 +1513,39 @@ export const appRouter = router({
           throw new TRPCError({ code: "FORBIDDEN", message: "无权操作此反馈" });
         }
         await deleteFeedback(input.id);
+        return { success: true };
+      }),
+  }),
+
+  // ===== 部门管理（部门↔传感器分组↔管理员；仅超管增删改，列表所有登录可读供选择器用） =====
+  departments: router({
+    list: protectedProcedure.query(async () => getDepartments()),
+    create: superAdminProcedure
+      .input(z.object({
+        name: z.string().min(1, "部门名不能为空").max(128),
+        sensorGroup: z.string().nullable().optional(),
+        managerId: z.number().nullable().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        await createDepartment({ name: input.name, sensorGroup: input.sensorGroup ?? null, managerId: input.managerId ?? null });
+        return { success: true };
+      }),
+    update: superAdminProcedure
+      .input(z.object({
+        id: z.number(),
+        name: z.string().min(1).max(128).optional(),
+        sensorGroup: z.string().nullable().optional(),
+        managerId: z.number().nullable().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        await updateDepartment(input.id, { name: input.name, sensorGroup: input.sensorGroup, managerId: input.managerId });
+        return { success: true };
+      }),
+    delete: superAdminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        const res = await deleteDepartment(input.id);
+        if (!res.ok) throw new TRPCError({ code: "BAD_REQUEST", message: `该部门下还有 ${res.memberCount} 个账号，请先转移或删除后再删除部门` });
         return { success: true };
       }),
   }),

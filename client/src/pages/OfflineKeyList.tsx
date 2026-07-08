@@ -2,6 +2,15 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Table,
   TableBody,
@@ -19,6 +28,7 @@ import {
   Shield,
   ChevronLeft,
   ChevronRight,
+  Trash2,
 } from "lucide-react";
 import { useState, useMemo } from "react";
 import { toast } from "sonner";
@@ -49,12 +59,50 @@ export default function OfflineKeyList() {
     return map;
   }, [sensorGroups]);
 
+  const utils = trpc.useUtils();
   const { data: stats } = trpc.offlineKeys.stats.useQuery();
   const { data, isLoading } = trpc.offlineKeys.list.useQuery({
     page,
     pageSize: 10,
     search: search || undefined,
   });
+
+  // 批量选择 + 删除
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteIds, setDeleteIds] = useState<number[]>([]);
+
+  const batchDeleteMutation = trpc.offlineKeys.batchDelete.useMutation({
+    onSuccess: (r: { deleted: number }) => {
+      toast.success(`已从列表移除 ${r.deleted} 个离线密钥`);
+      setDeleteOpen(false);
+      setDeleteIds([]);
+      setSelectedIds([]);
+      utils.offlineKeys.list.invalidate();
+      utils.offlineKeys.stats.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const pageIds: number[] = (data?.items ?? []).map((k: any) => k.id);
+  const allChecked = pageIds.length > 0 && pageIds.every((id) => selectedIds.includes(id));
+  const toggleAll = () => {
+    setSelectedIds(
+      allChecked
+        ? selectedIds.filter((id) => !pageIds.includes(id))
+        : Array.from(new Set([...selectedIds, ...pageIds])),
+    );
+  };
+  const toggleOne = (id: number) => {
+    setSelectedIds(
+      selectedIds.includes(id) ? selectedIds.filter((x) => x !== id) : [...selectedIds, id],
+    );
+  };
+  const openDelete = (ids: number[]) => {
+    if (!ids.length) return;
+    setDeleteIds(ids);
+    setDeleteOpen(true);
+  };
 
   const copyToClipboard = (text: string) => {
     copyText(text);
@@ -104,14 +152,28 @@ export default function OfflineKeyList() {
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
             <CardTitle className="text-base">离线密钥列表</CardTitle>
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-              <Input
-                placeholder="搜索客户/备注..."
-                value={search}
-                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-                className="pl-8 h-8 w-56 text-sm"
-              />
+            <div className="flex items-center gap-2">
+              {selectedIds.length > 0 && (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="h-8"
+                  onClick={() => openDelete(selectedIds)}
+                  disabled={batchDeleteMutation.isPending}
+                >
+                  <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                  删除选中（{selectedIds.length}）
+                </Button>
+              )}
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                <Input
+                  placeholder="搜索客户/备注..."
+                  value={search}
+                  onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                  className="pl-8 h-8 w-56 text-sm"
+                />
+              </div>
             </div>
           </div>
         </CardHeader>
@@ -128,6 +190,9 @@ export default function OfflineKeyList() {
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead className="w-[40px]">
+                        <Checkbox checked={allChecked} onCheckedChange={toggleAll} aria-label="全选本页" />
+                      </TableHead>
                       <TableHead>传感器类型</TableHead>
                       <TableHead className="w-28">状态</TableHead>
                       <TableHead className="w-20">有效天数</TableHead>
@@ -145,6 +210,13 @@ export default function OfflineKeyList() {
                       const st = getStatusBadge(item);
                       return (
                         <TableRow key={item.id}>
+                          <TableCell>
+                            <Checkbox
+                              checked={selectedIds.includes(item.id)}
+                              onCheckedChange={() => toggleOne(item.id)}
+                              aria-label={`选择离线密钥 ${item.id}`}
+                            />
+                          </TableCell>
                           <TableCell>
                             <div className="flex flex-wrap gap-1">
                               {item.sensorTypes === "all" ? (
@@ -206,6 +278,13 @@ export default function OfflineKeyList() {
                               >
                                 <Download className="h-3.5 w-3.5" />
                               </Button>
+                              <Button
+                                variant="ghost" size="sm" className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                                onClick={() => openDelete([item.id])}
+                                title="删除（仅从列表移除）"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
                             </div>
                           </TableCell>
                         </TableRow>
@@ -233,6 +312,36 @@ export default function OfflineKeyList() {
           )}
         </CardContent>
       </Card>
+
+      {/* 删除确认弹窗（离线密钥：仅从列表移除，无法真正作废） */}
+      <Dialog open={deleteOpen} onOpenChange={(open) => { if (!open) { setDeleteOpen(false); setDeleteIds([]); } }}>
+        <DialogContent className="sm:max-w-[460px]">
+          <DialogHeader>
+            <DialogTitle>删除离线密钥</DialogTitle>
+            <DialogDescription className="space-y-2">
+              <span className="block">
+                将从列表移除选中的 {deleteIds.length} 个离线密钥记录。
+              </span>
+              <span className="block text-destructive font-medium">
+                注意：离线激活码由客户端离线（RSA 验签）校验，服务端<strong>无法使已发出的激活码失效</strong>——删除后该激活码在到期前仍可继续使用。
+              </span>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setDeleteOpen(false); setDeleteIds([]); }}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => batchDeleteMutation.mutate({ ids: deleteIds })}
+              disabled={batchDeleteMutation.isPending}
+            >
+              {batchDeleteMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+              仍要删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -37,6 +37,8 @@ export const users = mysqlTable("users", {
   phone: varchar("phone", { length: 32 }),
   /** 管理的传感器分组（逗号分隔，事业部管理员用；仅密钥管理模块据此做跨部门可见） */
   managedGroups: varchar("managedGroups", { length: 256 }),
+  /** 所属部门 ID */
+  departmentId: int("departmentId"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
@@ -44,6 +46,26 @@ export const users = mysqlTable("users", {
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
+
+/**
+ * 部门表
+ * 每个部门绑定一个传感器分组（营销中心等无分组则为 null），并指定一个部门管理员。
+ * 密钥管理模块：部门管理员可见“用了本部门分组传感器”的密钥（跨部门可见）。
+ */
+export const departments = mysqlTable("departments", {
+  id: int("id").autoincrement().primaryKey(),
+  /** 部门名称（唯一） */
+  name: varchar("name", { length: 128 }).notNull().unique(),
+  /** 对应传感器分组（对应 sensorTypes.groupName；无分组则 null） */
+  sensorGroup: varchar("sensorGroup", { length: 64 }),
+  /** 部门管理员 user id */
+  managerId: int("managerId"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type Department = typeof departments.$inferSelect;
+export type InsertDepartment = typeof departments.$inferInsert;
 
 /**
  * 客户表
@@ -195,6 +217,8 @@ export const licenseKeys = mysqlTable("licenseKeys", {
   batchId: varchar("batchId", { length: 64 }),
   /** 备注 */
   remark: text("remark"),
+  /** 是否已删除：删除=先吊销(失效)再从列表隐藏，行仍保留以保证验证时判定为已吊销 */
+  isDeleted: boolean("isDeleted").default(false).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 }, (table) => ({
@@ -323,6 +347,8 @@ export const offlineKeys = mysqlTable("offlineKeys", {
   revokeReason: text("revokeReason"),
   /** 许可证版本 */
   licenseVersion: int("licenseVersion").notNull().default(2),
+  /** 是否已删除：仅从列表隐藏（离线激活码离线验证，服务端无法使其失效） */
+  isDeleted: boolean("isDeleted").default(false).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });

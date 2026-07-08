@@ -87,6 +87,9 @@ export default function AccountManagement() {
   const [newName, setNewName] = useState("");
   const [newRole, setNewRole] = useState<"admin" | "user">("user");
   const [newRemark, setNewRemark] = useState("");
+  const [newDeptId, setNewDeptId] = useState<string>("");
+  const { data: departments } = trpc.departments.list.useQuery();
+  const selectedDept = (departments as any[] | undefined)?.find((d) => String(d.id) === newDeptId);
 
   // Edit form state
   const [editName, setEditName] = useState("");
@@ -95,6 +98,17 @@ export default function AccountManagement() {
 
   // Reset password state
   const [resetNewPwd, setResetNewPwd] = useState("");
+
+  // 个人账号：改密码 / 改资料
+  const [selfPwdOpen, setSelfPwdOpen] = useState(false);
+  const [oldPwd, setOldPwd] = useState("");
+  const [selfNewPwd, setSelfNewPwd] = useState("");
+  const [selfInfoOpen, setSelfInfoOpen] = useState(false);
+  const [selfName, setSelfName] = useState("");
+  const [selfRemark, setSelfRemark] = useState("");
+  const ownDept = (departments as any[] | undefined)?.find(
+    (d) => d.id === (user as any)?.departmentId,
+  );
 
   const createMutation = trpc.accounts.create.useMutation({
     onSuccess: () => {
@@ -129,6 +143,25 @@ export default function AccountManagement() {
     onError: (err) => toast.error(err.message),
   });
 
+  const changePwdMutation = trpc.auth.changePassword.useMutation({
+    onSuccess: () => {
+      toast.success("密码修改成功");
+      setSelfPwdOpen(false);
+      setOldPwd("");
+      setSelfNewPwd("");
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const updateSelfMutation = trpc.accounts.updateSelf.useMutation({
+    onSuccess: () => {
+      toast.success("已保存");
+      setSelfInfoOpen(false);
+      utils.auth.me.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
   const [deleteTarget, setDeleteTarget] = useState<{ id: number; username: string; name: string | null } | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
@@ -152,6 +185,7 @@ export default function AccountManagement() {
       name: newName.trim(),
       role: newRole,
       remark: newRemark || undefined,
+      departmentId: newDeptId ? Number(newDeptId) : undefined,
     });
   };
 
@@ -173,6 +207,25 @@ export default function AccountManagement() {
     resetPwdMutation.mutate({
       id: resetTarget.id,
       newPassword: resetNewPwd,
+    });
+  };
+
+  const handleChangePwd = () => {
+    if (!oldPwd.trim()) return toast.error("请输入旧密码");
+    if (!selfNewPwd.trim() || selfNewPwd.length < 6) return toast.error("新密码至少6位");
+    changePwdMutation.mutate({ oldPassword: oldPwd, newPassword: selfNewPwd });
+  };
+
+  const openSelfInfo = () => {
+    setSelfName(user?.name || "");
+    setSelfRemark((user as any)?.remark || "");
+    setSelfInfoOpen(true);
+  };
+
+  const handleSelfInfo = () => {
+    updateSelfMutation.mutate({
+      name: selfName.trim() || undefined,
+      remark: selfRemark,
     });
   };
 
@@ -209,10 +262,13 @@ export default function AccountManagement() {
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">账号管理</h1>
           <p className="text-muted-foreground mt-1">
             {user?.role === "super_admin"
-              ? "管理所有管理员和子账号"
-              : "管理您创建的子账号"}
+              ? "管理个人账号、管理员与子账号"
+              : user?.role === "admin"
+                ? "管理个人账号与本部门子账号"
+                : "查看并管理个人账号"}
           </p>
         </div>
+        {user?.role !== "user" && (
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
           <DialogTrigger asChild>
             <Button>
@@ -274,6 +330,30 @@ export default function AccountManagement() {
                 </Select>
               </div>
               <div className="space-y-2">
+                <Label className="text-foreground">部门</Label>
+                {user?.role === "super_admin" ? (
+                  <>
+                    <Select value={newDeptId} onValueChange={setNewDeptId}>
+                      <SelectTrigger className="bg-secondary/50">
+                        <SelectValue placeholder="选择部门（决定归属与传感器分组）" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {((departments as any[]) || []).map((d) => (
+                          <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {selectedDept && (
+                      <p className="text-xs text-muted-foreground">对应传感器类型：{selectedDept.sensorGroup || "无（不绑定分组）"}</p>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-sm text-muted-foreground bg-secondary/30 rounded-md px-3 py-2">
+                    {ownDept ? `本部门：${ownDept.name}` : "未归属部门（子账号将不绑定部门）"}
+                  </p>
+                )}
+              </div>
+              <div className="space-y-2">
                 <Label className="text-foreground">备注（可选）</Label>
                 <Textarea
                   value={newRemark}
@@ -298,13 +378,61 @@ export default function AccountManagement() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        )}
       </div>
 
+      {/* 个人账号 */}
+      <Card className="border-border/50">
+        <CardHeader>
+          <CardTitle className="text-base font-medium flex items-center gap-2 text-foreground">
+            <ShieldCheck className="h-4 w-4 text-primary" />
+            个人账号
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-wrap items-center gap-x-8 gap-y-3">
+            <div>
+              <p className="text-xs text-muted-foreground">用户名</p>
+              <p className="font-mono text-sm text-foreground">{user?.username}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">名称</p>
+              <p className="text-sm text-foreground">{user?.name || "-"}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">角色</p>
+              <Badge variant="outline" className={ROLE_COLORS[user?.role || ""] || ""}>
+                {ROLE_LABELS[user?.role || ""] || user?.role}
+              </Badge>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">所属部门</p>
+              <p className="text-sm text-foreground">{ownDept?.name || "-"}</p>
+            </div>
+            <div className="min-w-[120px]">
+              <p className="text-xs text-muted-foreground">备注</p>
+              <p className="text-sm text-foreground truncate max-w-[240px]">{(user as any)?.remark || "-"}</p>
+            </div>
+            <div className="flex items-center gap-2 ml-auto">
+              <Button variant="outline" size="sm" onClick={openSelfInfo}>
+                <Pencil className="h-3.5 w-3.5 mr-1.5" />
+                编辑资料
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => { setOldPwd(""); setSelfNewPwd(""); setSelfPwdOpen(true); }}>
+                <KeyRound className="h-3.5 w-3.5 mr-1.5" />
+                修改密码
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {user?.role !== "user" && (
       <Card className="border-border/50">
         <CardHeader>
           <CardTitle className="text-base font-medium flex items-center gap-2 text-foreground">
             <Users className="h-4 w-4 text-primary" />
-            账号列表
+            下属账号
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -324,6 +452,7 @@ export default function AccountManagement() {
                   <TableRow className="border-border/50">
                     <TableHead className="text-muted-foreground">用户名</TableHead>
                     <TableHead className="text-muted-foreground">名称</TableHead>
+                    <TableHead className="text-muted-foreground">对应部门</TableHead>
                     <TableHead className="text-muted-foreground">角色</TableHead>
                     <TableHead className="text-muted-foreground">状态</TableHead>
                     <TableHead className="text-muted-foreground">备注</TableHead>
@@ -340,6 +469,9 @@ export default function AccountManagement() {
                       </TableCell>
                       <TableCell className="font-medium text-foreground">
                         {acc.name || "-"}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {(acc as any).deptName || "-"}
                       </TableCell>
                       <TableCell>
                         <Badge
@@ -421,6 +553,7 @@ export default function AccountManagement() {
           )}
         </CardContent>
       </Card>
+      )}
 
       {/* Edit Dialog */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
@@ -529,6 +662,85 @@ export default function AccountManagement() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* 个人 - 修改密码 */}
+      <Dialog open={selfPwdOpen} onOpenChange={setSelfPwdOpen}>
+        <DialogContent className="bg-card border-border">
+          <DialogHeader>
+            <DialogTitle className="text-foreground">修改密码</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label className="text-foreground">旧密码</Label>
+              <Input
+                type="password"
+                value={oldPwd}
+                onChange={(e) => setOldPwd(e.target.value)}
+                placeholder="输入当前密码"
+                className="bg-secondary/50"
+                autoComplete="current-password"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-foreground">新密码</Label>
+              <Input
+                type="password"
+                value={selfNewPwd}
+                onChange={(e) => setSelfNewPwd(e.target.value)}
+                placeholder="至少6位"
+                className="bg-secondary/50"
+                autoComplete="new-password"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSelfPwdOpen(false)}>取消</Button>
+            <Button onClick={handleChangePwd} disabled={changePwdMutation.isPending}>
+              {changePwdMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+              确认修改
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 个人 - 编辑资料 */}
+      <Dialog open={selfInfoOpen} onOpenChange={setSelfInfoOpen}>
+        <DialogContent className="bg-card border-border">
+          <DialogHeader>
+            <DialogTitle className="text-foreground">编辑个人资料</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label className="text-foreground">显示名称</Label>
+              <Input
+                value={selfName}
+                onChange={(e) => setSelfName(e.target.value)}
+                placeholder="输入名称"
+                maxLength={30}
+                className="bg-secondary/50"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-foreground">备注</Label>
+              <Textarea
+                value={selfRemark}
+                onChange={(e) => setSelfRemark(e.target.value)}
+                placeholder="输入备注"
+                maxLength={200}
+                className="bg-secondary/50 resize-none"
+                rows={2}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSelfInfoOpen(false)}>取消</Button>
+            <Button onClick={handleSelfInfo} disabled={updateSelfMutation.isPending}>
+              {updateSelfMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+              保存
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

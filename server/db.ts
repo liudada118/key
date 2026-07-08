@@ -13,6 +13,7 @@ import {
   sensorTypes,
   users,
   deviceCodeRecords,
+  departments,
   feedback,
   type Feedback,
   type InsertFeedback,
@@ -88,6 +89,7 @@ export async function createUserWithPassword(data: {
   role: "super_admin" | "admin" | "user";
   createdById?: number | null;
   remark?: string | null;
+  departmentId?: number | null;
 }) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -101,6 +103,7 @@ export async function createUserWithPassword(data: {
     role: data.role,
     createdById: data.createdById ?? null,
     remark: data.remark ?? null,
+    departmentId: data.departmentId ?? null,
     isActive: true,
   });
 
@@ -289,8 +292,8 @@ export async function getAccountDependents(userId: number) {
   if (!db) return { subordinates: 0, onlineKeys: 0, offlineKeys: 0, customers: 0, contracts: 0, total: 0 };
   const [sub, onKeys, offKeys, custs, conts] = await Promise.all([
     db.select({ count: count() }).from(users).where(eq(users.createdById, userId)),
-    db.select({ count: count() }).from(licenseKeys).where(eq(licenseKeys.createdById, userId)),
-    db.select({ count: count() }).from(offlineKeys).where(eq(offlineKeys.createdById, userId)),
+    db.select({ count: count() }).from(licenseKeys).where(and(eq(licenseKeys.createdById, userId), eq(licenseKeys.isDeleted, false))),
+    db.select({ count: count() }).from(offlineKeys).where(and(eq(offlineKeys.createdById, userId), eq(offlineKeys.isDeleted, false))),
     db.select({ count: count() }).from(customers).where(eq(customers.createdById, userId)),
     db.select({ count: count() }).from(contracts).where(eq(contracts.createdById, userId)),
   ]);
@@ -343,6 +346,10 @@ export async function getSubordinateUsers(
     createdById: users.createdById,
     isActive: users.isActive,
     remark: users.remark,
+    phone: users.phone,
+    departmentId: users.departmentId,
+    deptName: departments.name,
+    sensorGroup: departments.sensorGroup,
     createdAt: users.createdAt,
     updatedAt: users.updatedAt,
     lastSignedIn: users.lastSignedIn,
@@ -351,10 +358,71 @@ export async function getSubordinateUsers(
   const pageSize = opts?.pageSize ?? 20;
   const offset = (page - 1) * pageSize;
   const [items, totalResult] = await Promise.all([
-    db.select(cols).from(users).where(where).orderBy(desc(users.createdAt)).limit(pageSize).offset(offset),
+    db.select(cols).from(users).leftJoin(departments, eq(users.departmentId, departments.id)).where(where).orderBy(desc(users.role), desc(users.createdAt)).limit(pageSize).offset(offset),
     db.select({ count: count() }).from(users).where(where),
   ]);
   return { items, total: totalResult[0]?.count ?? 0 };
+}
+
+// ===== 部门管理 =====
+/** 用户作为部门管理员所管理的传感器分组（密钥管理跨部门可见用）。 */
+export async function getManagedSensorGroups(userId: number): Promise<string[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select({ g: departments.sensorGroup }).from(departments).where(eq(departments.managerId, userId));
+  return rows.map((r) => r.g).filter((g): g is string => !!g);
+}
+
+/** 部门列表（附管理员名 + 归属账号数）。 */
+export async function getDepartments() {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select().from(departments).orderBy(departments.id);
+  const out: any[] = [];
+  for (const d of rows) {
+    let managerName: string | null = null;
+    if (d.managerId) {
+      const m = await db.select({ name: users.name, username: users.username }).from(users).where(eq(users.id, d.managerId)).limit(1);
+      managerName = m[0] ? (m[0].name || m[0].username) : null;
+    }
+    const cnt = await db.select({ n: count() }).from(users).where(eq(users.departmentId, d.id));
+    out.push({ ...d, managerName, memberCount: Number(cnt[0]?.n ?? 0) });
+  }
+  return out;
+}
+
+export async function getDepartmentById(id: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db.select().from(departments).where(eq(departments.id, id)).limit(1);
+  return rows[0] || null;
+}
+
+export async function createDepartment(data: { name: string; sensorGroup?: string | null; managerId?: number | null }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.insert(departments).values({ name: data.name, sensorGroup: data.sensorGroup ?? null, managerId: data.managerId ?? null });
+}
+
+export async function updateDepartment(id: number, data: { name?: string; sensorGroup?: string | null; managerId?: number | null }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const patch: any = {};
+  if (data.name !== undefined) patch.name = data.name;
+  if (data.sensorGroup !== undefined) patch.sensorGroup = data.sensorGroup;
+  if (data.managerId !== undefined) patch.managerId = data.managerId;
+  if (Object.keys(patch).length) await db.update(departments).set(patch).where(eq(departments.id, id));
+}
+
+/** 删除部门：名下有账号则拦截（返回 ok=false + 账号数）。 */
+export async function deleteDepartment(id: number): Promise<{ ok: boolean; memberCount: number }> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const cnt = await db.select({ n: count() }).from(users).where(eq(users.departmentId, id));
+  const memberCount = Number(cnt[0]?.n ?? 0);
+  if (memberCount > 0) return { ok: false, memberCount };
+  await db.delete(departments).where(eq(departments.id, id));
+  return { ok: true, memberCount: 0 };
 }
 
 /** 获取某用户及其所有下级的 ID 列表（用于密钥查询） */
@@ -381,6 +449,7 @@ export async function createAccount(data: {
   role: "admin" | "user";
   createdById: number;
   remark?: string;
+  departmentId?: number | null;
 }) {
   return createUserWithPassword({
     username: data.username,
@@ -389,6 +458,7 @@ export async function createAccount(data: {
     role: data.role,
     createdById: data.createdById,
     remark: data.remark,
+    departmentId: data.departmentId ?? null,
   });
 }
 
@@ -544,7 +614,7 @@ export async function getAllCustomers(userIds: number[]) {
 export async function getCustomerKeyCount(customerId: number) {
   const db = await getDb();
   if (!db) return 0;
-  const result = await db.select({ count: count() }).from(licenseKeys).where(eq(licenseKeys.customerId, customerId));
+  const result = await db.select({ count: count() }).from(licenseKeys).where(and(eq(licenseKeys.customerId, customerId), eq(licenseKeys.isDeleted, false)));
   return result[0]?.count ?? 0;
 }
 
@@ -661,7 +731,7 @@ export async function getLicenseKeys(opts: {
     }
     visibility = or(visibility, or(...sensorConds));
   }
-  const conditions: any[] = [visibility];
+  const conditions: any[] = [visibility, eq(licenseKeys.isDeleted, false)];
 
   if (opts.category) conditions.push(eq(licenseKeys.category, opts.category as "production" | "rental"));
   // 单个生成 = batchId 为空；批量生成 = batchId 非空
@@ -689,6 +759,57 @@ export async function getLicenseKeys(opts: {
   ]);
 
   return { items, total: totalResult[0]?.count ?? 0 };
+}
+
+/**
+ * 删除密钥：先吊销（使其立即失效），再标记 isDeleted 从列表隐藏。
+ * 保留数据行 —— 否则验证时查不到记录会退回“按密钥串内嵌日期”判定为有效，删了却还能用。
+ * 只处理调用者“可见范围内”的 id（可见性与 getLicenseKeys 一致），防止越权。
+ */
+export async function deleteLicenseKeysVisible(
+  ids: number[],
+  opts: { userIds: number[]; visibleSensorValues?: string[]; actorId: number; actorName: string }
+): Promise<{ deleted: number; ids: number[] }> {
+  const db = await getDb();
+  if (!db || !ids.length) return { deleted: 0, ids: [] };
+
+  let visibility: any = inArray(licenseKeys.createdById, opts.userIds);
+  if (opts.visibleSensorValues && opts.visibleSensorValues.length) {
+    const sensorConds: any[] = [sql`${licenseKeys.sensorType} = 'all'`];
+    for (const v of opts.visibleSensorValues) {
+      sensorConds.push(sql`FIND_IN_SET(${v}, ${licenseKeys.sensorType}) > 0`);
+    }
+    visibility = or(visibility, or(...sensorConds));
+  }
+
+  const rows = await db.select({ id: licenseKeys.id, status: licenseKeys.status }).from(licenseKeys)
+    .where(and(inArray(licenseKeys.id, ids), visibility, eq(licenseKeys.isDeleted, false)));
+  const okIds = rows.map((r) => r.id);
+  if (!okIds.length) return { deleted: 0, ids: [] };
+
+  // 先吊销 + 标记删除
+  await db.update(licenseKeys).set({
+    status: "REVOKED",
+    revokedAt: new Date(),
+    revokeReason: "删除密钥（自动吊销）",
+    isDeleted: true,
+  }).where(inArray(licenseKeys.id, okIds));
+
+  // 状态历史：仅对原本未吊销的记录一次流转
+  for (const r of rows) {
+    if (r.status !== "REVOKED") {
+      await recordKeyStatusChange({
+        keyType: "online",
+        keyId: r.id,
+        fromStatus: r.status as KeyStatus,
+        toStatus: "REVOKED",
+        reason: "删除密钥（自动吊销）",
+        actorId: opts.actorId,
+        actorName: opts.actorName,
+      });
+    }
+  }
+  return { deleted: okIds.length, ids: okIds };
 }
 
 export async function getLicenseKeyByString(keyString: string) {
@@ -777,14 +898,23 @@ export async function activateLicenseKey(keyString: string, deviceCode?: string,
   return { success: true, message: "密钥有效", alreadyActivated: true };
 }
 
-export async function getKeyStats(userIds: number[]) {
+export async function getKeyStats(userIds: number[], visibleSensorValues?: string[]) {
   const db = await getDb();
   if (!db) return { total: 0, activated: 0, production: 0, rental: 0, expired: 0, suspended: 0, revoked: 0 };
 
   // 与列表口径一致：先把到期的活动密钥置为 EXPIRED
   await expireStaleKeys(userIds);
 
-  const where = inArray(licenseKeys.createdById, userIds);
+  // 可见性与 getLicenseKeys 完全一致：自己/下属 + 部门管理员跨部门(管理分组 + all)
+  let visibility: any = inArray(licenseKeys.createdById, userIds);
+  if (visibleSensorValues && visibleSensorValues.length) {
+    const sensorConds: any[] = [sql`${licenseKeys.sensorType} = 'all'`];
+    for (const v of visibleSensorValues) {
+      sensorConds.push(sql`FIND_IN_SET(${v}, ${licenseKeys.sensorType}) > 0`);
+    }
+    visibility = or(visibility, or(...sensorConds));
+  }
+  const where = and(visibility, eq(licenseKeys.isDeleted, false));
   const now = Date.now();
 
   const [totalResult, activatedResult, productionResult, rentalResult, expiredResult, suspendedResult, revokedResult] = await Promise.all([
@@ -1205,7 +1335,7 @@ export async function getOfflineKeys(params: {
   const db = await getDb();
   if (!db) return { items: [], total: 0, page: params.page, pageSize: params.pageSize };
 
-  const conditions = [inArray(offlineKeys.createdById, params.userIds)];
+  const conditions: any[] = [inArray(offlineKeys.createdById, params.userIds), eq(offlineKeys.isDeleted, false)];
 
   if (params.search) {
     conditions.push(
@@ -1245,9 +1375,36 @@ export async function getOfflineKeyStats(userIds: number[]) {
   if (!db) return { total: 0 };
 
   const result = await db.select({ count: count() }).from(offlineKeys)
-    .where(inArray(offlineKeys.createdById, userIds));
+    .where(and(inArray(offlineKeys.createdById, userIds), eq(offlineKeys.isDeleted, false)));
 
   return { total: result[0]?.count ?? 0 };
+}
+
+/**
+ * 删除离线密钥：仅从列表隐藏（并标记 REVOKED 作为记录）。
+ * 注意：离线激活码由客户端离线用 RSA 验签校验，服务端无法使已发出的激活码失效。
+ * 只处理调用者可见范围内（createdById ∈ userIds）的 id。
+ */
+export async function deleteOfflineKeysVisible(
+  ids: number[],
+  opts: { userIds: number[] }
+): Promise<{ deleted: number; ids: number[] }> {
+  const db = await getDb();
+  if (!db || !ids.length) return { deleted: 0, ids: [] };
+
+  const rows = await db.select({ id: offlineKeys.id }).from(offlineKeys)
+    .where(and(inArray(offlineKeys.id, ids), inArray(offlineKeys.createdById, opts.userIds), eq(offlineKeys.isDeleted, false)));
+  const okIds = rows.map((r) => r.id);
+  if (!okIds.length) return { deleted: 0, ids: [] };
+
+  await db.update(offlineKeys).set({
+    status: "REVOKED",
+    revokedAt: new Date(),
+    revokeReason: "删除离线密钥（仅从列表移除，激活码离线验证无法作废）",
+    isDeleted: true,
+  }).where(inArray(offlineKeys.id, okIds));
+
+  return { deleted: okIds.length, ids: okIds };
 }
 
 // ===== Key Lifecycle Management =====
@@ -1527,7 +1684,7 @@ export async function getTamperedKeys(
 ) {
   const db = await getDb();
   if (!db) return { items: [] as any[], total: 0 };
-  const where = and(inArray(licenseKeys.createdById, userIds), eq(licenseKeys.status, "TAMPERED"));
+  const where = and(inArray(licenseKeys.createdById, userIds), eq(licenseKeys.status, "TAMPERED"), eq(licenseKeys.isDeleted, false));
   const page = opts?.page ?? 1;
   const pageSize = opts?.pageSize ?? 20;
   const offset = (page - 1) * pageSize;
@@ -1543,7 +1700,7 @@ export async function getTamperedKeyCount(userIds: number[]) {
   const db = await getDb();
   if (!db) return 0;
   const result = await db.select({ count: count() }).from(licenseKeys)
-    .where(and(inArray(licenseKeys.createdById, userIds), eq(licenseKeys.status, "TAMPERED")));
+    .where(and(inArray(licenseKeys.createdById, userIds), eq(licenseKeys.status, "TAMPERED"), eq(licenseKeys.isDeleted, false)));
   return result[0]?.count ?? 0;
 }
 

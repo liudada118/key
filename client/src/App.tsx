@@ -10,6 +10,7 @@ import GenerateKey from "./pages/GenerateKey";
 import KeyList from "./pages/KeyList";
 import VerifyKey from "./pages/VerifyKey";
 import AccountManagement from "./pages/AccountManagement";
+import DepartmentManagement from "./pages/DepartmentManagement";
 import CustomerManagement from "./pages/CustomerManagement";
 import MacReader from "./pages/MacReader";
 import SensorTypeManagement from "./pages/SensorTypeManagement";
@@ -38,6 +39,7 @@ function AuthenticatedRouter() {
         <Route path={"/keys"} component={KeyList} />
         <Route path={"/verify"} component={VerifyKey} />
         <Route path={"/accounts"} component={AccountManagement} />
+        <Route path={"/departments"} component={DepartmentManagement} />
         <Route path={"/customers"} component={CustomerManagement} />
         <Route path={"/sensor-types"} component={SensorTypeManagement} />
         <Route path={"/offline-keys"} component={OfflineKeyGen} />
