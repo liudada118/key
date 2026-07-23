@@ -185,7 +185,7 @@ export default function OfflineKeyGen() {
   // 表单状态
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
   const [isAll, setIsAll] = useState(false);
-  const [days, setDays] = useState(365);
+  const [days, setDays] = useState(30);
   const [customerId, setCustomerId] = useState<number | undefined>();
   const [customerName, setCustomerName] = useState("");
   const [showNewCustomer, setShowNewCustomer] = useState(false);

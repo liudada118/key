@@ -1,0 +1,4 @@
+interface:
+  display_name: "Obsidian Note"
+  short_description: "Generate Obsidian-style hierarchical Markdown notes."
+  default_prompt: "把下面内容整理成 Obsidian 层级笔记格式。"

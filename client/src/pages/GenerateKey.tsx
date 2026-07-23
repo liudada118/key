@@ -107,7 +107,7 @@ function KeyGenerator({
   // 参数状态
   // 已取消量产/在线租赁区分，所有密钥统一以 production 入库
   const category = "production" as const;
-  const [days, setDays] = useState("365");
+  const [days, setDays] = useState("30");
   const [count, setCount] = useState("10");
   const [remark, setRemark] = useState("");
 
