@@ -97,6 +97,7 @@ import {
   KEY_CATEGORIES,
   type KeyCategory,
 } from "@shared/crypto";
+import { getFeishuContracts } from "./feishuContracts";
 import { TRPCError } from "@trpc/server";
 
 export const appRouter = router({
@@ -1265,8 +1266,23 @@ export const appRouter = router({
         status: z.string().optional(),
         page: z.number().min(1).default(1),
         pageSize: z.number().min(1).max(100).default(50),
+        source: z.enum(["db", "feishu"]).optional(),
       }))
       .query(async ({ ctx, input }) => {
+        if (input.source === "feishu") {
+          try {
+            return await getFeishuContracts({
+              status: input.status,
+              page: input.page,
+              pageSize: input.pageSize,
+            });
+          } catch (error) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: error instanceof Error ? error.message : "读取飞书合同表失败",
+            });
+          }
+        }
         const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
         return getContracts({ ...input, userIds });
       }),

@@ -121,13 +121,10 @@ function KeyGenerator({
   // 合同选择状态
   const [selectedContractId, setSelectedContractId] = useState<number | undefined>(undefined);
   const [selectedContractNo, setSelectedContractNo] = useState("");
-  const [showNewContract, setShowNewContract] = useState(false);
-  const [newContractNo, setNewContractNo] = useState("");
-  const [newContractTitle, setNewContractTitle] = useState("");
 
   const utils = trpc.useUtils();
   const { data: customerList } = trpc.customers.all.useQuery();
-  const { data: contractData } = trpc.contracts.list.useQuery({ page: 1, pageSize: 100, status: "ACTIVE" });
+  const { data: contractData } = trpc.contracts.list.useQuery({ page: 1, pageSize: 100, status: "ACTIVE", source: "feishu" });
   const contractList = contractData?.items ?? [];
   const createCustomerMutation = trpc.customers.create.useMutation({
     onSuccess: (data) => {
@@ -142,21 +139,6 @@ function KeyGenerator({
       utils.customers.all.invalidate();
       utils.customers.list.invalidate();
       toast.success("客户创建成功");
-    },
-    onError: (err) => toast.error(err.message),
-  });
-  const createContractMutation = trpc.contracts.create.useMutation({
-    onSuccess: (data: any) => {
-      const c = data?.contract ?? data;
-      if (c?.id) {
-        setSelectedContractId(c.id);
-        setSelectedContractNo(c.contractNo || newContractNo);
-      }
-      setShowNewContract(false);
-      setNewContractNo("");
-      setNewContractTitle("");
-      utils.contracts.list.invalidate();
-      toast.success("合同创建成功");
     },
     onError: (err) => toast.error(err.message),
   });
@@ -590,92 +572,42 @@ function KeyGenerator({
                 <FileText className="h-3.5 w-3.5" />
                 关联合同（可选）
               </Label>
-              {!showNewContract ? (
-                <div className="space-y-2">
-                  <Select
-                    value={selectedContractId ? String(selectedContractId) : "none"}
-                    onValueChange={(v) => {
-                      if (v === "none") {
-                        setSelectedContractId(undefined);
-                        setSelectedContractNo("");
-                      } else {
-                        const id = parseInt(v);
-                        setSelectedContractId(id);
-                        const c = contractList.find((c: any) => c.id === id);
-                        setSelectedContractNo(c?.contractNo || "");
-                      }
-                    }}
-                  >
-                    <SelectTrigger className="bg-secondary/50">
-                      <SelectValue placeholder="选择合同（可不选）" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">不关联合同</SelectItem>
-                      {contractList.map((c: any) => (
-                        <SelectItem key={c.id} value={String(c.id)}>
-                          {c.contractNo} - {c.title}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="h-7 text-xs w-full"
-                    onClick={() => setShowNewContract(true)}
-                  >
-                    <Plus className="h-3 w-3 mr-1" />
-                    新建合同
-                  </Button>
-                </div>
-              ) : (
-                <div className="space-y-2 p-3 bg-secondary/30 rounded-lg border border-border/50">
-                  <Input
-                    placeholder="合同编号 *"
-                    value={newContractNo}
-                    onChange={(e) => setNewContractNo(e.target.value)}
-                    className="bg-secondary/50 h-8 text-sm"
-                  />
-                  <Input
-                    placeholder="合同标题 *"
-                    value={newContractTitle}
-                    onChange={(e) => setNewContractTitle(e.target.value)}
-                    className="bg-secondary/50 h-8 text-sm"
-                  />
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      className="h-7 text-xs flex-1"
-                      disabled={!newContractNo.trim() || !newContractTitle.trim() || createContractMutation.isPending}
-                      onClick={() => {
-                        createContractMutation.mutate({
-                          contractNo: newContractNo.trim(),
-                          title: newContractTitle.trim(),
-                          customerId: selectedCustomerId,
-                          customerName: selectedCustomerName || undefined,
-                          status: "ACTIVE",
-                        });
-                      }}
-                    >
-                      {createContractMutation.isPending && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
-                      创建
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 text-xs"
-                      onClick={() => {
-                        setShowNewContract(false);
-                        setNewContractNo("");
-                        setNewContractTitle("");
-                      }}
-                    >
-                      取消
-                    </Button>
-                  </div>
-                </div>
-              )}
+              <Select
+                value={selectedContractId ? String(selectedContractId) : "none"}
+                onValueChange={(v) => {
+                  if (v === "none") {
+                    setSelectedContractId(undefined);
+                    setSelectedContractNo("");
+                  } else {
+                    const id = parseInt(v);
+                    setSelectedContractId(id);
+                    const c = contractList.find((c: any) => c.id === id);
+                    setSelectedContractNo(c?.contractNo || "");
+                  }
+                }}
+              >
+                <SelectTrigger className="bg-secondary/50">
+                  <SelectValue placeholder="选择飞书合同（可不选）" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">不关联合同</SelectItem>
+                  {contractData && "error" in contractData && contractData.error ? (
+                    <SelectItem value="feishu-config-error" disabled>
+                      {contractData.error}
+                    </SelectItem>
+                  ) : contractList.length === 0 ? (
+                    <SelectItem value="feishu-empty" disabled>
+                      飞书表格暂无生效合同
+                    </SelectItem>
+                  ) : (
+                    contractList.map((c: any) => (
+                      <SelectItem key={c.id} value={String(c.id)}>
+                        {c.contractNo} - {c.title}
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
             </div>
 
             {/* 备注 */}

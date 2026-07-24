@@ -179,7 +179,7 @@ export default function OfflineKeyGen() {
   // 客户列表
   const { data: customerList } = trpc.customers.all.useQuery();
   // 合同列表
-  const { data: contractData } = trpc.contracts.list.useQuery({ page: 1, pageSize: 100, status: "ACTIVE" });
+  const { data: contractData } = trpc.contracts.list.useQuery({ page: 1, pageSize: 100, status: "ACTIVE", source: "feishu" });
   const contractList = contractData?.items ?? [];
 
   // 表单状态
@@ -194,9 +194,6 @@ export default function OfflineKeyGen() {
   // 合同选择状态
   const [contractId, setContractId] = useState<number | undefined>();
   const [contractNo, setContractNo] = useState("");
-  const [showNewContract, setShowNewContract] = useState(false);
-  const [newContractNo, setNewContractNo] = useState("");
-  const [newContractTitle, setNewContractTitle] = useState("");
   const [remark, setRemark] = useState("");
 
   // 新建客户/合同 mutation
@@ -207,16 +204,6 @@ export default function OfflineKeyGen() {
       utils.customers.all.invalidate();
       utils.customers.list.invalidate();
       toast.success("客户创建成功");
-    },
-    onError: (err) => toast.error(err.message),
-  });
-  const createContractMutation = trpc.contracts.create.useMutation({
-    onSuccess: (data: any) => {
-      const c = data?.contract ?? data;
-      if (c?.id) { setContractId(c.id); setContractNo(c.contractNo || newContractNo); }
-      setShowNewContract(false); setNewContractNo(""); setNewContractTitle("");
-      utils.contracts.list.invalidate();
-      toast.success("合同创建成功");
     },
     onError: (err) => toast.error(err.message),
   });
@@ -487,40 +474,42 @@ export default function OfflineKeyGen() {
                 <Label className="text-sm font-medium flex items-center gap-1">
                   <FileText className="h-3.5 w-3.5" /> 关联合同（可选）
                 </Label>
-                {!showNewContract ? (
-                  <div className="space-y-2 mt-1.5">
-                    <Select
-                      value={contractId?.toString() || "none"}
-                      onValueChange={(v) => {
-                        if (v === "none") { setContractId(undefined); setContractNo(""); }
-                        else { const id = parseInt(v); setContractId(id); const c = contractList.find((c: any) => c.id === id); setContractNo(c?.contractNo || ""); }
-                      }}
-                    >
-                      <SelectTrigger><SelectValue placeholder="选择合同" /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">不关联合同</SelectItem>
-                        {contractList.map((c: any) => (
-                          <SelectItem key={c.id} value={c.id.toString()}>{c.contractNo} - {c.title}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Button type="button" size="sm" variant="outline" className="h-7 text-xs w-full" onClick={() => setShowNewContract(true)}>
-                      <Plus className="h-3 w-3 mr-1" /> 新建合同
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="space-y-2 mt-1.5 p-3 bg-secondary/30 rounded-lg border border-border/50">
-                    <Input placeholder="合同编号 *" value={newContractNo} onChange={(e) => setNewContractNo(e.target.value)} className="h-8 text-sm" />
-                    <Input placeholder="合同标题 *" value={newContractTitle} onChange={(e) => setNewContractTitle(e.target.value)} className="h-8 text-sm" />
-                    <div className="flex gap-2">
-                      <Button size="sm" className="h-7 text-xs flex-1" disabled={!newContractNo.trim() || !newContractTitle.trim() || createContractMutation.isPending}
-                        onClick={() => createContractMutation.mutate({ contractNo: newContractNo.trim(), title: newContractTitle.trim(), customerId, customerName: customerName || undefined, status: "ACTIVE" })}>
-                        {createContractMutation.isPending && <Loader2 className="h-3 w-3 animate-spin mr-1" />}创建
-                      </Button>
-                      <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => { setShowNewContract(false); setNewContractNo(""); setNewContractTitle(""); }}>取消</Button>
-                    </div>
-                  </div>
-                )}
+                <Select
+                  value={contractId?.toString() || "none"}
+                  onValueChange={(v) => {
+                    if (v === "none") {
+                      setContractId(undefined);
+                      setContractNo("");
+                    } else {
+                      const id = parseInt(v);
+                      setContractId(id);
+                      const c = contractList.find((c: any) => c.id === id);
+                      setContractNo(c?.contractNo || "");
+                    }
+                  }}
+                >
+                  <SelectTrigger className="mt-1.5">
+                    <SelectValue placeholder="选择飞书合同" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">不关联合同</SelectItem>
+                    {contractData && "error" in contractData && contractData.error ? (
+                      <SelectItem value="feishu-config-error" disabled>
+                        {contractData.error}
+                      </SelectItem>
+                    ) : contractList.length === 0 ? (
+                      <SelectItem value="feishu-empty" disabled>
+                        飞书表格暂无生效合同
+                      </SelectItem>
+                    ) : (
+                      contractList.map((c: any) => (
+                        <SelectItem key={c.id} value={c.id.toString()}>
+                          {c.contractNo} - {c.title}
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
               </div>
 
               {/* 备注 */}
