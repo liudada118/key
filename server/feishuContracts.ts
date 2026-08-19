@@ -46,6 +46,8 @@ export type FeishuContract = {
   title: string;
   customerId: null;
   customerName: string | null;
+  businessUnit: string | null;
+  submitter: string | null;
   signDate: string | null;
   startDate: string | null;
   endDate: string | null;
@@ -58,8 +60,77 @@ export type FeishuContract = {
   createdAt: Date;
   updatedAt: Date;
   keyCount: number;
+  generatedKeyCount: number;
   source: "feishu";
 };
+
+export function getFeishuContractSubmitterScope(user: {
+  role: string;
+  name?: string | null;
+}): string | null | undefined {
+  if (user.role !== "user") return undefined;
+  const name = user.name?.trim();
+  return name || null;
+}
+
+function normalizePersonName(value: string) {
+  return value
+    .normalize("NFKC")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLocaleLowerCase();
+}
+
+export function filterFeishuContractsBySubmitter(
+  items: FeishuContract[],
+  submitter: string
+) {
+  const expected = normalizePersonName(submitter);
+  if (!expected) return [];
+  return items.filter(
+    (item) => normalizePersonName(item.submitter || "") === expected
+  );
+}
+
+function normalizeContractNo(value: string) {
+  return value.normalize("NFKC").trim().toLocaleLowerCase();
+}
+
+export function dedupeFeishuContractsByNo(items: FeishuContract[]) {
+  const unique = new Map<string, FeishuContract>();
+
+  for (const item of items) {
+    const key = normalizeContractNo(item.contractNo);
+    if (!key) continue;
+    const existing = unique.get(key);
+    if (!existing) {
+      unique.set(key, {
+        ...item,
+        contractNo: item.contractNo.normalize("NFKC").trim(),
+      });
+      continue;
+    }
+
+    unique.set(key, {
+      ...existing,
+      title: existing.title || item.title,
+      customerName: existing.customerName || item.customerName,
+      businessUnit: existing.businessUnit || item.businessUnit,
+      submitter: existing.submitter || item.submitter,
+      signDate: existing.signDate || item.signDate,
+      startDate: existing.startDate || item.startDate,
+      endDate: existing.endDate || item.endDate,
+      totalKeys: Math.max(existing.totalKeys, item.totalKeys),
+      remark: existing.remark || item.remark,
+      status:
+        existing.status === "ACTIVE" || item.status === "ACTIVE"
+          ? "ACTIVE"
+          : existing.status,
+    });
+  }
+
+  return Array.from(unique.values());
+}
 
 const FEISHU_API_BASE = "https://open.feishu.cn/open-apis";
 const DEFAULT_CONTRACT_RANGE = "A1:H500";
@@ -222,11 +293,13 @@ function mapBitableRecordsToContracts(records: FeishuBitableRecord[]): FeishuCon
     const status = parseStatus(cellToString(pickField(fields, ["状态", "合同状态", "status"])));
 
     acc.push({
-      id: stableNegativeId(contractNo),
+      id: stableNegativeId(record.record_id),
       contractNo,
       title,
       customerId: null,
       customerName: cellToString(pickField(fields, ["客户", "客户名称", "公司", "公司名称", "customerName"])) || null,
+      businessUnit: cellToString(pickField(fields, ["订单所属事业部", "事业部", "所属事业部", "业务部门", "businessUnit", "business_unit"])) || null,
+      submitter: cellToString(pickField(fields, ["提交人", "填报人", "申请人", "submitter", "submittedBy"])) || null,
       signDate: cellToString(pickField(fields, ["签订日期", "签约日期", "signDate"])) || null,
       startDate: cellToString(pickField(fields, ["开始日期", "生效日期", "startDate"])) || null,
       endDate: cellToString(pickField(fields, ["结束日期", "到期日期", "endDate"])) || null,
@@ -239,6 +312,7 @@ function mapBitableRecordsToContracts(records: FeishuBitableRecord[]): FeishuCon
       createdAt: now,
       updatedAt: now,
       keyCount: 0,
+      generatedKeyCount: 0,
       source: "feishu",
     });
     return acc;
@@ -252,6 +326,8 @@ function mapRowsToContracts(values: unknown[][]): FeishuContract[] {
   const noIndex = findColumn(headers, ["合同编号", "合同号", "合同编码", "编号", "contractNo", "contract_no"]);
   const titleIndex = findColumn(headers, ["合同标题", "合同名称", "标题", "名称", "title", "contractTitle"]);
   const customerIndex = findColumn(headers, ["客户", "客户名称", "公司", "公司名称", "customerName"]);
+  const businessUnitIndex = findColumn(headers, ["订单所属事业部", "事业部", "所属事业部", "业务部门", "businessUnit", "business_unit"]);
+  const submitterIndex = findColumn(headers, ["提交人", "填报人", "申请人", "submitter", "submittedBy"]);
   const statusIndex = findColumn(headers, ["状态", "合同状态", "status"]);
   const totalIndex = findColumn(headers, ["授权数量", "密钥数量", "合同数量", "totalKeys", "total"]);
   const signDateIndex = findColumn(headers, ["签订日期", "签约日期", "signDate"]);
@@ -277,6 +353,8 @@ function mapRowsToContracts(values: unknown[][]): FeishuContract[] {
         title: title || contractNo,
         customerId: null,
         customerName: customerIndex >= 0 ? cellToString(row[customerIndex]) || null : null,
+        businessUnit: businessUnitIndex >= 0 ? cellToString(row[businessUnitIndex]) || null : null,
+        submitter: submitterIndex >= 0 ? cellToString(row[submitterIndex]) || null : null,
         signDate: signDateIndex >= 0 ? cellToString(row[signDateIndex]) || null : null,
         startDate: startDateIndex >= 0 ? cellToString(row[startDateIndex]) || null : null,
         endDate: endDateIndex >= 0 ? cellToString(row[endDateIndex]) || null : null,
@@ -289,6 +367,7 @@ function mapRowsToContracts(values: unknown[][]): FeishuContract[] {
         createdAt: now,
         updatedAt: now,
         keyCount: 0,
+        generatedKeyCount: 0,
         source: "feishu" as const,
       });
       return acc;
@@ -365,6 +444,7 @@ async function readSheetContracts(token: string, spreadsheetToken: string, range
 
 export async function getFeishuContracts(opts?: {
   status?: string;
+  submitter?: string;
   page?: number;
   pageSize?: number;
 }) {
@@ -388,16 +468,23 @@ export async function getFeishuContracts(opts?: {
   if (!contractCache || contractCache.key !== cacheKey || contractCache.expiresAt <= now) {
     contractCache = {
       key: cacheKey,
-      items: baseAppToken
-        ? await readBitableContracts(token, baseAppToken)
-        : await readSheetContracts(token, spreadsheetToken, range),
+      items: dedupeFeishuContractsByNo(
+        baseAppToken
+          ? await readBitableContracts(token, baseAppToken)
+          : await readSheetContracts(token, spreadsheetToken, range)
+      ),
       expiresAt: now + getCacheTtlMs(),
     };
   }
 
   const cached = contractCache;
+  const scopedItems = opts?.submitter
+    ? filterFeishuContractsBySubmitter(cached.items, opts.submitter)
+    : cached.items;
   const status = opts?.status;
-  const filtered = status ? cached.items.filter((item) => item.status === status) : cached.items;
+  const filtered = status
+    ? scopedItems.filter((item) => item.status === status)
+    : scopedItems;
   const page = opts?.page || 1;
   const pageSize = opts?.pageSize || 50;
   const start = (page - 1) * pageSize;

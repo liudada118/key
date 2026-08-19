@@ -40,6 +40,15 @@ jobs:
             DATABASE_URL=${{ secrets.DATABASE_URL }}
             JWT_SECRET=${{ secrets.JWT_SECRET }}
             PORT=3000
+            FEISHU_CONTRACTS_ENABLED=true
+            FEISHU_APP_ID=${{ secrets.FEISHU_APP_ID }}
+            FEISHU_APP_SECRET=${{ secrets.FEISHU_APP_SECRET }}
+            FEISHU_CONTRACT_BASE_URL=${{ secrets.FEISHU_CONTRACT_BASE_URL }}
+            FEISHU_KEY_REQUEST_WEBHOOK_URL=${{ secrets.FEISHU_KEY_REQUEST_WEBHOOK_URL }}
+            FEISHU_APPROVAL_CHAT_ID=${{ secrets.FEISHU_APPROVAL_CHAT_ID }}
+            FEISHU_VERIFICATION_TOKEN=${{ secrets.FEISHU_VERIFICATION_TOKEN }}
+            FEISHU_CALLBACK_ENCRYPT_KEY=${{ secrets.FEISHU_CALLBACK_ENCRYPT_KEY }}
+            FEISHU_APPROVAL_REVIEWER_USERNAME=${{ secrets.FEISHU_APPROVAL_REVIEWER_USERNAME }}
             EOF
             echo "==> 安装依赖"
             pnpm install --frozen-lockfile

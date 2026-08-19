@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gte, inArray, isNull, isNotNull, like, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, inArray, isNull, isNotNull, like, lte, ne, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
@@ -7,6 +7,7 @@ import {
   customers,
   deviceHeartbeats,
   keyStatusHistory,
+  keyGenerationRequests,
   licenseKeys,
   offlineKeys,
   rsaKeyPairs,
@@ -24,6 +25,7 @@ import {
   type InsertSensorType,
   type InsertAuditLog,
   type InsertKeyStatusHistory,
+  type InsertKeyGenerationRequest,
   type KeyStatus,
   type InsertContract,
   type InsertDeviceCodeRecord,
@@ -61,6 +63,25 @@ export async function getUserById(id: number) {
   if (!db) return undefined;
   const result = await db.select().from(users).where(eq(users.id, id)).limit(1);
   return result.length > 0 ? result[0] : undefined;
+}
+
+export async function getActiveSuperAdmin(preferredUsername?: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const conditions = [
+    eq(users.role, "super_admin"),
+    eq(users.isActive, true),
+  ];
+  const username = preferredUsername?.trim();
+  if (username) conditions.push(eq(users.username, username));
+
+  const result = await db
+    .select()
+    .from(users)
+    .where(and(...conditions))
+    .orderBy(asc(users.id))
+    .limit(1);
+  return result[0];
 }
 
 /** 验证用户名密码 */
@@ -671,6 +692,217 @@ export async function insertLicenseKeys(dataList: InsertLicenseKey[]) {
     status: "ISSUED" as const,
   }));
   await db.insert(licenseKeys).values(dataWithHash);
+}
+
+export async function getGeneratedKeyCountsByContractNos(contractNos: string[]) {
+  const db = await getDb();
+  const uniqueContractNos = Array.from(
+    new Set(contractNos.map((value) => value.trim()).filter(Boolean))
+  );
+  if (!db || uniqueContractNos.length === 0) return {} as Record<string, number>;
+
+  const rows = await db
+    .select({ contractNo: licenseKeys.contractNo, keyCount: count() })
+    .from(licenseKeys)
+    .where(inArray(licenseKeys.contractNo, uniqueContractNos))
+    .groupBy(licenseKeys.contractNo);
+
+  return Object.fromEntries(
+    rows
+      .filter((row): row is typeof row & { contractNo: string } => Boolean(row.contractNo))
+      .map((row) => [row.contractNo, row.keyCount])
+  );
+}
+
+export async function createKeyGenerationRequest(
+  data: InsertKeyGenerationRequest
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.insert(keyGenerationRequests).values(data);
+  const rows = await db
+    .select()
+    .from(keyGenerationRequests)
+    .where(eq(keyGenerationRequests.requestNo, data.requestNo))
+    .limit(1);
+  if (!rows[0]) throw new Error("创建无合同密钥申请失败");
+  return rows[0];
+}
+
+export async function getKeyGenerationRequestById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const rows = await db
+    .select()
+    .from(keyGenerationRequests)
+    .where(eq(keyGenerationRequests.id, id))
+    .limit(1);
+  return rows[0];
+}
+
+export async function getKeyGenerationRequests(opts: {
+  page: number;
+  pageSize: number;
+  requestedById?: number;
+  status?: "PENDING" | "APPROVED" | "REJECTED";
+}) {
+  const db = await getDb();
+  if (!db) return { items: [], total: 0 };
+
+  const conditions = [];
+  if (opts.requestedById) {
+    conditions.push(eq(keyGenerationRequests.requestedById, opts.requestedById));
+  }
+  if (opts.status) {
+    conditions.push(eq(keyGenerationRequests.status, opts.status));
+  }
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
+  const offset = (opts.page - 1) * opts.pageSize;
+
+  const [items, totalRows] = await Promise.all([
+    db
+      .select()
+      .from(keyGenerationRequests)
+      .where(where)
+      .orderBy(desc(keyGenerationRequests.createdAt))
+      .limit(opts.pageSize)
+      .offset(offset),
+    db.select({ count: count() }).from(keyGenerationRequests).where(where),
+  ]);
+
+  const requestIds = items.map((item) => item.id);
+  const generatedCounts = requestIds.length > 0
+    ? await db
+        .select({
+          requestId: licenseKeys.generationRequestId,
+          keyCount: count(),
+        })
+        .from(licenseKeys)
+        .where(inArray(licenseKeys.generationRequestId, requestIds))
+        .groupBy(licenseKeys.generationRequestId)
+    : [];
+  const countMap = new Map(
+    generatedCounts.map((row) => [row.requestId, row.keyCount])
+  );
+
+  return {
+    items: items.map((item) => ({
+      ...item,
+      generatedKeyCount: countMap.get(item.id) ?? 0,
+    })),
+    total: totalRows[0]?.count ?? 0,
+  };
+}
+
+export async function approveKeyGenerationRequestWithKeys(params: {
+  requestId: number;
+  reviewerId: number;
+  reviewerName: string;
+  reviewRemark?: string | null;
+  generatedBatchId?: string | null;
+  records: InsertLicenseKey[];
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  if (params.records.length === 0) throw new Error("没有可生成的密钥记录");
+
+  const dataWithHash = params.records.map((record) => ({
+    ...record,
+    keyHash: crypto
+      .createHash("sha256")
+      .update(record.keyString as string)
+      .digest("hex"),
+    status: "ISSUED" as const,
+  }));
+
+  return db.transaction(async (tx) => {
+    const pendingRows = await tx
+      .select()
+      .from(keyGenerationRequests)
+      .where(
+        and(
+          eq(keyGenerationRequests.id, params.requestId),
+          eq(keyGenerationRequests.status, "PENDING")
+        )
+      )
+      .limit(1)
+      .for("update");
+    const request = pendingRows[0];
+    if (!request) return null;
+
+    await tx.insert(licenseKeys).values(dataWithHash);
+    const reviewedAt = new Date();
+    await tx
+      .update(keyGenerationRequests)
+      .set({
+        status: "APPROVED",
+        reviewedById: params.reviewerId,
+        reviewedByName: params.reviewerName,
+        reviewRemark: params.reviewRemark || null,
+        reviewedAt,
+        generatedAt: reviewedAt,
+        generatedBatchId: params.generatedBatchId || null,
+      })
+      .where(eq(keyGenerationRequests.id, params.requestId));
+
+    return {
+      ...request,
+      status: "APPROVED" as const,
+      reviewedById: params.reviewerId,
+      reviewedByName: params.reviewerName,
+      reviewRemark: params.reviewRemark || null,
+      reviewedAt,
+      generatedAt: reviewedAt,
+      generatedBatchId: params.generatedBatchId || null,
+    };
+  });
+}
+
+export async function rejectKeyGenerationRequest(params: {
+  requestId: number;
+  reviewerId: number;
+  reviewerName: string;
+  reviewRemark: string;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db.transaction(async (tx) => {
+    const pendingRows = await tx
+      .select()
+      .from(keyGenerationRequests)
+      .where(
+        and(
+          eq(keyGenerationRequests.id, params.requestId),
+          eq(keyGenerationRequests.status, "PENDING")
+        )
+      )
+      .limit(1)
+      .for("update");
+    const request = pendingRows[0];
+    if (!request) return null;
+
+    const reviewedAt = new Date();
+    await tx
+      .update(keyGenerationRequests)
+      .set({
+        status: "REJECTED",
+        reviewedById: params.reviewerId,
+        reviewedByName: params.reviewerName,
+        reviewRemark: params.reviewRemark,
+        reviewedAt,
+      })
+      .where(eq(keyGenerationRequests.id, params.requestId));
+
+    return {
+      ...request,
+      status: "REJECTED" as const,
+      reviewedById: params.reviewerId,
+      reviewedByName: params.reviewerName,
+      reviewRemark: params.reviewRemark,
+      reviewedAt,
+    };
+  });
 }
 
 /**

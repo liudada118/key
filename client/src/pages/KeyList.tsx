@@ -639,11 +639,7 @@ export default function KeyList() {
                           {renderStatus(key)}
                         </TableCell>
                         <TableCell className="text-sm text-foreground">
-                          {key.customerName
-                            ? key.customerId
-                              ? key.customerName
-                              : `${key.customerName}（该客户已删除）`
-                            : "-"}
+                          {key.customerName || "-"}
                         </TableCell>
                         <TableCell className="text-sm text-foreground">
                           {key.contractNo

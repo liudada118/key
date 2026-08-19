@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Slot } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";
+import { Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -16,8 +17,7 @@ const buttonVariants = cva(
           "border bg-transparent shadow-xs hover:bg-accent dark:bg-transparent dark:border-input dark:hover:bg-input/50",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-        ghost:
-          "hover:bg-accent dark:hover:bg-accent/50",
+        ghost: "hover:bg-accent dark:hover:bg-accent/50",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {
@@ -33,14 +33,61 @@ const buttonVariants = cva(
       variant: "default",
       size: "default",
     },
-  }
+  },
 );
+
+function stabilizeButtonChildren(children: React.ReactNode) {
+  const normalized: React.ReactNode[] = [];
+  let textParts: Array<string | number> = [];
+  let labelIndex = 0;
+
+  const flushText = () => {
+    if (textParts.length === 0) return;
+    normalized.push(
+      <span key={`button-label-${labelIndex}`} data-slot="button-label">
+        {textParts.join("")}
+      </span>,
+    );
+    labelIndex += 1;
+    textParts = [];
+  };
+
+  React.Children.forEach(children, (child) => {
+    if (typeof child === "string" || typeof child === "number") {
+      textParts.push(child);
+      return;
+    }
+    if (child === null || child === undefined || typeof child === "boolean") {
+      return;
+    }
+
+    flushText();
+    if (React.isValidElement(child) && child.type === React.Fragment) {
+      const fragment = child as React.ReactElement<{
+        children?: React.ReactNode;
+      }>;
+      normalized.push(
+        React.cloneElement(
+          fragment,
+          undefined,
+          stabilizeButtonChildren(fragment.props.children),
+        ),
+      );
+      return;
+    }
+    normalized.push(child);
+  });
+  flushText();
+
+  return normalized;
+}
 
 function Button({
   className,
   variant,
   size,
   asChild = false,
+  children,
   ...props
 }: React.ComponentProps<"button"> &
   VariantProps<typeof buttonVariants> & {
@@ -53,8 +100,28 @@ function Button({
       data-slot="button"
       className={cn(buttonVariants({ variant, size, className }))}
       {...props}
-    />
+    >
+      {asChild ? children : stabilizeButtonChildren(children)}
+    </Comp>
   );
 }
 
-export { Button, buttonVariants };
+function ButtonSpinner({
+  pending,
+  className,
+}: {
+  pending: boolean;
+  className?: string;
+}) {
+  return (
+    <span
+      data-slot="button-spinner"
+      aria-hidden="true"
+      className={cn("size-4 shrink-0", !pending && "hidden", className)}
+    >
+      <Loader2 className={cn("size-4", pending && "animate-spin")} />
+    </span>
+  );
+}
+
+export { Button, ButtonSpinner, buttonVariants };

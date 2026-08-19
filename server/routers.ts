@@ -90,15 +90,71 @@ import {
   getFeedbackById,
   updateFeedback,
   deleteFeedback,
+  getGeneratedKeyCountsByContractNos,
+  createKeyGenerationRequest,
+  getKeyGenerationRequests,
 } from "./db";
 import {
   decodeLicenseKey,
-  generateLicenseKey,
   KEY_CATEGORIES,
   type KeyCategory,
 } from "@shared/crypto";
-import { getFeishuContracts } from "./feishuContracts";
+import {
+  getFeishuContracts,
+  getFeishuContractSubmitterScope,
+} from "./feishuContracts";
+import { notifyFeishuKeyRequest } from "./feishuKeyRequestWebhook";
+import { sendFeishuKeyRequestApprovalCard } from "./feishuKeyRequestCard";
+import { reviewKeyGenerationRequest } from "./keyGenerationRequestApproval";
+import { prepareOnlineKeyGeneration } from "./onlineKeyGeneration";
 import { TRPCError } from "@trpc/server";
+
+async function getAccessibleFeishuContract(
+  user: { role: string; name?: string | null },
+  contractId?: number,
+  contractNo?: string
+) {
+  const hasContractId = typeof contractId === "number";
+  const trimmedContractNo = contractNo?.trim();
+  const hasContractNo = Boolean(trimmedContractNo);
+  if (!hasContractId && !hasContractNo && user.role === "super_admin") {
+    return null;
+  }
+  if (!hasContractId || !hasContractNo) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "生成密钥必须绑定合同；无合同请提交超级管理员审批",
+    });
+  }
+
+  const submitterScope = getFeishuContractSubmitterScope(user);
+  if (submitterScope === null) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "当前子账号未设置姓名，无法匹配可用合同",
+    });
+  }
+
+  const result = await getFeishuContracts({
+    status: "ACTIVE",
+    ...(submitterScope ? { submitter: submitterScope } : {}),
+    page: 1,
+    pageSize: 10_000,
+  });
+  const contract = result.items.find(
+    (item) =>
+      item.id === contractId &&
+      item.contractNo.trim().toLocaleLowerCase() ===
+        trimmedContractNo!.toLocaleLowerCase()
+  );
+  if (!contract) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "合同不存在、未生效或不在当前账号可用范围内",
+    });
+  }
+  return contract;
+}
 
 export const appRouter = router({
   system: systemRouter,
@@ -611,40 +667,44 @@ export const appRouter = router({
           customerId: z.number().optional(),
           customerName: z.string().optional(),
           contractId: z.number().optional(),
-          contractNo: z.string().optional(),
+          contractNo: z.string().trim().min(1, "合同编号不能为空").optional(),
           remark: z.string().optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const keyString = generateLicenseKey(input.sensorTypes, input.days, input.category);
-        const expireTimestamp = Date.now() + input.days * 24 * 60 * 60 * 1000;
-
-        const sensorTypeStr = Array.isArray(input.sensorTypes)
-          ? input.sensorTypes.join(",")
-          : input.sensorTypes;
-
-        let customerName = input.customerName || null;
-        if (input.customerId && !customerName) {
-          const customer = await getCustomerById(input.customerId);
-          customerName = customer?.name || null;
-        }
-
-        await insertLicenseKey({
-          keyString,
-          sensorType: sensorTypeStr,
-          category: input.category,
+        const contract = await getAccessibleFeishuContract(
+          ctx.user,
+          input.contractId,
+          input.contractNo
+        );
+        const prepared = prepareOnlineKeyGeneration({
+          mode: "single",
+          sensorTypes: input.sensorTypes,
           days: input.days,
-          expireTimestamp,
+          category: input.category,
+          count: 1,
           createdById: ctx.user.id,
           createdByName: ctx.user.name || "未知",
-          customerId: input.customerId || null,
-          customerName,
-          contractId: input.contractId || null,
-          contractNo: input.contractNo || null,
-          remark: input.remark || null,
+          customerName: contract?.customerName,
+          contractId: contract?.id,
+          contractNo: contract?.contractNo,
+          remark: input.remark,
         });
+        await insertLicenseKey(prepared.records[0]);
+        const result = prepared.keys[0];
+        if (!contract) {
+          await createAuditLog({
+            userId: ctx.user.id,
+            userName: ctx.user.name || ctx.user.username,
+            action: "CREATE",
+            resourceType: "licenseKey",
+            description: "超级管理员无合同直接生成 1 个在线密钥",
+            ip: ctx.req?.headers?.["x-forwarded-for"] as string || ctx.req?.socket?.remoteAddress || null,
+            userAgent: ctx.req?.headers?.["user-agent"] || null,
+          });
+        }
 
-        return { keyString, expireTimestamp };
+        return result;
       }),
 
     batchGenerate: protectedProcedure
@@ -657,48 +717,46 @@ export const appRouter = router({
           customerId: z.number().optional(),
           customerName: z.string().optional(),
           contractId: z.number().optional(),
-          contractNo: z.string().optional(),
+          contractNo: z.string().trim().min(1, "合同编号不能为空").optional(),
           remark: z.string().optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const batchId = nanoid(12);
-        const keys: { keyString: string; expireTimestamp: number }[] = [];
-        const records: Parameters<typeof insertLicenseKeys>[0] = [];
-
-        const sensorTypeStr = Array.isArray(input.sensorTypes)
-          ? input.sensorTypes.join(",")
-          : input.sensorTypes;
-
-        let customerName = input.customerName || null;
-        if (input.customerId && !customerName) {
-          const customer = await getCustomerById(input.customerId);
-          customerName = customer?.name || null;
-        }
-
-        for (let i = 0; i < input.count; i++) {
-          const keyString = generateLicenseKey(input.sensorTypes, input.days, input.category);
-          const expireTimestamp = Date.now() + input.days * 24 * 60 * 60 * 1000;
-          keys.push({ keyString, expireTimestamp });
-          records.push({
-            keyString,
-            sensorType: sensorTypeStr,
-            category: input.category,
-            days: input.days,
-            expireTimestamp,
-            createdById: ctx.user.id,
-            createdByName: ctx.user.name || "未知",
-            customerId: input.customerId || null,
-            customerName,
-            contractId: input.contractId || null,
-            contractNo: input.contractNo || null,
-            batchId,
-            remark: input.remark || null,
+        const contract = await getAccessibleFeishuContract(
+          ctx.user,
+          input.contractId,
+          input.contractNo
+        );
+        const prepared = prepareOnlineKeyGeneration({
+          mode: "batch",
+          sensorTypes: input.sensorTypes,
+          days: input.days,
+          category: input.category,
+          count: input.count,
+          createdById: ctx.user.id,
+          createdByName: ctx.user.name || "未知",
+          customerName: contract?.customerName,
+          contractId: contract?.id,
+          contractNo: contract?.contractNo,
+          remark: input.remark,
+        });
+        await insertLicenseKeys(prepared.records);
+        if (!contract) {
+          await createAuditLog({
+            userId: ctx.user.id,
+            userName: ctx.user.name || ctx.user.username,
+            action: "CREATE",
+            resourceType: "licenseKey",
+            description: `超级管理员无合同直接生成 ${prepared.keys.length} 个在线密钥`,
+            ip: ctx.req?.headers?.["x-forwarded-for"] as string || ctx.req?.socket?.remoteAddress || null,
+            userAgent: ctx.req?.headers?.["user-agent"] || null,
           });
         }
-
-        await insertLicenseKeys(records);
-        return { batchId, keys, count: keys.length };
+        return {
+          batchId: prepared.batchId as string,
+          keys: prepared.keys,
+          count: prepared.keys.length,
+        };
       }),
 
     list: protectedProcedure
@@ -1257,6 +1315,142 @@ export const appRouter = router({
       }),
   }),
 
+  // ===== 无合同密钥生成申请 =====
+  keyGenerationRequests: router({
+    create: protectedProcedure
+      .input(
+        z.object({
+          mode: z.enum(["single", "batch"]),
+          sensorTypes: z.union([
+            z.string().min(1),
+            z.array(z.string().min(1)).min(1),
+          ]),
+          days: z.number().min(1).max(36500),
+          category: z.enum(["production", "rental"]),
+          count: z.number().min(1).max(500).optional(),
+          reason: z.string().trim().min(2, "请填写无合同生成原因").max(1000),
+          generationRemark: z.string().trim().max(1000).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const count = input.mode === "batch" ? input.count || 1 : 1;
+        const datePart = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+        const requestNo = `KGR-${datePart}-${nanoid(8).toUpperCase()}`;
+        const requestedByName = ctx.user.name || ctx.user.username;
+        const request = await createKeyGenerationRequest({
+          requestNo,
+          mode: input.mode,
+          sensorTypes: JSON.stringify(input.sensorTypes),
+          days: input.days,
+          category: input.category,
+          count,
+          reason: input.reason,
+          generationRemark: input.generationRemark || null,
+          requestedById: ctx.user.id,
+          requestedByName,
+          status: "PENDING",
+        });
+
+        await createAuditLog({
+          userId: ctx.user.id,
+          userName: requestedByName,
+          action: "CREATE",
+          resourceType: "keyGenerationRequest",
+          resourceId: request?.id,
+          description: `提交无合同密钥申请 ${requestNo}`,
+          ip: ctx.req?.headers?.["x-forwarded-for"] as string || ctx.req?.socket?.remoteAddress || null,
+          userAgent: ctx.req?.headers?.["user-agent"] || null,
+        });
+
+        const notificationInput = {
+          requestNo,
+          requestedByName,
+          mode: input.mode,
+          sensorTypes: input.sensorTypes,
+          days: input.days,
+          count,
+          category: input.category,
+          reason: input.reason,
+          generationRemark: input.generationRemark,
+          submittedAt: request.createdAt,
+        };
+        const cardNotification = await sendFeishuKeyRequestApprovalCard({
+          requestId: request.id,
+          ...notificationInput,
+        });
+        if (cardNotification.status !== "sent") {
+          if (cardNotification.status === "failed") {
+            console.error(
+              `[Feishu] 密钥申请 ${requestNo} 审批卡片发送失败：${cardNotification.reason}${
+                cardNotification.detail
+                  ? `（${cardNotification.detail}）`
+                  : ""
+              }`,
+            );
+          }
+          const notification = await notifyFeishuKeyRequest(notificationInput);
+          if (notification.status === "failed") {
+            console.error(
+              `[Feishu] 密钥申请 ${requestNo} Webhook 兜底通知失败：${notification.reason}`,
+            );
+          }
+        }
+        if (
+          cardNotification.status === "skipped" &&
+          cardNotification.reason !== "not_configured"
+        ) {
+          console.warn(
+            `[Feishu] 审批卡片配置未完成（${cardNotification.reason}），当前使用自定义机器人文本通知`,
+          );
+        }
+        return request;
+      }),
+
+    list: protectedProcedure
+      .input(
+        z.object({
+          page: z.number().min(1).default(1),
+          pageSize: z.number().min(1).max(100).default(20),
+          status: z.enum(["PENDING", "APPROVED", "REJECTED"]).optional(),
+        })
+      )
+      .query(async ({ ctx, input }) => {
+        return getKeyGenerationRequests({
+          ...input,
+          requestedById:
+            ctx.user.role === "super_admin" ? undefined : ctx.user.id,
+        });
+      }),
+
+    review: superAdminProcedure
+      .input(
+        z.object({
+          id: z.number(),
+          decision: z.enum(["APPROVE", "REJECT"]),
+          remark: z.string().trim().max(1000).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        return reviewKeyGenerationRequest({
+          requestId: input.id,
+          decision: input.decision,
+          remark: input.remark,
+          reviewer: {
+            id: ctx.user.id,
+            name: ctx.user.name || ctx.user.username,
+          },
+          audit: {
+            source: "website",
+            ip:
+              (ctx.req?.headers?.["x-forwarded-for"] as string) ||
+              ctx.req?.socket?.remoteAddress ||
+              null,
+            userAgent: ctx.req?.headers?.["user-agent"] || null,
+          },
+        });
+      }),
+  }),
+
   // ===== 合同管理 =====
   contracts: router({
     /** 获取合同列表 */
@@ -1265,17 +1459,37 @@ export const appRouter = router({
         customerId: z.number().optional(),
         status: z.string().optional(),
         page: z.number().min(1).default(1),
-        pageSize: z.number().min(1).max(100).default(50),
+        pageSize: z.number().min(1).max(1000).default(50),
         source: z.enum(["db", "feishu"]).optional(),
       }))
       .query(async ({ ctx, input }) => {
         if (input.source === "feishu") {
+          const submitterScope = getFeishuContractSubmitterScope(ctx.user);
+          if (submitterScope === null) {
+            return {
+              items: [],
+              total: 0,
+              source: "feishu" as const,
+              error: "当前子账号未设置姓名，无法按飞书“提交人”匹配合同，请联系管理员完善账号姓名",
+            };
+          }
           try {
-            return await getFeishuContracts({
+            const result = await getFeishuContracts({
               status: input.status,
+              ...(submitterScope ? { submitter: submitterScope } : {}),
               page: input.page,
               pageSize: input.pageSize,
             });
+            const keyCounts = await getGeneratedKeyCountsByContractNos(
+              result.items.map((item) => item.contractNo)
+            );
+            return {
+              ...result,
+              items: result.items.map((item) => ({
+                ...item,
+                generatedKeyCount: keyCounts[item.contractNo] ?? 0,
+              })),
+            };
           } catch (error) {
             throw new TRPCError({
               code: "BAD_REQUEST",

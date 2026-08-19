@@ -64,6 +64,34 @@
       "when": 1782124379609,
       "tag": "0008_tamper_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "5",
+      "when": 1785383152822,
+      "tag": "0009_user_profile_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "5",
+      "when": 1785392468310,
+      "tag": "0010_key_generation_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "5",
+      "when": 1785392876804,
+      "tag": "0011_key_soft_delete_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "5",
+      "when": 1785394918440,
+      "tag": "0012_departments_table_compat",
+      "breakpoints": true
     }
   ]
 }

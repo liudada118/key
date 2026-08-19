@@ -1,29 +1,23 @@
-import { Button } from "@/components/ui/button";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { Button, ButtonSpinner } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import KeyGenerationGateDialog, {
+  type GenerationContract,
+} from "@/components/KeyGenerationGateDialog";
 import { trpc } from "@/lib/trpc";
 import {
-  Building2,
   Copy,
   Download,
-  FileText,
   KeyRound,
   Loader2,
-  Plus,
   Zap,
   X,
   RotateCcw,
@@ -51,7 +45,8 @@ const TIME_PRESETS = [
 ];
 
 export default function GenerateKey() {
-  const { data: sensorGroups, isLoading: sensorGroupsLoading } = trpc.sensors.groups.useQuery();
+  const { data: sensorGroups, isLoading: sensorGroupsLoading } =
+    trpc.sensors.groups.useQuery();
 
   return (
     <div className="space-y-6">
@@ -100,6 +95,8 @@ function KeyGenerator({
   sensorGroups: SensorGroup[];
   mode: "single" | "batch";
 }) {
+  const { user } = useAuth();
+
   // 传感器选择状态
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
   const [isAll, setIsAll] = useState(false);
@@ -110,38 +107,23 @@ function KeyGenerator({
   const [days, setDays] = useState("30");
   const [count, setCount] = useState("10");
   const [remark, setRemark] = useState("");
-
-  // 客户选择状态
-  const [selectedCustomerId, setSelectedCustomerId] = useState<number | undefined>(undefined);
-  const [selectedCustomerName, setSelectedCustomerName] = useState("");
-  const [showNewCustomer, setShowNewCustomer] = useState(false);
-  const [newCustomerName, setNewCustomerName] = useState("");
-  const [newCustomerPhone, setNewCustomerPhone] = useState("");
-
-  // 合同选择状态
-  const [selectedContractId, setSelectedContractId] = useState<number | undefined>(undefined);
-  const [selectedContractNo, setSelectedContractNo] = useState("");
+  const [gateOpen, setGateOpen] = useState(false);
 
   const utils = trpc.useUtils();
-  const { data: customerList } = trpc.customers.all.useQuery();
-  const { data: contractData } = trpc.contracts.list.useQuery({ page: 1, pageSize: 100, status: "ACTIVE", source: "feishu" });
-  const contractList = contractData?.items ?? [];
-  const createCustomerMutation = trpc.customers.create.useMutation({
-    onSuccess: (data) => {
-      if (data) {
-        setSelectedCustomerId(data.id);
-        setSelectedCustomerName(data.name);
-      }
-      setShowNewCustomer(false);
-      setNewCustomerName("");
-      setNewCustomerPhone("");
-      // 刷新客户列表缓存，确保新创建的客户出现在下拉列表中
-      utils.customers.all.invalidate();
-      utils.customers.list.invalidate();
-      toast.success("客户创建成功");
-    },
-    onError: (err) => toast.error(err.message),
+  const {
+    data: contractData,
+    error: contractQueryError,
+    isLoading: contractsLoading,
+  } = trpc.contracts.list.useQuery({
+    page: 1,
+    pageSize: 1000,
+    status: "ACTIVE",
+    source: "feishu",
   });
+  const contractList = (contractData?.items ?? []) as GenerationContract[];
+  const contractSourceError =
+    contractData && "error" in contractData ? contractData.error : undefined;
+  const contractsError = contractQueryError?.message || contractSourceError;
 
   // 结果状态
   const [singleResult, setSingleResult] = useState<{
@@ -157,24 +139,24 @@ function KeyGenerator({
   // 所有传感器平铺
   const allSensors = useMemo(
     () => sensorGroups.flatMap((g) => g.items),
-    [sensorGroups]
+    [sensorGroups],
   );
 
   const sensorLabelMap = useMemo(
     () => Object.fromEntries(allSensors.map((s) => [s.value, s.label])),
-    [allSensors]
+    [allSensors],
   );
 
   const selectedCount = isAll ? allSensors.length : selectedTypes.length;
+  const sensorSummary = isAll
+    ? "全部传感器"
+    : selectedTypes.map((value) => sensorLabelMap[value] || value).join("、");
 
   // 全选/取消全选
-  const handleToggleAll = useCallback(
-    (checked: boolean) => {
-      setIsAll(checked);
-      if (checked) setSelectedTypes([]);
-    },
-    []
-  );
+  const handleToggleAll = useCallback((checked: boolean) => {
+    setIsAll(checked);
+    if (checked) setSelectedTypes([]);
+  }, []);
 
   // 分组全选
   const handleGroupCheckAll = useCallback(
@@ -190,20 +172,17 @@ function KeyGenerator({
       });
       if (checked) setIsAll(false);
     },
-    []
+    [],
   );
 
   // 单个选择
-  const handleTypeChange = useCallback(
-    (value: string, checked: boolean) => {
-      setSelectedTypes((prev) => {
-        if (checked) return [...prev, value];
-        return prev.filter((v) => v !== value);
-      });
-      setIsAll(false);
-    },
-    []
-  );
+  const handleTypeChange = useCallback((value: string, checked: boolean) => {
+    setSelectedTypes((prev) => {
+      if (checked) return [...prev, value];
+      return prev.filter((v) => v !== value);
+    });
+    setIsAll(false);
+  }, []);
 
   // 清空选择
   const handleClear = useCallback(() => {
@@ -222,6 +201,9 @@ function KeyGenerator({
   const generateMutation = trpc.keys.generate.useMutation({
     onSuccess: (data) => {
       setSingleResult(data);
+      setGateOpen(false);
+      utils.contracts.list.invalidate();
+      utils.keys.list.invalidate();
       toast.success("密钥生成成功");
     },
     onError: (err) => toast.error(err.message),
@@ -231,6 +213,9 @@ function KeyGenerator({
   const batchMutation = trpc.keys.batchGenerate.useMutation({
     onSuccess: (data) => {
       setBatchResults(data);
+      setGateOpen(false);
+      utils.contracts.list.invalidate();
+      utils.keys.list.invalidate();
       toast.success(`成功生成 ${data.count} 个密钥`);
     },
     onError: (err) => toast.error(err.message),
@@ -241,37 +226,53 @@ function KeyGenerator({
       return toast.error("请至少选择一个传感器类型，或开启全部授权");
     }
     if (!days || parseInt(days) < 1) return toast.error("请输入有效的天数");
-
-    const sensorTypes = getSensorTypesParam();
-
-    if (mode === "single") {
-      generateMutation.mutate({
-        sensorTypes,
-        days: parseInt(days),
-        category,
-        customerId: selectedCustomerId,
-        customerName: selectedCustomerName || undefined,
-        contractId: selectedContractId,
-        contractNo: selectedContractNo || undefined,
-        remark: remark || undefined,
-      });
-    } else {
-      if (!count || parseInt(count) < 1) return toast.error("请输入生成数量");
-      batchMutation.mutate({
-        sensorTypes,
-        days: parseInt(days),
-        category,
-        count: parseInt(count),
-        customerId: selectedCustomerId,
-        customerName: selectedCustomerName || undefined,
-        contractId: selectedContractId,
-        contractNo: selectedContractNo || undefined,
-        remark: remark || undefined,
-      });
+    if (mode === "batch" && (!count || parseInt(count) < 1)) {
+      return toast.error("请输入生成数量");
     }
+    setGateOpen(true);
   };
 
-  const isPending = mode === "single" ? generateMutation.isPending : batchMutation.isPending;
+  const handleGenerateWithContract = (contract: GenerationContract) => {
+    const commonInput = {
+      sensorTypes: getSensorTypesParam(),
+      days: parseInt(days),
+      category,
+      contractId: contract.id,
+      contractNo: contract.contractNo,
+      remark: remark.trim() || undefined,
+    };
+    if (mode === "single") {
+      generateMutation.mutate(commonInput);
+      return;
+    }
+    batchMutation.mutate({
+      ...commonInput,
+      count: parseInt(count),
+    });
+  };
+
+  const handleGenerateWithoutContract = (note?: string) => {
+    const combinedRemark =
+      [remark.trim(), note?.trim()].filter(Boolean).join("；") || undefined;
+    const commonInput = {
+      sensorTypes: getSensorTypesParam(),
+      days: parseInt(days),
+      category,
+      remark: combinedRemark,
+    };
+
+    if (mode === "single") {
+      generateMutation.mutate(commonInput);
+      return;
+    }
+    batchMutation.mutate({
+      ...commonInput,
+      count: parseInt(count),
+    });
+  };
+
+  const isPending =
+    mode === "single" ? generateMutation.isPending : batchMutation.isPending;
 
   // 复制
   const copySingleKey = () => {
@@ -283,9 +284,7 @@ function KeyGenerator({
 
   const copyAll = () => {
     if (batchResults) {
-      copyText(
-        batchResults.keys.map((k) => k.keyString).join("\n")
-      );
+      copyText(batchResults.keys.map((k) => k.keyString).join("\n"));
       toast.success("所有密钥已复制到剪贴板");
     }
   };
@@ -297,7 +296,7 @@ function KeyGenerator({
       : selectedTypes.map((v) => sensorLabelMap[v] || v).join("/");
     const header = "序号,密钥,传感器类型,有效期天数";
     const rows = batchResults.keys.map(
-      (k, i) => `${i + 1},${k.keyString},${typeLabel},${days}`
+      (k, i) => `${i + 1},${k.keyString},${typeLabel},${days}`,
     );
     const csv = "\uFEFF" + header + "\n" + rows.join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
@@ -311,469 +310,414 @@ function KeyGenerator({
   };
 
   return (
-    <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-      {/* 左侧：传感器类型选择 (占 2 列) */}
-      <div className="xl:col-span-2">
-        <Card className="border-border/50">
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-base font-medium flex items-center gap-2 text-foreground">
-                <Grid3X3 className="h-4 w-4 text-primary" />
-                选择授权传感器类型
-                <Badge variant="secondary" className="ml-1">
-                  {selectedCount} / {allSensors.length}
-                </Badge>
-              </CardTitle>
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2">
-                  <Switch
-                    checked={isAll}
-                    onCheckedChange={handleToggleAll}
-                    id={`all-switch-${mode}`}
-                  />
-                  <Label
-                    htmlFor={`all-switch-${mode}`}
-                    className="text-sm cursor-pointer text-foreground"
-                  >
-                    全部授权
-                  </Label>
-                </div>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={handleClear}
-                  className="h-7 text-xs"
-                >
-                  <RotateCcw className="h-3 w-3 mr-1" />
-                  清空
-                </Button>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent className="pt-0">
-            {/* 分组传感器选择 */}
-            <ScrollArea className="h-[460px] pr-3">
-              <div className="space-y-4">
-                {sensorGroups.map((group) => {
-                  const groupValues = group.items.map((i) => i.value);
-                  const checkedCount = isAll
-                    ? group.items.length
-                    : groupValues.filter((v) => selectedTypes.includes(v)).length;
-                  const allChecked = checkedCount === group.items.length;
-                  const indeterminate = checkedCount > 0 && !allChecked;
-
-                  return (
-                    <div key={group.group} className="space-y-2">
-                      {/* 分组标题 */}
-                      <div className="flex items-center gap-2">
-                        <Checkbox
-                          checked={isAll || allChecked}
-                          disabled={isAll}
-                          onCheckedChange={(checked) =>
-                            handleGroupCheckAll(group.items, !!checked)
-                          }
-                          className={indeterminate && !isAll ? "data-[state=unchecked]:bg-primary/30" : ""}
-                        />
-                        <span className="text-sm">{group.icon}</span>
-                        <span className="text-sm font-medium text-foreground">
-                          {group.group}
-                        </span>
-                        <Badge
-                          variant={allChecked || isAll ? "default" : "secondary"}
-                          className="text-[10px] h-4 px-1.5"
-                        >
-                          {checkedCount}/{group.items.length}
-                        </Badge>
-                      </div>
-
-                      {/* 分组内项目 */}
-                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-x-4 gap-y-1.5 pl-7">
-                        {group.items.map((item) => (
-                          <label
-                            key={item.value}
-                            className="flex items-center gap-1.5 cursor-pointer group"
-                          >
-                            <Checkbox
-                              checked={isAll || selectedTypes.includes(item.value)}
-                              disabled={isAll}
-                              onCheckedChange={(checked) =>
-                                handleTypeChange(item.value, !!checked)
-                              }
-                            />
-                            <span className="text-sm text-foreground/80 group-hover:text-foreground transition-colors truncate">
-                              {item.label}
-                            </span>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </ScrollArea>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* 右侧：参数设置 + 结果 */}
-      <div className="space-y-6">
-        {/* 参数卡片 */}
-        <Card className="border-border/50">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base font-medium flex items-center gap-2 text-foreground">
-              <KeyRound className="h-4 w-4 text-primary" />
-              授权参数
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {/* 有效天数 */}
-            <div className="space-y-1.5">
-              <Label className="text-foreground text-sm">有效天数</Label>
-              <Input
-                type="number"
-                min={1}
-                max={36500}
-                value={days}
-                onChange={(e) => setDays(e.target.value)}
-                className="bg-secondary/50"
-              />
-              <div className="flex flex-wrap gap-1.5 mt-1.5">
-                {TIME_PRESETS.map((p) => (
-                  <Button
-                    key={p.days}
-                    size="sm"
-                    variant={parseInt(days) === p.days ? "default" : "outline"}
-                    className="h-6 text-xs px-2"
-                    onClick={() => setDays(String(p.days))}
-                  >
-                    {p.label}
-                  </Button>
-                ))}
-              </div>
-              <div className="flex justify-between text-xs mt-1">
-                <span className="text-muted-foreground">到期时间：</span>
-                <span className="text-foreground font-medium">
-                  {new Date(
-                    Date.now() + (parseInt(days) || 0) * 86400000
-                  ).toLocaleDateString("zh-CN")}
-                </span>
-              </div>
-            </div>
-
-            {/* 批量数量 */}
-            {mode === "batch" && (
-              <div className="space-y-1.5">
-                <Label className="text-foreground text-sm">生成数量</Label>
-                <Input
-                  type="number"
-                  min={1}
-                  max={500}
-                  value={count}
-                  onChange={(e) => setCount(e.target.value)}
-                  className="bg-secondary/50"
-                />
-              </div>
-            )}
-
-            {/* 客户选择 */}
-            <div className="space-y-1.5">
-              <Label className="text-foreground text-sm flex items-center gap-1">
-                <Building2 className="h-3.5 w-3.5" />
-                关联客户（可选）
-              </Label>
-              {!showNewCustomer ? (
-                <div className="space-y-2">
-                  <Select
-                    value={selectedCustomerId ? String(selectedCustomerId) : "none"}
-                    onValueChange={(v) => {
-                      if (v === "none") {
-                        setSelectedCustomerId(undefined);
-                        setSelectedCustomerName("");
-                      } else {
-                        const id = parseInt(v);
-                        setSelectedCustomerId(id);
-                        const c = customerList?.find((c) => c.id === id);
-                        setSelectedCustomerName(c?.name || "");
-                      }
-                    }}
-                  >
-                    <SelectTrigger className="bg-secondary/50">
-                      <SelectValue placeholder="选择客户（可不选）" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">不关联客户</SelectItem>
-                      {customerList?.map((c) => (
-                        <SelectItem key={c.id} value={String(c.id)}>
-                          {c.name}{c.contactPerson ? ` (${c.contactPerson})` : ""}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="h-7 text-xs w-full"
-                    onClick={() => setShowNewCustomer(true)}
-                  >
-                    <Plus className="h-3 w-3 mr-1" />
-                    新建客户
-                  </Button>
-                </div>
-              ) : (
-                <div className="space-y-2 p-3 bg-secondary/30 rounded-lg border border-border/50">
-                  <Input
-                    placeholder="客户名称 *"
-                    value={newCustomerName}
-                    onChange={(e) => setNewCustomerName(e.target.value)}
-                    className="bg-secondary/50 h-8 text-sm"
-                  />
-                  <Input
-                    placeholder="联系电话（可选）"
-                    value={newCustomerPhone}
-                    onChange={(e) => setNewCustomerPhone(e.target.value)}
-                    className="bg-secondary/50 h-8 text-sm"
-                  />
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      className="h-7 text-xs flex-1"
-                      disabled={!newCustomerName.trim() || createCustomerMutation.isPending}
-                      onClick={() => {
-                        createCustomerMutation.mutate({
-                          name: newCustomerName.trim(),
-                          phone: newCustomerPhone || undefined,
-                        });
-                      }}
+    <>
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        {/* 左侧：传感器类型选择 (占 2 列) */}
+        <div className="xl:col-span-2">
+          <Card className="border-border/50">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base font-medium flex items-center gap-2 text-foreground">
+                  <Grid3X3 className="h-4 w-4 text-primary" />
+                  选择授权传感器类型
+                  <Badge variant="secondary" className="ml-1">
+                    {selectedCount} / {allSensors.length}
+                  </Badge>
+                </CardTitle>
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={isAll}
+                      onCheckedChange={handleToggleAll}
+                      id={`all-switch-${mode}`}
+                    />
+                    <Label
+                      htmlFor={`all-switch-${mode}`}
+                      className="text-sm cursor-pointer text-foreground"
                     >
-                      {createCustomerMutation.isPending && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
-                      创建
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 text-xs"
-                      onClick={() => {
-                        setShowNewCustomer(false);
-                        setNewCustomerName("");
-                        setNewCustomerPhone("");
-                      }}
-                    >
-                      取消
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* 关联合同 */}
-            <div className="space-y-1.5">
-              <Label className="text-foreground text-sm flex items-center gap-1">
-                <FileText className="h-3.5 w-3.5" />
-                关联合同（可选）
-              </Label>
-              <Select
-                value={selectedContractId ? String(selectedContractId) : "none"}
-                onValueChange={(v) => {
-                  if (v === "none") {
-                    setSelectedContractId(undefined);
-                    setSelectedContractNo("");
-                  } else {
-                    const id = parseInt(v);
-                    setSelectedContractId(id);
-                    const c = contractList.find((c: any) => c.id === id);
-                    setSelectedContractNo(c?.contractNo || "");
-                  }
-                }}
-              >
-                <SelectTrigger className="bg-secondary/50">
-                  <SelectValue placeholder="选择飞书合同（可不选）" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">不关联合同</SelectItem>
-                  {contractData && "error" in contractData && contractData.error ? (
-                    <SelectItem value="feishu-config-error" disabled>
-                      {contractData.error}
-                    </SelectItem>
-                  ) : contractList.length === 0 ? (
-                    <SelectItem value="feishu-empty" disabled>
-                      飞书表格暂无生效合同
-                    </SelectItem>
-                  ) : (
-                    contractList.map((c: any) => (
-                      <SelectItem key={c.id} value={String(c.id)}>
-                        {c.contractNo} - {c.title}
-                      </SelectItem>
-                    ))
-                  )}
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* 备注 */}
-            <div className="space-y-1.5">
-              <Label className="text-foreground text-sm">备注（可选）</Label>
-              <Textarea
-                value={remark}
-                onChange={(e) => setRemark(e.target.value)}
-                className="bg-secondary/50 resize-none"
-                placeholder="输入备注信息"
-                rows={2}
-              />
-            </div>
-
-            {/* 授权摘要 */}
-            <div className="p-3 bg-secondary/30 rounded-lg space-y-2">
-              <div className="flex justify-between text-xs">
-                <span className="text-muted-foreground">授权模式：</span>
-                <span className="text-foreground font-medium">
-                  {isAll
-                    ? "全部授权"
-                    : selectedTypes.length === 0
-                      ? "未选择"
-                      : selectedTypes.length === 1
-                        ? "单类型"
-                        : `多类型 (${selectedTypes.length})`}
-                </span>
-              </div>
-              {!isAll && selectedTypes.length > 0 && (
-                <div className="flex flex-wrap gap-1">
-                  {selectedTypes.map((t) => (
-                    <Badge
-                      key={t}
-                      variant="secondary"
-                      className="text-[10px] h-5 pl-1.5 pr-0.5 gap-0.5"
-                    >
-                      {sensorLabelMap[t] || t}
-                      <button
-                        onClick={() => handleTypeChange(t, false)}
-                        className="ml-0.5 hover:bg-destructive/20 rounded-full p-0.5"
-                      >
-                        <X className="h-2.5 w-2.5" />
-                      </button>
-                    </Badge>
-                  ))}
-                </div>
-              )}
-              <div className="flex justify-between text-xs">
-                <span className="text-muted-foreground">有效天数：</span>
-                <span className="text-foreground font-medium">{days} 天</span>
-              </div>
-            </div>
-
-            {/* 生成按钮 */}
-            <Button
-              onClick={handleGenerate}
-              disabled={isPending}
-              className="w-full"
-              size="lg"
-            >
-              {isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              ) : mode === "single" ? (
-                <KeyRound className="h-4 w-4 mr-2" />
-              ) : (
-                <Zap className="h-4 w-4 mr-2" />
-              )}
-              {mode === "single" ? "生成密钥" : "批量生成"}
-            </Button>
-          </CardContent>
-        </Card>
-
-        {/* 结果卡片 */}
-        <Card className="border-border/50">
-          <CardHeader className="pb-3 flex flex-row items-center justify-between">
-            <CardTitle className="text-base font-medium text-foreground">
-              {mode === "single" ? "生成结果" : "批量结果"}
-            </CardTitle>
-            {mode === "batch" && batchResults && (
-              <div className="flex gap-1.5">
-                <Button size="sm" variant="outline" onClick={copyAll} className="h-7 text-xs">
-                  <Copy className="h-3 w-3 mr-1" />
-                  复制全部
-                </Button>
-                <Button size="sm" variant="outline" onClick={downloadCSV} className="h-7 text-xs">
-                  <Download className="h-3 w-3 mr-1" />
-                  CSV
-                </Button>
-              </div>
-            )}
-          </CardHeader>
-          <CardContent>
-            {mode === "single" && singleResult ? (
-              <div className="space-y-3">
-                <div className="relative">
-                  <div className="p-3 bg-secondary/50 rounded-lg font-mono text-xs break-all text-foreground border border-border/50">
-                    {singleResult.keyString}
+                      全部授权
+                    </Label>
                   </div>
                   <Button
                     size="sm"
                     variant="ghost"
-                    onClick={copySingleKey}
-                    className="absolute top-1.5 right-1.5 h-6 w-6 p-0"
+                    onClick={handleClear}
+                    className="h-7 text-xs"
                   >
-                    <Copy className="h-3 w-3" />
+                    <RotateCcw className="h-3 w-3 mr-1" />
+                    清空
                   </Button>
                 </div>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="p-2 bg-secondary/30 rounded">
-                    <p className="text-muted-foreground">有效天数</p>
-                    <p className="font-medium text-foreground mt-0.5">
-                      {days} 天
-                    </p>
-                  </div>
-                  <div className="p-2 bg-secondary/30 rounded">
-                    <p className="text-muted-foreground">到期时间</p>
-                    <p className="font-medium text-foreground mt-0.5">
-                      {new Date(singleResult.expireTimestamp).toLocaleDateString("zh-CN")}
-                    </p>
-                  </div>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-0">
+              {/* 分组传感器选择 */}
+              <ScrollArea className="h-[460px] pr-3">
+                <div className="space-y-4">
+                  {sensorGroups.map((group) => {
+                    const groupValues = group.items.map((i) => i.value);
+                    const checkedCount = isAll
+                      ? group.items.length
+                      : groupValues.filter((v) => selectedTypes.includes(v))
+                          .length;
+                    const allChecked = checkedCount === group.items.length;
+                    const indeterminate = checkedCount > 0 && !allChecked;
+
+                    return (
+                      <div key={group.group} className="space-y-2">
+                        {/* 分组标题 */}
+                        <div className="flex items-center gap-2">
+                          <Checkbox
+                            checked={isAll || allChecked}
+                            disabled={isAll}
+                            onCheckedChange={(checked) =>
+                              handleGroupCheckAll(group.items, !!checked)
+                            }
+                            className={
+                              indeterminate && !isAll
+                                ? "data-[state=unchecked]:bg-primary/30"
+                                : ""
+                            }
+                          />
+                          <span className="text-sm">{group.icon}</span>
+                          <span className="text-sm font-medium text-foreground">
+                            {group.group}
+                          </span>
+                          <Badge
+                            variant={
+                              allChecked || isAll ? "default" : "secondary"
+                            }
+                            className="text-[10px] h-4 px-1.5"
+                          >
+                            {checkedCount}/{group.items.length}
+                          </Badge>
+                        </div>
+
+                        {/* 分组内项目 */}
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-x-4 gap-y-1.5 pl-7">
+                          {group.items.map((item) => (
+                            <label
+                              key={item.value}
+                              className="flex items-center gap-1.5 cursor-pointer group"
+                            >
+                              <Checkbox
+                                checked={
+                                  isAll || selectedTypes.includes(item.value)
+                                }
+                                disabled={isAll}
+                                onCheckedChange={(checked) =>
+                                  handleTypeChange(item.value, !!checked)
+                                }
+                              />
+                              <span className="text-sm text-foreground/80 group-hover:text-foreground transition-colors truncate">
+                                {item.label}
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </ScrollArea>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* 右侧：参数设置 + 结果 */}
+        <div className="space-y-6">
+          {/* 参数卡片 */}
+          <Card className="border-border/50">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base font-medium flex items-center gap-2 text-foreground">
+                <KeyRound className="h-4 w-4 text-primary" />
+                授权参数
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* 有效天数 */}
+              <div className="space-y-1.5">
+                <Label className="text-foreground text-sm">有效天数</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={36500}
+                  value={days}
+                  onChange={(e) => setDays(e.target.value)}
+                  className="bg-secondary/50"
+                />
+                <div className="flex flex-wrap gap-1.5 mt-1.5">
+                  {TIME_PRESETS.map((p) => (
+                    <Button
+                      key={p.days}
+                      size="sm"
+                      variant={
+                        parseInt(days) === p.days ? "default" : "outline"
+                      }
+                      className="h-6 text-xs px-2"
+                      onClick={() => setDays(String(p.days))}
+                    >
+                      {p.label}
+                    </Button>
+                  ))}
+                </div>
+                <div className="flex justify-between text-xs mt-1">
+                  <span className="text-muted-foreground">到期时间：</span>
+                  <span className="text-foreground font-medium">
+                    {new Date(
+                      Date.now() + (parseInt(days) || 0) * 86400000,
+                    ).toLocaleDateString("zh-CN")}
+                  </span>
                 </div>
               </div>
-            ) : mode === "batch" && batchResults ? (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span>批次号: {batchResults.batchId}</span>
-                  <span>共 {batchResults.count} 个</span>
+
+              {/* 批量数量 */}
+              {mode === "batch" && (
+                <div className="space-y-1.5">
+                  <Label className="text-foreground text-sm">生成数量</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={500}
+                    value={count}
+                    onChange={(e) => setCount(e.target.value)}
+                    className="bg-secondary/50"
+                  />
                 </div>
-                <ScrollArea className="h-[300px]">
-                  <div className="space-y-1 pr-2">
-                    {batchResults.keys.map((k, i) => (
-                      <div
-                        key={i}
-                        className="flex items-center gap-1.5 p-1.5 bg-secondary/30 rounded group"
+              )}
+
+              {/* 备注 */}
+              <div className="space-y-1.5">
+                <Label className="text-foreground text-sm">备注（可选）</Label>
+                <Textarea
+                  value={remark}
+                  onChange={(e) => setRemark(e.target.value)}
+                  className="bg-secondary/50 resize-none"
+                  placeholder="输入备注信息"
+                  rows={2}
+                />
+              </div>
+
+              {/* 授权摘要 */}
+              <div className="p-3 bg-secondary/30 rounded-lg space-y-2">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">授权模式：</span>
+                  <span className="text-foreground font-medium">
+                    {isAll
+                      ? "全部授权"
+                      : selectedTypes.length === 0
+                        ? "未选择"
+                        : selectedTypes.length === 1
+                          ? "单类型"
+                          : `多类型 (${selectedTypes.length})`}
+                  </span>
+                </div>
+                {!isAll && selectedTypes.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {selectedTypes.map((t) => (
+                      <Badge
+                        key={t}
+                        variant="secondary"
+                        className="text-[10px] h-5 pl-1.5 pr-0.5 gap-0.5"
                       >
-                        <span className="text-[10px] text-muted-foreground w-6 shrink-0 text-right">
-                          {i + 1}.
-                        </span>
-                        <span className="font-mono text-[11px] break-all flex-1 text-foreground">
-                          {k.keyString}
-                        </span>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 h-5 w-5 p-0"
-                          onClick={() => {
-                            copyText(k.keyString);
-                            toast.success("已复制");
-                          }}
+                        {sensorLabelMap[t] || t}
+                        <button
+                          onClick={() => handleTypeChange(t, false)}
+                          className="ml-0.5 hover:bg-destructive/20 rounded-full p-0.5"
                         >
-                          <Copy className="h-2.5 w-2.5" />
-                        </Button>
-                      </div>
+                          <X className="h-2.5 w-2.5" />
+                        </button>
+                      </Badge>
                     ))}
                   </div>
-                </ScrollArea>
+                )}
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">有效天数：</span>
+                  <span className="text-foreground font-medium">{days} 天</span>
+                </div>
               </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
-                <KeyRound className="h-10 w-10 mb-2 opacity-20" />
-                <p className="text-xs">生成的密钥将显示在这里</p>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+
+              {/* 生成按钮 */}
+              <Button
+                onClick={handleGenerate}
+                disabled={isPending}
+                className="w-full"
+                size="lg"
+              >
+                <ButtonSpinner pending={isPending} />
+                <KeyRound
+                  className={
+                    !isPending && mode === "single" ? "h-4 w-4" : "hidden"
+                  }
+                />
+                <Zap
+                  className={
+                    !isPending && mode === "batch" ? "h-4 w-4" : "hidden"
+                  }
+                />
+                <span>{mode === "single" ? "生成密钥" : "批量生成"}</span>
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* 结果卡片 */}
+          <Card className="border-border/50">
+            <CardHeader className="pb-3 flex flex-row items-center justify-between">
+              <CardTitle className="text-base font-medium text-foreground">
+                {mode === "single" ? "生成结果" : "批量结果"}
+              </CardTitle>
+              {mode === "batch" && (
+                <div
+                  className={batchResults ? "flex gap-1.5" : "hidden"}
+                  aria-hidden={!batchResults}
+                >
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={copyAll}
+                    className="h-7 text-xs"
+                  >
+                    <Copy className="h-3 w-3 mr-1" />
+                    复制全部
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={downloadCSV}
+                    className="h-7 text-xs"
+                  >
+                    <Download className="h-3 w-3 mr-1" />
+                    CSV
+                  </Button>
+                </div>
+              )}
+            </CardHeader>
+            <CardContent>
+              {mode === "single" ? (
+                <>
+                  <div
+                    data-slot="generation-placeholder"
+                    className={
+                      singleResult
+                        ? "hidden"
+                        : "flex h-32 flex-col items-center justify-center text-muted-foreground"
+                    }
+                  >
+                    <KeyRound className="mb-2 h-10 w-10 opacity-20" />
+                    <p className="text-xs">生成的密钥将显示在这里</p>
+                  </div>
+                  <div
+                    data-slot="single-generation-result"
+                    className={singleResult ? "space-y-3" : "hidden"}
+                  >
+                    <div className="relative">
+                      <div className="p-3 bg-secondary/50 rounded-lg font-mono text-xs break-all text-foreground border border-border/50">
+                        {singleResult?.keyString || ""}
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={copySingleKey}
+                        className="absolute top-1.5 right-1.5 h-6 w-6 p-0"
+                      >
+                        <Copy className="h-3 w-3" />
+                      </Button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="p-2 bg-secondary/30 rounded">
+                        <p className="text-muted-foreground">有效天数</p>
+                        <p className="font-medium text-foreground mt-0.5">
+                          {days} 天
+                        </p>
+                      </div>
+                      <div className="p-2 bg-secondary/30 rounded">
+                        <p className="text-muted-foreground">到期时间</p>
+                        <p className="font-medium text-foreground mt-0.5">
+                          {singleResult
+                            ? new Date(
+                                singleResult.expireTimestamp,
+                              ).toLocaleDateString("zh-CN")
+                            : ""}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div
+                    data-slot="generation-placeholder"
+                    className={
+                      batchResults
+                        ? "hidden"
+                        : "flex h-32 flex-col items-center justify-center text-muted-foreground"
+                    }
+                  >
+                    <KeyRound className="mb-2 h-10 w-10 opacity-20" />
+                    <p className="text-xs">生成的密钥将显示在这里</p>
+                  </div>
+                  <div
+                    data-slot="batch-generation-result"
+                    className={batchResults ? "space-y-2" : "hidden"}
+                  >
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <span>批次号: {batchResults?.batchId || ""}</span>
+                      <span>共 {batchResults?.count || 0} 个</span>
+                    </div>
+                    <ScrollArea className="h-[300px]">
+                      <div className="space-y-1 pr-2">
+                        {(batchResults?.keys || []).map((k, i) => (
+                          <div
+                            key={i}
+                            className="flex items-center gap-1.5 p-1.5 bg-secondary/30 rounded group"
+                          >
+                            <span className="text-[10px] text-muted-foreground w-6 shrink-0 text-right">
+                              {i + 1}.
+                            </span>
+                            <span className="font-mono text-[11px] break-all flex-1 text-foreground">
+                              {k.keyString}
+                            </span>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 h-5 w-5 p-0"
+                              onClick={() => {
+                                copyText(k.keyString);
+                                toast.success("已复制");
+                              }}
+                            >
+                              <Copy className="h-2.5 w-2.5" />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </ScrollArea>
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </div>
       </div>
-    </div>
+
+      <KeyGenerationGateDialog
+        open={gateOpen}
+        onOpenChange={setGateOpen}
+        contracts={contractList}
+        contractsLoading={contractsLoading}
+        contractsError={contractsError || undefined}
+        mode={mode}
+        sensorTypes={getSensorTypesParam()}
+        sensorSummary={sensorSummary}
+        days={parseInt(days) || 1}
+        count={mode === "batch" ? parseInt(count) || 1 : 1}
+        category={category}
+        generationRemark={remark.trim() || undefined}
+        canGenerateWithoutContract={user?.role === "super_admin"}
+        directGenerationPending={isPending}
+        onGenerateWithContract={handleGenerateWithContract}
+        onGenerateWithoutContract={handleGenerateWithoutContract}
+      />
+    </>
   );
 }

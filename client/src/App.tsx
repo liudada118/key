@@ -26,6 +26,7 @@ import ContractManagement from "./pages/ContractManagement";
 import HeartbeatMonitor from "./pages/HeartbeatMonitor";
 import TamperedKeys from "./pages/TamperedKeys";
 import FeedbackManagement from "./pages/FeedbackManagement";
+import KeyGenerationRequests from "./pages/KeyGenerationRequests";
 import Login from "./pages/Login";
 import { useAuth } from "./_core/hooks/useAuth";
 import { Loader2 } from "lucide-react";
@@ -36,6 +37,7 @@ function AuthenticatedRouter() {
       <Switch>
         <Route path={"/"} component={Home} />
         <Route path={"/generate"} component={GenerateKey} />
+        <Route path={"/key-generation-requests"} component={KeyGenerationRequests} />
         <Route path={"/keys"} component={KeyList} />
         <Route path={"/verify"} component={VerifyKey} />
         <Route path={"/accounts"} component={AccountManagement} />

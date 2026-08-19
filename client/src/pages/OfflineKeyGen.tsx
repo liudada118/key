@@ -504,7 +504,7 @@ export default function OfflineKeyGen() {
                     ) : (
                       contractList.map((c: any) => (
                         <SelectItem key={c.id} value={c.id.toString()}>
-                          {c.contractNo} - {c.title}
+                          {c.contractNo}{c.customerName ? ` - ${c.customerName}` : ""}
                         </SelectItem>
                       ))
                     )}

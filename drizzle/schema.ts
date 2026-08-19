@@ -176,6 +176,8 @@ export const licenseKeys = mysqlTable("licenseKeys", {
   contractId: int("contractId"),
   /** 合同编号（冗余） */
   contractNo: varchar("contractNo", { length: 128 }),
+  /** 无合同生成申请 ID；正常绑定合同生成时为空 */
+  generationRequestId: int("generationRequestId"),
   /** 客户名称（冗余存储，方便查询） */
   customerName: varchar("customerName", { length: 256 }),
   /** 是否已激活（在线版"使用即激活"）— 兼容旧逻辑 */
@@ -228,6 +230,43 @@ export const licenseKeys = mysqlTable("licenseKeys", {
 
 export type LicenseKey = typeof licenseKeys.$inferSelect;
 export type InsertLicenseKey = typeof licenseKeys.$inferInsert;
+
+/**
+ * 无合同密钥生成申请
+ * 保存申请时的完整生成参数；仅超级管理员批准后由服务端自动生成。
+ */
+export const keyGenerationRequests = mysqlTable("keyGenerationRequests", {
+  id: int("id").autoincrement().primaryKey(),
+  /** 便于人工沟通和审计的申请编号 */
+  requestNo: varchar("requestNo", { length: 64 }).notNull().unique(),
+  /** 单个生成 / 批量生成 */
+  mode: mysqlEnum("mode", ["single", "batch"]).notNull(),
+  /** JSON 编码的 string 或 string[] */
+  sensorTypes: text("sensorTypes").notNull(),
+  days: int("days").notNull(),
+  category: mysqlEnum("category", ["production", "rental"]).default("production").notNull(),
+  /** 单个固定为 1，批量为申请数量 */
+  count: int("count").default(1).notNull(),
+  /** 无合同生成原因，必填 */
+  reason: text("reason").notNull(),
+  /** 原生成表单的普通备注 */
+  generationRemark: text("generationRemark"),
+  requestedById: int("requestedById").notNull(),
+  requestedByName: varchar("requestedByName", { length: 128 }).notNull(),
+  status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED"]).default("PENDING").notNull(),
+  reviewedById: int("reviewedById"),
+  reviewedByName: varchar("reviewedByName", { length: 128 }),
+  reviewRemark: text("reviewRemark"),
+  reviewedAt: timestamp("reviewedAt"),
+  generatedAt: timestamp("generatedAt"),
+  /** 批量申请批准后生成的批次号；单个申请为空 */
+  generatedBatchId: varchar("generatedBatchId", { length: 64 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type KeyGenerationRequest = typeof keyGenerationRequests.$inferSelect;
+export type InsertKeyGenerationRequest = typeof keyGenerationRequests.$inferInsert;
 
 /**
  * 设备心跳表

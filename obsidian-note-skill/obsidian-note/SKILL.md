@@ -1,6 +1,6 @@
 ---
 name: obsidian-note
-description: Generate Obsidian-style hierarchical Markdown notes from research, PRDs, feature lists, value points, system designs, or scattered notes. Use when the user asks for obsidianNote, Obsidian 笔记, 层级笔记, 树状 Markdown, 系统/后端/前端/新节点格式, or wants content converted into nested headings and indented bullet nodes.
+description: Generate Obsidian-style hierarchical Markdown notes and automatically save them as verified UTF-8 .md files. Use when the user asks for Obsidian notes, layered notes, tree Markdown, architecture or business-logic maps, system/backend/frontend/new-node outlines, or wants loose content converted into nested headings and indented bullet nodes.
 ---
 
 # Obsidian Note
@@ -10,6 +10,28 @@ description: Generate Obsidian-style hierarchical Markdown notes from research, 
 Convert loose content into a clean Obsidian-friendly Markdown outline that is easy to paste, fold, search, and expand.
 
 Use a tree structure instead of tables. Preserve the user's domain terms. Prefer concise node names over long explanatory sentences.
+
+## Mandatory Save Workflow
+
+Always save the completed note as a UTF-8 Markdown file unless the user explicitly requests response-only output or says not to create a file.
+
+1. Generate the complete Markdown note in memory.
+2. Choose the destination:
+   - Use the user-specified path or filename when provided.
+   - Otherwise save under `<workspace-root>/docs/obsidian/`.
+   - Derive a concise filename from the `#` title.
+3. Run `scripts/save_markdown.py`:
+   - On Windows, write the generated note to a UTF-8 temporary file with the structured file-editing tool, then pass it with `--input-file`.
+   - On UTF-8 shells, the note may be passed through standard input.
+4. Read the saved file back and verify:
+   - The file starts with the expected `#` title.
+   - The content contains no Unicode replacement character `�`.
+   - Mermaid code fences and tab indentation are preserved.
+5. Return the saved absolute path or a clickable file link with the note summary.
+
+The save script creates missing directories, writes atomically, verifies the first heading against `--title`, and adds a numeric suffix instead of overwriting an existing note. Use `--overwrite` only when the user explicitly asks to replace the existing file.
+
+If Python is unavailable, use the environment's structured file-editing tool to write the same content as UTF-8, then perform the same read-back verification.
 
 ## Output Rules
 
@@ -29,7 +51,7 @@ Use a tree structure instead of tables. Preserve the user's domain terms. Prefer
 2. Group content into a small number of `##` sections.
 3. Convert value points, capabilities, data types, rendering views, risks, and workflows into nested nodes.
 4. Put actionable or newly discovered ideas under `## 新节点`.
-5. If the user asks for a file, create a `.md` file using a descriptive Chinese filename.
+5. Save the final note using the mandatory save workflow.
 
 ## Recommended Section Patterns
 
