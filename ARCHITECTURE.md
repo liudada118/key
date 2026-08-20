@@ -4,7 +4,7 @@
 
 ## 1. 项目概述
 
-**密钥管理系统（Key Manager）** 是一个基于 Shroom1.0 传感器项目衍生的独立 Web 应用，用于管理传感器设备的授权密钥。系统采用**三级权限体系**（超级管理员 → 管理员 → 子账号），支持两种密钥类型（**量产密钥**和**在线租赁密钥**）。核心加密算法使用 **AES-256-GCM** 模式，比原 Shroom1.0 的 AES-ECB 更安全，旧密钥不再兼容。
+**密钥管理系统（Key Manager）** 是一个基于 Shroom1.0 传感器项目衍生的独立 Web 应用，用于管理传感器设备的授权密钥。系统采用**三级权限体系**（超级管理员 → 管理员 → 子账号），支持两种密钥类型（**量产密钥**和**在线租赁密钥**）。密钥加密沿用 Shroom1.0 的 **AES-128/ECB** 固定密钥方案，与桌面客户端互通；授权范围支持 v3 **分类授权**（`@group:` 令牌，详见 §7.4），v1/v2 老密钥继续可解。
 
 系统支持**在线密钥**和**离线密钥**两种模式。在线密钥采用"使用即激活"模式：后台生成密钥后发给客户，客户端通过 `keys.activate` 接口校验密钥有效性，首次调用即标记为已激活。离线密钥使用 RSA-SHA256 签名，支持机器码绑定的离线激活。
 
@@ -23,10 +23,10 @@
 | **包管理器** | pnpm 10 | 高效依赖管理 |
 | **部署环境** | Manus Platform | 内置 OAuth 认证与托管 |
 | **UI 组件库** | shadcn/ui + Radix UI | 无障碍组件体系 |
-| **加密算法** | AES-256-GCM (CryptoJS) + RSA-SHA256 | HMAC-SHA256 认证标签，随机 IV |
+| **加密算法** | AES-128/ECB/Pkcs7 (CryptoJS) + RSA-SHA256 | 与桌面端互通；payload 带随机 `n`，离线激活码 RSA 签名 |
 | **路由** | wouter | 轻量前端路由 |
 | **数据序列化** | Superjson | tRPC 数据传输 |
-| **测试** | Vitest | 53 个测试用例全部通过，覆盖服务端规则、飞书通知/审批回调与按钮 DOM 稳定性 |
+| **测试** | Vitest | 115 个测试用例全部通过，覆盖服务端规则、分类授权注册表与 v3 密钥、飞书通知/审批回调与按钮 DOM 稳定性 |
 
 ## 3. 目录结构
 
@@ -77,17 +77,23 @@ key-manager/
 │   ├── keyGenerationRequestApproval.ts # 网站和飞书共用的申请审批服务
 │   ├── onlineKeyGeneration.ts  # 在线密钥记录准备与生成
 │   ├── keyGeneration.contractRequirement.test.ts # 在线生成合同必填测试
+│   ├── licenseRegistry.ts      # 分类授权注册表磁盘加载 + SHA-256 + fail-fast 校验
+│   ├── licenseScopes.test.ts   # 注册表校验、令牌解析、5 种授权范围展开测试
+│   ├── cryptoLibParity.test.ts # crypto-lib.cjs 与 crypto.ts 的注册表/密钥互通一致性
 │   ├── storage.ts              # S3 文件存储
-│   ├── crypto.test.ts          # 加密模块测试（26 个用例）
+│   ├── crypto.test.ts          # 加密模块 + v3 分类授权 + v1/v2 向后兼容测试
 │   └── auth.logout.test.ts     # 登出测试（1 个用例）
+├── config/
+│   └── licenseSensorGroups.json # 分类与系统归属的唯一数据源（由桌面端同步，SHA-256 对齐）
 ├── drizzle/                    # 数据库 schema 与迁移
 │   ├── schema.ts               # 含 licenseKeys、keyGenerationRequests 等业务表
 │   ├── 0010_key_generation_requests.sql # 无合同申请与密钥关联迁移
 │   ├── 0011_key_soft_delete_columns.sql # 在线/离线密钥软删除字段兼容迁移
 │   └── 0012_departments_table_compat.sql # 历史数据库部门表兼容迁移
 ├── shared/                     # 前后端共享
-│   ├── crypto.ts               # AES-256-GCM 加密模块（ESM）
-│   ├── crypto-lib.cjs          # AES-256-GCM 加密模块（CJS，Electron 可用）
+│   ├── crypto.ts               # AES-128-ECB 密钥生成/解码模块（ESM）
+│   ├── crypto-lib.cjs          # 同上的自包含 CJS 副本（Electron 可 require）
+│   ├── licenseScopes.ts        # 分类授权纯逻辑：注册表校验、@group: 令牌、范围展开
 │   ├── const.ts                # 共享常量
 │   └── types.ts                # 共享类型
 ├── obsidian-note-skill/        # 可上传的 Obsidian 笔记 skill 源目录
@@ -112,8 +118,11 @@ key-manager/
 | `server/routers.ts` | tRPC 路由，包含 keys、accounts、auth、sensors、customers、offline 多组 |
 | `server/db.ts` | 数据库查询函数，含分级权限过滤 |
 | `drizzle/schema.ts` | 14 张业务表，包含 users、departments、licenseKeys、keyGenerationRequests 等 |
-| `shared/crypto.ts` | AES-256-GCM 加密核心，ESM 格式 |
-| `shared/crypto-lib.cjs` | 同上，CJS 格式，供 Electron 项目 `require()` |
+| `shared/crypto.ts` | AES-128-ECB 密钥生成/解码核心，ESM 格式；v3 分类令牌在解码时展开 |
+| `shared/crypto-lib.cjs` | 同上，自包含 CJS 格式，供 Electron 项目 `require()`；内联注册表快照，由 `server/cryptoLibParity.test.ts` 锁一致性 |
+| `shared/licenseScopes.ts` | 分类授权纯逻辑（无 `fs`）：注册表校验、`@group:` 令牌、`expandLicenseFile`、中文展示名，前后端共用 |
+| `config/licenseSensorGroups.json` | 分类与系统归属的**唯一数据源**，由桌面端 `E:\shroom1` 同步而来，详见 §7.4 |
+| `server/licenseRegistry.ts` | 启动时按磁盘优先加载注册表，校验失败 fail-fast，并打印 SHA-256 |
 | `obsidian-note-skill/obsidian-note/` | 将层级笔记自动保存为 UTF-8 Markdown；支持原子写入、同名避让和写后校验 |
 
 ## 4. 核心模块与数据流
@@ -168,7 +177,9 @@ graph TD
         M --> N3["server/feishuKeyRequestWebhook.ts 兜底"]
         M --> N4["server/keyGenerationRequestApproval.ts"]
         N5["飞书卡片回调 REST"] --> N4
-        M --> O[shared/crypto.ts AES-256-GCM]
+        M --> O[shared/crypto.ts AES-128-ECB]
+        O --> O1["shared/licenseScopes.ts 分类授权展开"]
+        O1 --> O2["config/licenseSensorGroups.json 注册表"]
         N --> P[(MySQL / TiDB)]
         N1 --> Q[飞书多维表格 API]
         N2 --> Q2[飞书应用机器人交互卡片]
@@ -190,7 +201,7 @@ graph TD
 
 **用户认证流程**：用户通过 Manus OAuth 或本地账号密码登录，系统根据 `openId` 或用户名匹配用户记录。首次登录的 Owner 自动设为 `super_admin` 角色，后续用户由上级创建并分配角色。被禁用的账号无法登录。
 
-**在线密钥生成流程**：用户选择传感器类型、有效期和数量后打开合同确认弹窗。合同列表按编号去重，并依据历史密钥数量分为“未生成密钥”和“已生成密钥”；绑定当前账号可见的飞书合同后，后端再次校验合同 ID、编号和提交人范围，使用 AES-256-GCM 生成密钥并自动写入合同客户。普通账号直接调用 `keys.generate` / `keys.batchGenerate` 仍必须提交有效合同；超级管理员可省略合同直接生成，服务端基于登录角色进行最终校验。
+**在线密钥生成流程**：用户选择传感器类型、有效期和数量后打开合同确认弹窗。合同列表按编号去重，并依据历史密钥数量分为“未生成密钥”和“已生成密钥”；绑定当前账号可见的飞书合同后，后端再次校验合同 ID、编号和提交人范围，校验授权范围（未知系统、未知分类、空范围一律拒绝）后用 AES-128-ECB 生成密钥并自动写入合同客户。传感器类型可以选具体系统，也可以选「整个分类」——后者在密钥里保存 `@group:<key>` 令牌（§7.4）。普通账号直接调用 `keys.generate` / `keys.batchGenerate` 仍必须提交有效合同；超级管理员可省略合同直接生成，服务端基于登录角色进行最终校验。
 
 **无合同审批流程**：普通账号在确认弹窗填写原因并调用 `keyGenerationRequests.create`，服务端保存传感器、有效期、数量和生成备注，写入审计后优先通过飞书应用机器人向 `FEISHU_APPROVAL_CHAT_ID` 指定的超管群发送交互卡片；卡片发送不可用时回退到 `FEISHU_KEY_REQUEST_WEBHOOK_URL` 文本提醒，通知故障不会回滚已经成功的申请。群内点击同意或拒绝后，`POST /api/feishu/key-request/card-action` 对回调执行 AES 解密、签名/Token、App ID、时间窗口及群 `chat_id` 校验，再调用与网站 `keyGenerationRequests.review` 共用的审批服务。批准时密钥写入与申请状态更新处于同一事务，生成的密钥归申请人所有并在密钥管理页可见；成功响应会将飞书卡片更新为最终状态，重复点击由申请状态锁拦截。超级管理员选择“无合同生成”时直接调用密钥生成接口，不写入申请表或发送申请通知。
 
@@ -222,6 +233,9 @@ graph TD
 | `tRPC` | `accounts.*` | 管理员+ | 账号管理 CRUD |
 | `tRPC` | `customers.*` | 登录 | 客户管理 CRUD |
 | `tRPC` | `sensors.*` | 超级管理员 | 传感器类型管理 |
+| `tRPC` | `sensors.licenseGroups` | **公开** | 分类授权清单（`@group:` 令牌 + 各分类当前成员 + 注册表 SHA-256） |
+| `POST` | `/licenseCheck` | **公开** | 纯 REST 在线校验：状态 + 展开后的 `sensorTypes` + `groupKeys` + 原始 `scope` |
+| `GET` | `/sensorTypes` | **公开** | 纯 REST 传感器清单 + `licenseGroups` + `registrySha256`；DB 异常时回退注册表派生清单 |
 | `tRPC` | `offline.*` | 登录 | 离线密钥生成与管理 |
 | `tRPC` | `contracts.list` | 登录 | 读取按合同编号去重的飞书合同，并返回已生成密钥数量 |
 | `tRPC` | `keyGenerationRequests.create` | 登录 | 提交包含完整生成参数的无合同密钥申请 |
@@ -247,30 +261,70 @@ graph TD
 
 ### 7.1. 算法说明
 
-系统使用 **AES-256-GCM** 加密模式（通过 CryptoJS CTR 模式 + HMAC-SHA256 认证标签模拟），相比原 Shroom1.0 的 AES-ECB 具有以下优势：
+密钥加密沿用 Shroom1.0 的 **AES-128/ECB/Pkcs7**（CryptoJS，固定密钥），保证桌面端与发证服务的密钥互通。ECB 无 IV 也无认证标签，因此：
 
-| 特性 | AES-ECB（旧） | AES-256-GCM（新） |
+| 特性 | 现状 | 补偿手段 |
 | :--- | :--- | :--- |
-| IV 随机性 | 无 IV | 每次 12 字节随机 IV |
-| 认证标签 | 无 | HMAC-SHA256 前 16 字节 |
-| 相同明文 | 相同密文 | 不同密文 |
-| 篡改检测 | 不支持 | 支持 |
+| IV 随机性 | 无（ECB） | payload 里加随机 `n` 字段，避免相同参数产出相同密文 |
+| 认证标签 | 无 | 篡改后解密出的明文 JSON 解析失败 → `decodeLicenseKey` 判 `valid: false` |
+| 篡改检测 | 靠上层 JSON 解析 | 离线激活码另有 RSA-SHA256 签名；在线校验有服务端记录与防回拨高水位 |
+
+离线激活码与在线校验的完整性依赖签名和服务端状态，不依赖对称加密本身。
 
 ### 7.2. 密钥格式
 
-密钥字符串为 hex 编码，结构为：`IV(24字符) + AuthTag(32字符) + Ciphertext(hex)`。
+密钥字符串为 AES-ECB 密文的 hex 编码（无 IV / 无认证标签前缀）。
 
-加密载荷 JSON 格式：`{"date": <到期时间戳>, "file": "<传感器类型>", "cat": "<production|rental>", "v": 2}`。
+加密载荷 JSON 格式：`{"date": <到期时间戳>, "file": <授权范围>, "cat": "<production|rental>", "v": <2|3>, "n": "<随机 nonce>"}`。
+
+`file` 就是授权范围本身，共 5 种形态（详见 7.4）：`"all"` / 单个系统 key / 系统数组 / `"@group:<groupKey>"` 分类令牌 / 分类与系统混合数组。含分类令牌时 `v: 3`，否则 `v: 2`。
 
 ### 7.3. Electron 集成
 
 将 `shared/crypto-lib.cjs` 复制到 Electron 项目中，通过 `require('./crypto-lib.cjs')` 引入即可使用 `decodeLicenseKey()` 函数验证密钥。依赖 `crypto-js` npm 包。
+
+该文件是自包含副本：内联了一份注册表快照，同时会尝试 `require("./licenseSensorGroups.json")`——集成方把注册表 JSON 放到同目录即可覆盖内联快照，不必改代码；也可以调用导出的 `setLicenseSensorGroups(groups)` 在运行时注入。`server/cryptoLibParity.test.ts` 锁住它与 `shared/crypto.ts` 的注册表内容和密钥互通行为。
+
+### 7.4. 分类授权注册表（v3 `@group:` 令牌）
+
+**要解决的问题**：以前按固定系统数组签发密钥，往某个分类里新增系统后，所有老客户都得重新发证。
+
+**做法**：分类密钥在 payload 的 `file` 里保存**稳定的 `@group:<groupKey>` 令牌**，而不是签发当时展开的系统数组；展开发生在**解码/校验时**。于是往分类里新增系统后，未过期的旧分类密钥在新版客户端就自动获得新增系统，无需重新发证；而用固定数组签发的老密钥不会越权拿到新增系统。
+
+**唯一数据源**：`config/licenseSensorGroups.json`（5 个分类 / 27 个系统），由桌面端 `E:\shroom1` 同步过来，SHA-256 与桌面端一致。服务端**不得**再维护第二份手写分类数组——需要新增/移动系统时改注册表并重新同步：
+
+```bash
+cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSensorGroups.json
+```
+
+**加载顺序**（`shared/licenseScopes.ts` + `server/licenseRegistry.ts`）：
+
+1. 构建内联：`shared/licenseScopes.ts` 静态 `import` 该 JSON 作为兜底，导入即校验（校验失败进程起不来）。
+2. 运行时磁盘优先：`startServer()` 一开始调用 `loadLicenseRegistry()`，读 `LICENSE_REGISTRY_PATH ?? <cwd>/config/licenseSensorGroups.json`，存在就覆盖内联快照，并打印 `分类数 / 系统数 / sha256`。
+3. **fail-fast**：文件存在但 JSON 非法、分类 key 重复、系统 value 重复、分类为空 → 抛错终止启动，绝不退回空列表继续签发。文件缺失只 warn 并沿用内联快照。
+
+**模块分工**：`shared/licenseScopes.ts` 是纯逻辑（不碰 `fs`），前端也直接 import；`server/licenseRegistry.ts` 只负责磁盘加载与 SHA-256。DB 的 `sensor_types` 表只保留中文显示名，分类归属一律读注册表（`buildDefaultSensorTypes()` 从注册表派生默认清单）。`LICENSE_GROUP_META[key].dbGroupName` 必须与 `sensor_types.groupName` 逐字一致——`departments.sensorGroup` 就是按这个字符串绑定部门的。
+
+**兼容矩阵**：
+
+| 版本 | `file` 形态 | 展开语义 | 随分类更新 |
+| :--- | :--- | :--- | :--- |
+| v1（无 `v` 字段） | `"all"` / 单系统 | 原样 | 否 |
+| v2 | `"all"` / 单系统 / 系统数组 | 原样 | 否 |
+| v3 | `"@group:precision"` / `["@group:care","humanBodyOptimized"]` | 按当前注册表展开分类，混合项按请求顺序去重 | **是** |
+
+`"all"` 的展开清单 = 注册表全部系统 ∪ 历史 `ALL_SENSORS`（只增不减，老客户端拿到的清单不会变短）；真正的"全部授权"语义由 `isAllTypes: true` 承载。未知 `@group:` 一律判无效（`valid: false`），**不会**降级成普通系统 key，也不会变成"授权 0 个系统但有效"。
+
+**接口出口**：`POST /licenseCheck` 返回展开后的 `sensorTypes` + `isAllTypes` + `groupKeys` + 原始 `scope`；`GET /sensorTypes` 与 `sensors.licenseGroups` 返回 `licenseGroups` 与 `registrySha256`（与桌面端比对可确认两边分类归属同步）。客户端判权限只看 `sensorTypes`/`isAllTypes`，不要自己解析令牌。
+
+**部署顺序**：桌面端注册表更新后必须**先**同步到 `config/` 并重启发证服务，再发新版客户端。
 
 ## 8. 环境变量
 
 | 变量名 | 描述 |
 | :--- | :--- |
 | `DATABASE_URL` | 数据库连接字符串 |
+| `LICENSE_REGISTRY_PATH` | 分类授权注册表路径，默认 `<cwd>/config/licenseSensorGroups.json`；文件非法则启动失败（见 7.4） |
 | `JWT_SECRET` | Session Cookie 签名密钥 |
 | `VITE_APP_ID` | Manus OAuth 应用 ID |
 | `OAUTH_SERVER_URL` | Manus OAuth 后端地址 |
@@ -332,6 +386,7 @@ graph TD
 | 2026-07-30 | main | Obsidian Markdown 自动保存修复 | 笔记默认自动落盘，新增 UTF-8 原子保存、标题校验、同名文件避让并重新打包上传 ZIP |
 | 2026-07-30 | main | 密钥申请飞书通知 | 普通账号提交无合同密钥申请后自动推送飞书提醒，通知故障不影响申请入库 |
 | 2026-07-30 | main | 飞书群内快速审批 | 应用机器人发送可交互审批卡片，指定超管群可免登录同意或拒绝，并与网站共用事务审批逻辑 |
+| 2026-08-19 | main | 分类授权（v3 `@group:` 密钥） | 引入 `config/licenseSensorGroups.json` 唯一数据源与 `shared/licenseScopes.ts`，密钥保存分类令牌、解码时展开；生成/离线页支持「整个分类」，各列表与 `/licenseCheck`、`/sensorTypes` 同步；测试从 53 增至 115 个 |
 
 ## 10. 更新日志
 
@@ -359,6 +414,8 @@ graph TD
 | 2026-07-30 | main | 修复缺陷 | 修复 `obsidian-note` 仅在明确要求时保存及 Windows 管道编码损坏问题；增加 UTF-8 文件入口、BOM 处理、标题一致性校验并刷新上传包 |
 | 2026-07-30 | main | 新增功能 | 新增无合同密钥申请飞书 Webhook 通知，包含申请详情、5 秒超时、域名校验和失败隔离，并将配置纳入 GitHub Actions Secrets |
 | 2026-07-30 | main | 新增功能 | 新增飞书应用机器人审批卡片和加密回调接口，校验 App ID、Verification Token、签名、时间窗口及审批群；抽取网站/飞书统一审批服务并保留 Webhook 兜底 |
+| 2026-08-19 | main | 新增功能 | 密钥授权范围支持分类令牌 `@group:<key>`（payload `v: 3`）：注册表以桌面端 `licenseSensorGroups.json` 为唯一数据源、启动 fail-fast 校验并打印 SHA-256；`/licenseCheck` 返回 `groupKeys`/`sensorTypes`，`/sensorTypes` 返回 `licenseGroups`；DB 传感器清单以注册表重建（补 `matCol`、`humanBodyOptimized`，`bed4096num` 归入 lab）；v1/v2 老密钥继续兼容 |
+| 2026-08-19 | main | 文档更新 | 修正本文档中沿用错误的 “AES-256-GCM / IV+AuthTag” 描述为实际的 AES-128/ECB/Pkcs7，并新增 §7.4 分类授权注册表说明 |
 
 *变更类型：`新增功能` / `优化重构` / `修复缺陷` / `配置变更` / `文档更新` / `依赖升级` / `初始化`*
 

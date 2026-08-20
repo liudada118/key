@@ -11,8 +11,19 @@
  *
  * 注意：ECB 无随机 IV、无认证标签——相同明文得相同密文，且不做篡改检测
  *      （与桌面端历史行为保持一致；防伪造由离线版的 RSA 签名负责）。
+ *
+ * 授权范围（v3）：payload.file 可以是 "all" / 单系统 / 固定数组 / `@group:<groupKey>` 分类令牌
+ *      / 分类与单系统混合数组。分类令牌原样保存，解密时才按注册表展开 ——
+ *      这样往分类里加系统后，未过期的旧分类密钥能自动获得新增系统。
+ *      分类与系统归属见 shared/licenseScopes.ts（唯一数据源 config/licenseSensorGroups.json）。
  */
 import CryptoJS from "crypto-js";
+import {
+  containsGroupScopeToken,
+  expandLicenseFile,
+  getRegistrySensorTypes,
+  normalizeLicenseFile,
+} from "./licenseScopes";
 
 const KEY_STR = "JIANXINGZHEPSVMC";
 
@@ -169,6 +180,15 @@ export const SENSOR_TYPES: { label: string; value: string }[] = [
   { label: "全部类型", value: "all" },
 ];
 
+/**
+ * "all" 密钥展开出的系统清单 = 注册表全部系统 ∪ 历史 ALL_SENSORS。
+ * 取并集而不是直接换成注册表，是为了只增不减 —— 老客户端拿到的 all 清单不会变短。
+ * 真正的"全部授权"语义由 isAllTypes: true 承载，这个数组只是附带信息。
+ */
+function allAuthorizedSensorTypes(): string[] {
+  return Array.from(new Set([...getRegistrySensorTypes(), ...ALL_SENSORS.map((s) => s.value)]));
+}
+
 export type SensorTypeValue = string;
 
 /** 密钥类型 */
@@ -181,10 +201,11 @@ export const KEY_CATEGORIES = [
 
 /**
  * 生成密钥
- * @param sensorTypes 传感器类型 - 可以是单个 string、string 数组或 "all"
+ * @param sensorTypes 授权范围 - "all" / 单个系统 key / 数组；数组元素可以是 `@group:<groupKey>` 分类令牌
  * @param days 有效期天数
  * @param category 密钥类型: production(量产) / rental(在线租赁)
  * @returns hex 格式密钥字符串
+ * @throws 分类不存在、或授权范围为空
  */
 export function generateLicenseKey(
   sensorTypes: string | string[],
@@ -193,21 +214,17 @@ export function generateLicenseKey(
 ): string {
   const expireTimestamp = Date.now() + days * 24 * 60 * 60 * 1000;
 
-  // file 字段: "all" / 单个 string / string 数组
-  let file: string | string[];
-  if (sensorTypes === "all") {
-    file = "all";
-  } else if (Array.isArray(sensorTypes)) {
-    file = sensorTypes.length === 1 ? sensorTypes[0] : sensorTypes;
-  } else {
-    file = sensorTypes;
-  }
+  // file 字段: "all" / 单个 string / string 数组；分类令牌原样保存（禁止在此展开成系统数组，
+  // 否则密钥就固化成签发当时的成员，失去"随分类更新"的意义）
+  // normalizeLicenseFile 内部会 expandLicenseFile 校验一遍：未知分类 / 空范围直接 throw
+  const file = normalizeLicenseFile(sensorTypes);
 
   const payload = JSON.stringify({
     date: expireTimestamp,
     file,
     cat: category,
-    v: 2,
+    // 含分类令牌 → v3；老的单系统 / 固定数组 / all → 保持 v2
+    v: containsGroupScopeToken(file) ? 3 : 2,
     // 随机 nonce：ECB 是确定性加密，相同参数会产出相同密文；加随机字段保证每把密钥串唯一。
     // 桌面端解密后只读 date/file/cat，自动忽略该字段，无需改动。
     n: CryptoJS.lib.WordArray.random(8).toString(),
@@ -220,8 +237,13 @@ export interface DecodedKey {
   valid: boolean;
   expireTimestamp?: number;
   sensorType?: string;
+  /** 展开后的具体系统 key（分类令牌已按当前注册表展开） */
   sensorTypes?: string[];
   isAllTypes?: boolean;
+  /** 命中的分类 key（无分类授权时为空数组） */
+  groupKeys?: string[];
+  /** 密钥里原样保存的授权范围（"all" / 系统 key / 含 `@group:` 的数组） */
+  scope?: string | string[];
   category?: KeyCategory;
   expireDate?: string;
   remainingDays?: number;
@@ -251,29 +273,38 @@ export function decodeLicenseKey(hexKey: string, nowMs?: number): DecodedKey {
     const remainingDays = Math.ceil(remainingMs / (24 * 60 * 60 * 1000));
     const expireDate = new Date(expireTimestamp).toISOString();
 
-    // 解析 file 字段
-    let sensorType: string | undefined;
-    let sensorTypes: string[] | undefined;
-    let isAllTypes = false;
-
-    if (parsed.file === "all") {
-      isAllTypes = true;
-      sensorType = "all";
-      sensorTypes = ALL_SENSORS.map((s) => s.value);
-    } else if (Array.isArray(parsed.file)) {
-      sensorTypes = parsed.file;
-      sensorType = parsed.file.join(",");
-    } else {
-      sensorType = parsed.file;
-      sensorTypes = [parsed.file];
+    // 解析 file 字段：分类令牌按当前注册表展开；未知分类一律判无效，不能降级当普通系统 key
+    let expanded: ReturnType<typeof expandLicenseFile>;
+    try {
+      expanded = expandLicenseFile(parsed.file, { allSensorTypes: allAuthorizedSensorTypes() });
+    } catch (e) {
+      return {
+        valid: false,
+        error: `授权范围无效：${(e as Error).message}`,
+        expireTimestamp,
+        expireDate,
+        remainingDays,
+        scope: parsed.file,
+        category: parsed.cat || "production",
+        version: parsed.v || 1,
+      };
     }
+
+    // sensorType 保持历史语义（逗号拼接的原始范围），便于老客户端与 DB 列直接使用
+    const sensorType = expanded.isAllTypes
+      ? "all"
+      : Array.isArray(parsed.file)
+        ? parsed.file.join(",")
+        : String(parsed.file);
 
     return {
       valid: remainingDays > 0,
       expireTimestamp,
       sensorType,
-      sensorTypes,
-      isAllTypes,
+      sensorTypes: expanded.sensorTypes,
+      isAllTypes: expanded.isAllTypes,
+      groupKeys: expanded.groupKeys,
+      scope: parsed.file,
       category: parsed.cat || "production",
       expireDate,
       remainingDays,

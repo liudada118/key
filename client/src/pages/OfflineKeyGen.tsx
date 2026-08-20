@@ -35,11 +35,37 @@ import { useState, useMemo, useCallback } from "react";
 import { toast } from "sonner";
 import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { formatLicenseScope } from "@shared/licenseScopes";
 
 type SensorGroup = {
   group: string;
+  /** 注册表里的分类 key；有值才支持「整个分类」授权 */
+  groupKey?: string;
   icon: string;
   items: { label: string; value: string }[];
+};
+
+/** 分类 key → 该分类在注册表里的成员（用于判断哪些勾选项被「整个分类」覆盖） */
+type LicenseGroupOption = {
+  key: string;
+  token: string;
+  label: string;
+  scopeLabel: string;
+  sensorTypes: string[];
+};
+
+/**
+ * 生成接口返回结构。`sensorTypes` 原样带回密钥里的授权范围：
+ * `"all"` / 单系统 string / 数组（元素可能是 `@group:<key>` 分类令牌），
+ * 所以这里不能收窄成 `string[] | "all"`。
+ */
+type OfflineKeyResult = {
+  activationCode: string;
+  sensorTypes: string | string[];
+  expireDate: number;
+  days: number;
+  /** 含分类令牌时为 3，否则 2 */
+  licenseVersion?: number;
 };
 
 const TIME_PRESETS = [
@@ -60,12 +86,7 @@ function ResultDialog({
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
-  result: {
-    activationCode: string;
-    sensorTypes: string[] | "all";
-    expireDate: number;
-    days: number;
-  } | null;
+  result: OfflineKeyResult | null;
   sensorLabelMap: Record<string, string>;
 }) {
   const copyToClipboard = (text: string) => {
@@ -105,13 +126,17 @@ function ResultDialog({
               <span className="text-muted-foreground">到期时间：</span>
               <span className="ml-1">{new Date(result.expireDate).toLocaleDateString("zh-CN")}</span>
             </div>
-            <div>
-              <span className="text-muted-foreground">授权类型：</span>
+            <div className="col-span-2">
+              <span className="text-muted-foreground">授权范围：</span>
+              {/* 分类令牌渲染成「精密全部」而不是 @group:precision */}
               <span className="ml-1">
-                {result.sensorTypes === "all"
-                  ? "全部授权"
-                  : `${result.sensorTypes.length} 个传感器`}
+                {formatLicenseScope(result.sensorTypes, sensorLabelMap) || "（空）"}
               </span>
+              {result.licenseVersion === 3 && (
+                <Badge variant="outline" className="ml-2 text-[10px] h-4 px-1.5">
+                  分类授权 v3
+                </Badge>
+              )}
             </div>
           </div>
 
@@ -149,15 +174,29 @@ function ResultDialog({
 
 /* ============ 传感器类型标签列表（独立组件） ============ */
 function SelectedSensorTags({
+  groupScopeLabels,
   types,
   labelMap,
 }: {
+  /** 「整个分类」授权的中文名，如「精密全部」 */
+  groupScopeLabels: string[];
   types: string[];
   labelMap: Record<string, string>;
 }) {
-  if (types.length === 0) return null;
+  if (groupScopeLabels.length === 0 && types.length === 0) return null;
   return (
     <div className="flex flex-wrap gap-1">
+      {/* 分类令牌用 default 底色区分：它是"随分类更新"的动态授权 */}
+      {groupScopeLabels.map((label) => (
+        <Badge
+          key={label}
+          variant="default"
+          className="text-xs"
+          title="整个分类授权：以后往该分类新增的系统会自动生效"
+        >
+          {label}
+        </Badge>
+      ))}
       {types.map((t) => (
         <Badge key={t} variant="secondary" className="text-xs">
           {labelMap[t] || t}
@@ -176,6 +215,10 @@ export default function OfflineKeyGen() {
   const { data: sensorGroupsRaw, isLoading: sensorsLoading } = trpc.sensors.groups.useQuery();
   const sensorGroups: SensorGroup[] = useMemo(() => sensorGroupsRaw ?? [], [sensorGroupsRaw]);
 
+  // 注册表分类清单（「整个分类」开关用；与桌面端 licenseSensorGroups.json 同源）
+  const { data: licenseGroupData } = trpc.sensors.licenseGroups.useQuery();
+  const licenseGroups: LicenseGroupOption[] = licenseGroupData?.groups || [];
+
   // 客户列表
   const { data: customerList } = trpc.customers.all.useQuery();
   // 合同列表
@@ -184,6 +227,8 @@ export default function OfflineKeyGen() {
 
   // 表单状态
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
+  /** 勾了「整个分类」的分类 key —— 激活码里存 `@group:<key>` 令牌，随分类更新 */
+  const [selectedGroupKeys, setSelectedGroupKeys] = useState<string[]>([]);
   const [isAll, setIsAll] = useState(false);
   const [days, setDays] = useState(30);
   const [customerId, setCustomerId] = useState<number | undefined>();
@@ -209,12 +254,7 @@ export default function OfflineKeyGen() {
   });
 
   // 生成结果
-  const [result, setResult] = useState<{
-    activationCode: string;
-    sensorTypes: string[] | "all";
-    expireDate: number;
-    days: number;
-  } | null>(null);
+  const [result, setResult] = useState<OfflineKeyResult | null>(null);
   const [showResult, setShowResult] = useState(false);
 
   // 生成 mutation
@@ -241,13 +281,44 @@ export default function OfflineKeyGen() {
     [allSensors]
   );
 
-  const selectedCount = isAll ? allSensors.length : selectedTypes.length;
+  const licenseGroupByKey = useMemo(
+    () => new Map(licenseGroups.map((g) => [g.key, g])),
+    [licenseGroups]
+  );
+
+  /** 被已勾选的「整个分类」覆盖的系统（展示成勾中且不可单独取消） */
+  const coveredByGroupScope = useMemo(() => {
+    const covered = new Set<string>();
+    for (const key of selectedGroupKeys) {
+      for (const value of licenseGroupByKey.get(key)?.sensorTypes || []) {
+        covered.add(value);
+      }
+    }
+    return covered;
+  }, [selectedGroupKeys, licenseGroupByKey]);
+
+  const groupScopeLabels = useMemo(
+    () =>
+      selectedGroupKeys.map(
+        (key) => licenseGroupByKey.get(key)?.scopeLabel || `${key}全部`
+      ),
+    [selectedGroupKeys, licenseGroupByKey]
+  );
+
+  const selectedCount = isAll
+    ? allSensors.length
+    : selectedGroupKeys.length + selectedTypes.length;
+  const hasSelection = isAll || selectedGroupKeys.length > 0 || selectedTypes.length > 0;
 
   const handleToggleAll = useCallback((checked: boolean) => {
     setIsAll(checked);
-    if (checked) setSelectedTypes([]);
+    if (checked) {
+      setSelectedTypes([]);
+      setSelectedGroupKeys([]);
+    }
   }, []);
 
+  // 分组全选：勾具体成员，激活码里存固定数组，不随分类更新
   const handleGroupCheckAll = useCallback(
     (groupItems: { value: string }[], checked: boolean) => {
       const values = groupItems.map((i) => i.value);
@@ -256,23 +327,60 @@ export default function OfflineKeyGen() {
           ? Array.from(new Set([...prev, ...values]))
           : prev.filter((v) => !values.includes(v))
       );
+      if (checked) setIsAll(false);
     },
     []
   );
 
+  /**
+   * 「整个分类」开关：激活码里存 `@group:<key>` 令牌而不是当时的成员列表，
+   * 以后往这个分类里加系统，未过期的旧激活码在新版客户端自动获得新增系统。
+   * 同时把该分类在注册表里的成员从单选列表里摘掉（已被令牌覆盖，避免重复）。
+   */
+  const handleGroupScopeToggle = useCallback(
+    (groupKey: string, checked: boolean) => {
+      setSelectedGroupKeys((prev) =>
+        checked
+          ? prev.includes(groupKey) ? prev : [...prev, groupKey]
+          : prev.filter((k) => k !== groupKey)
+      );
+      if (checked) {
+        setIsAll(false);
+        const covered = new Set(licenseGroupByKey.get(groupKey)?.sensorTypes || []);
+        setSelectedTypes((prev) => prev.filter((v) => !covered.has(v)));
+      }
+    },
+    [licenseGroupByKey]
+  );
+
   const handleTypeChange = useCallback((value: string, checked: boolean) => {
     setSelectedTypes((prev) =>
-      checked ? [...prev, value] : prev.filter((v) => v !== value)
+      checked
+        ? prev.includes(value) ? prev : [...prev, value]
+        : prev.filter((v) => v !== value)
     );
+    if (checked) setIsAll(false);
   }, []);
 
+  // 授权范围入参：分类令牌在前，单系统在后。
+  // 离线接口的 schema 只收 "all" 或数组，所以单条目也保持数组（服务端 normalizeLicenseFile 会归一化）。
+  const getSensorTypesParam = useCallback((): "all" | string[] => {
+    if (isAll) return "all";
+    return [
+      ...selectedGroupKeys.map(
+        (key) => licenseGroupByKey.get(key)?.token || `@group:${key}`
+      ),
+      ...selectedTypes,
+    ];
+  }, [isAll, selectedGroupKeys, selectedTypes, licenseGroupByKey]);
+
   const handleGenerate = () => {
-    if (!isAll && selectedTypes.length === 0) {
-      toast.error("请至少选择一个传感器类型");
+    if (!hasSelection) {
+      toast.error("请至少选择一个传感器类型或一个分类");
       return;
     }
     generateMutation.mutate({
-      sensorTypes: isAll ? "all" : selectedTypes,
+      sensorTypes: getSensorTypesParam(),
       days,
       customerId,
       customerName: customerName || undefined,
@@ -327,7 +435,7 @@ export default function OfflineKeyGen() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => { setSelectedTypes([]); setIsAll(false); }}
+                    onClick={() => { setSelectedTypes([]); setSelectedGroupKeys([]); setIsAll(false); }}
                     className="h-7 text-xs"
                   >
                     清空
@@ -340,15 +448,27 @@ export default function OfflineKeyGen() {
                 <div className="space-y-4">
                   {sensorGroups.map((group) => {
                     const groupValues = group.items.map((i) => i.value);
+                    const groupOption = group.groupKey
+                      ? licenseGroupByKey.get(group.groupKey)
+                      : undefined;
+                    const groupScopeOn = !!group.groupKey &&
+                      selectedGroupKeys.includes(group.groupKey);
+                    const isItemChecked = (value: string) =>
+                      isAll || groupScopeOn && coveredByGroupScope.has(value) ||
+                      selectedTypes.includes(value);
                     const checkedCount = isAll
                       ? group.items.length
-                      : groupValues.filter((v) => selectedTypes.includes(v)).length;
+                      : groupValues.filter(isItemChecked).length;
                     const allChecked = checkedCount === group.items.length;
                     const indeterminate = checkedCount > 0 && !allChecked;
+                    /** 「整个分类」只覆盖注册表里的成员；normal 这类本地附加项要单独勾 */
+                    const extraCount = group.items.filter(
+                      (item) => !groupOption?.sensorTypes.includes(item.value)
+                    ).length;
 
                     return (
                       <div key={group.group} className="space-y-2">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <Checkbox
                             checked={isAll || allChecked}
                             disabled={isAll}
@@ -365,20 +485,49 @@ export default function OfflineKeyGen() {
                           >
                             {checkedCount}/{group.items.length}
                           </Badge>
-                        </div>
-                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-x-4 gap-y-1.5 pl-7">
-                          {group.items.map((item) => (
-                            <label key={item.value} className="flex items-center gap-1.5 cursor-pointer group">
-                              <Checkbox
-                                checked={isAll || selectedTypes.includes(item.value)}
+
+                          {/* 整个分类授权：激活码存 @group:<key> 令牌，随分类更新 */}
+                          {groupOption && (
+                            <label
+                              className="flex items-center gap-1.5 ml-auto cursor-pointer"
+                              title={
+                                `勾上后激活码保存「${groupOption.scopeLabel}」这个分类令牌，` +
+                                `以后往该分类里新增的系统，未过期的旧激活码会自动获得。` +
+                                (extraCount > 0
+                                  ? `注意：本组有 ${extraCount} 个不属于注册表的附加项，整组授权不覆盖，需要单独勾选。`
+                                  : "")
+                              }
+                            >
+                              <Switch
+                                checked={groupScopeOn}
                                 disabled={isAll}
-                                onCheckedChange={(checked) => handleTypeChange(item.value, !!checked)}
+                                onCheckedChange={(checked) =>
+                                  handleGroupScopeToggle(groupOption.key, !!checked)
+                                }
                               />
-                              <span className="text-sm text-foreground/80 group-hover:text-foreground transition-colors truncate">
-                                {item.label}
+                              <span className="text-[11px] text-muted-foreground">
+                                整个分类（随分类更新）
                               </span>
                             </label>
-                          ))}
+                          )}
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-x-4 gap-y-1.5 pl-7">
+                          {group.items.map((item) => {
+                            const lockedByGroupScope =
+                              groupScopeOn && coveredByGroupScope.has(item.value);
+                            return (
+                              <label key={item.value} className="flex items-center gap-1.5 cursor-pointer group">
+                                <Checkbox
+                                  checked={isItemChecked(item.value)}
+                                  disabled={isAll || lockedByGroupScope}
+                                  onCheckedChange={(checked) => handleTypeChange(item.value, !!checked)}
+                                />
+                                <span className="text-sm text-foreground/80 group-hover:text-foreground transition-colors truncate">
+                                  {item.label}
+                                </span>
+                              </label>
+                            );
+                          })}
                         </div>
                       </div>
                     );
@@ -527,7 +676,13 @@ export default function OfflineKeyGen() {
               <div className="border-t pt-3 space-y-1.5">
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">授权模式：</span>
-                  <span>{isAll ? "全部授权" : `多类型 (${selectedCount})`}</span>
+                  <span>
+                    {isAll
+                      ? "全部授权"
+                      : selectedGroupKeys.length > 0 && selectedTypes.length === 0
+                        ? `分类授权 (${selectedGroupKeys.length})`
+                        : `多类型 (${selectedCount})`}
+                  </span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">有效天数：</span>
@@ -537,6 +692,7 @@ export default function OfflineKeyGen() {
 
               {/* 已选传感器标签 */}
               <SelectedSensorTags
+                groupScopeLabels={isAll ? [] : groupScopeLabels}
                 types={isAll ? [] : selectedTypes}
                 labelMap={sensorLabelMap}
               />
@@ -546,7 +702,7 @@ export default function OfflineKeyGen() {
                 className="w-full"
                 size="lg"
                 onClick={handleGenerate}
-                disabled={generateMutation.isPending || (!isAll && selectedTypes.length === 0)}
+                disabled={generateMutation.isPending || !hasSelection}
               >
                 {generateMutation.isPending ? (
                   <Loader2 className="h-4 w-4 animate-spin mr-2" />

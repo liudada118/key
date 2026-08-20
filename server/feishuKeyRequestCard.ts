@@ -1,4 +1,5 @@
 import type { KeyRequestNotificationInput } from "./feishuKeyRequestWebhook";
+import { formatLicenseScope } from "../shared/licenseScopes";
 
 type FetchLike = (
   input: string | URL | Request,
@@ -53,9 +54,9 @@ function escapeCardMarkdown(value: string | number) {
   return String(value).replace(/[\\`*_[\]~<>]/g, "\\$&");
 }
 
+/** `@group:precision` 渲染成「精密全部」，系统 key 渲染成中文名 */
 function formatSensorTypes(sensorTypes: string | string[]) {
-  if (sensorTypes === "all") return "全部传感器";
-  return Array.isArray(sensorTypes) ? sensorTypes.join("、") : sensorTypes;
+  return formatLicenseScope(sensorTypes) || "（空）";
 }
 
 function formatSubmittedAt(date: Date) {

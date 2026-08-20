@@ -9,7 +9,12 @@
  * 算法与桌面端 shroom1.0 (aesUtil.js / aes_ecb.js) 完全一致：
  *   AES / ECB / Pkcs7，密钥 = "JIANXINGZHEPSVMC" 逐字符转 hex 后 Hex.parse（AES-128）。
  *   输出纯 hex 密文（无 IV、无认证标签）——与桌面端互通、老 ECB 密钥可继续解。
- * 支持多选传感器类型（数组）和 "all" 全选。
+ * 支持多选传感器类型（数组）、"all" 全选，以及 v3 分类授权令牌 `@group:<groupKey>`。
+ *
+ * v3 分类授权：密钥里保存 `@group:precision` 这种稳定令牌，解密时才按注册表展开成具体系统。
+ *   往分类里加系统后，未过期的旧分类密钥能自动获得新增系统 —— 前提是本文件用的注册表也更新了。
+ *   注册表加载顺序：同目录 licenseSensorGroups.json > 内联快照；也可调用
+ *   setLicenseSensorGroups(groups) 由集成方注入。
  */
 const CryptoJS = require("crypto-js");
 
@@ -158,31 +163,278 @@ const ALL_SENSORS = SENSOR_GROUPS.flatMap((g) => g.items);
 const SENSOR_LABEL_MAP = {};
 ALL_SENSORS.forEach((s) => { SENSOR_LABEL_MAP[s.value] = s.label; });
 
+/* ============================================================
+ * v3 分类授权注册表
+ *
+ * 分类与系统归属的唯一数据源是桌面端的 licenseSensorGroups.json。
+ * 本文件要发给 Electron 集成方，必须自包含，所以内联一份快照；
+ * 加载顺序：同目录 licenseSensorGroups.json（若存在）> 内联快照，
+ * 也可由集成方调用 setLicenseSensorGroups(groups) 注入。
+ *
+ * 注意：分类密钥保存的是稳定令牌 `@group:<groupKey>`，展开发生在解密时 ——
+ * 所以本文件用的注册表落后于服务端时，旧分类密钥拿不到新增系统。升级客户端时记得一起同步。
+ * ============================================================ */
+
+/** 分类令牌前缀，与服务端 shared/licenseScopes.ts 保持一致 */
+const GROUP_SCOPE_PREFIX = "@group:";
+
+/** 内联注册表快照（sha256=268b6077ad11f63dd1f71afda1bd7f96381035681c710a72bacfb67076422f0f） */
+const BUNDLED_LICENSE_SENSOR_GROUPS = [
+  { key: "common", icon: "⭐", items: [{ value: "hand" }] },
+  {
+    key: "care",
+    icon: "❤️",
+    items: [{ value: "jqbed" }, { value: "petCare" }, { value: "petCareMini" }],
+  },
+  { key: "lab", icon: "🧪", items: [{ value: "bed4096" }, { value: "bed4096num" }] },
+  {
+    key: "custom",
+    icon: "⚙️",
+    items: [
+      { value: "smallBedNoAlg" },
+      { value: "smallBed12B" },
+      { value: "matCol" },
+      { value: "tempFullBed" },
+      { value: "wholeChair" },
+      { value: "minzhen" },
+    ],
+  },
+  {
+    key: "precision",
+    icon: "🔬",
+    items: [
+      { value: "handSinglePoint" },
+      { value: "hand0205" },
+      { value: "hand0205Double" },
+      { value: "handGlove115200" },
+      { value: "handGloveFullPacket" },
+      { value: "smallSample" },
+      { value: "robot1" },
+      { value: "robotSY" },
+      { value: "robotLCF" },
+      { value: "footVideo" },
+      { value: "daliegu" },
+      { value: "fast256" },
+      { value: "fast1024" },
+      { value: "humanBody" },
+      { value: "humanBodyOptimized" },
+    ],
+  },
+];
+
+/**
+ * 校验注册表结构：分类为空 / 分类 key 重复或非法 / 分类无系统 / 系统 value 全局重复 全部 throw。
+ * @param {any} groups
+ * @returns {{groupCount:number, sensorTypeCount:number}}
+ */
+function validateLicenseSensorGroups(groups) {
+  if (!Array.isArray(groups) || groups.length === 0) {
+    throw new Error("license sensor groups must be a non-empty array");
+  }
+  const groupKeys = {};
+  const sensorTypes = {};
+  var groupCount = 0;
+  var sensorTypeCount = 0;
+  for (var i = 0; i < groups.length; i++) {
+    const group = groups[i] || {};
+    const groupKey = typeof group.key === "string" ? group.key.trim() : "";
+    if (!groupKey || groupKeys[groupKey]) {
+      throw new Error("duplicate or invalid license group: " + (groupKey || "(empty)"));
+    }
+    if (!Array.isArray(group.items) || group.items.length === 0) {
+      throw new Error("license group has no display systems: " + groupKey);
+    }
+    groupKeys[groupKey] = true;
+    groupCount++;
+    for (var j = 0; j < group.items.length; j++) {
+      const item = group.items[j] || {};
+      const value = typeof item.value === "string" ? item.value.trim() : "";
+      if (!value || sensorTypes[value]) {
+        throw new Error("duplicate or invalid display system: " + (value || "(empty)"));
+      }
+      sensorTypes[value] = true;
+      sensorTypeCount++;
+    }
+  }
+  return { groupCount: groupCount, sensorTypeCount: sensorTypeCount };
+}
+
+var activeLicenseGroups = BUNDLED_LICENSE_SENSOR_GROUPS;
+var licenseGroupsByKey = {};
+var registrySensorTypes = [];
+
+function rebuildLicenseGroupIndexes() {
+  licenseGroupsByKey = {};
+  registrySensorTypes = [];
+  for (var i = 0; i < activeLicenseGroups.length; i++) {
+    const group = activeLicenseGroups[i];
+    licenseGroupsByKey[group.key] = group;
+    for (var j = 0; j < group.items.length; j++) {
+      const value = group.items[j].value;
+      if (registrySensorTypes.indexOf(value) === -1) registrySensorTypes.push(value);
+    }
+  }
+}
+
+/** 替换活动注册表（先校验；校验失败不会污染当前注册表） */
+function setLicenseSensorGroups(groups) {
+  const counts = validateLicenseSensorGroups(groups);
+  activeLicenseGroups = groups;
+  rebuildLicenseGroupIndexes();
+  return counts;
+}
+
+setLicenseSensorGroups(BUNDLED_LICENSE_SENSOR_GROUPS);
+
+// 同目录 licenseSensorGroups.json 优先：集成方同步一份 JSON 过来即可，不必改本文件。
+// 文件不存在 / require 失败 → 静默沿用内联快照；文件存在但内容非法 → 让异常抛出去（fail-fast）。
+(function loadSiblingRegistry() {
+  var sibling;
+  try {
+    sibling = require("./licenseSensorGroups.json");
+  } catch (e) {
+    return;
+  }
+  setLicenseSensorGroups(sibling);
+})();
+
+/** 当前活动注册表 */
+function getLicenseSensorGroups() {
+  return activeLicenseGroups;
+}
+
+/** 注册表里所有系统 key（按注册表顺序、已去重） */
+function getRegistrySensorTypes() {
+  return registrySensorTypes;
+}
+
+/** 注册表里所有分类 key */
+function getLicenseGroupKeys() {
+  return activeLicenseGroups.map(function (g) { return g.key; });
+}
+
+/** 某个分类下的系统 key */
+function getGroupSensorTypes(groupKey) {
+  const group = licenseGroupsByKey[String(groupKey || "").trim()];
+  return group ? group.items.map(function (item) { return item.value; }) : [];
+}
+
+/** 生成分类令牌；分类不存在则 throw（禁止签发未知分类的密钥） */
+function createGroupScopeToken(groupKey) {
+  const normalized = String(groupKey || "").trim();
+  if (!licenseGroupsByKey[normalized]) {
+    throw new Error("unknown license group: " + (normalized || "(empty)"));
+  }
+  return GROUP_SCOPE_PREFIX + normalized;
+}
+
+/** 只判前缀，不校验分类是否存在（用于展示层） */
+function isGroupScopeToken(value) {
+  return typeof value === "string" && value.trim().indexOf(GROUP_SCOPE_PREFIX) === 0;
+}
+
+/**
+ * 解析分类令牌。非分类令牌返回 null；
+ * 是分类令牌但分类未知则 throw —— 不能降级当普通系统 key，否则等于凭空放行。
+ */
+function parseGroupScopeToken(value) {
+  if (!isGroupScopeToken(value)) return null;
+  const groupKey = String(value).trim().slice(GROUP_SCOPE_PREFIX.length).trim();
+  if (!licenseGroupsByKey[groupKey]) {
+    throw new Error("unknown license group: " + (groupKey || "(empty)"));
+  }
+  return groupKey;
+}
+
+/** 授权范围里是否含分类令牌（决定密钥 payload 的版本号 v2 / v3） */
+function containsGroupScopeToken(licenseFile) {
+  if (licenseFile === "all") return false;
+  const entries = Array.isArray(licenseFile) ? licenseFile : [licenseFile];
+  return entries.some(function (entry) { return isGroupScopeToken(entry); });
+}
+
+/** "all" 展开出的系统清单 = 注册表全部 ∪ 历史 ALL_SENSORS（只增不减） */
+function allAuthorizedSensorTypes() {
+  const out = registrySensorTypes.slice();
+  for (var i = 0; i < ALL_SENSORS.length; i++) {
+    if (out.indexOf(ALL_SENSORS[i].value) === -1) out.push(ALL_SENSORS[i].value);
+  }
+  return out;
+}
+
+/**
+ * 把密钥 payload 里的 file 展开成具体系统列表。
+ *  - "all"                                  → isAllTypes: true
+ *  - "humanBodyOptimized"                   → 单系统
+ *  - ["hand0205","humanBodyOptimized"]      → 固定数组（不随分类更新）
+ *  - "@group:precision"                     → 分类当前全部成员（随注册表更新）
+ *  - ["@group:care","humanBodyOptimized"]   → 混合，按顺序展开并去重
+ * @throws 未知分类、或展开后为空
+ */
+function expandLicenseFile(licenseFile) {
+  if (licenseFile === "all") {
+    return { isAllTypes: true, groupKeys: [], sensorTypes: allAuthorizedSensorTypes() };
+  }
+  const entries = Array.isArray(licenseFile) ? licenseFile : [licenseFile];
+  const groupKeys = [];
+  const sensorTypes = [];
+  for (var i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (typeof entry !== "string" || !entry.trim()) continue;
+    const normalized = entry.trim();
+    const groupKey = parseGroupScopeToken(normalized);
+    if (groupKey) {
+      if (groupKeys.indexOf(groupKey) === -1) groupKeys.push(groupKey);
+      const items = licenseGroupsByKey[groupKey].items;
+      for (var j = 0; j < items.length; j++) {
+        if (sensorTypes.indexOf(items[j].value) === -1) sensorTypes.push(items[j].value);
+      }
+      continue;
+    }
+    if (sensorTypes.indexOf(normalized) === -1) sensorTypes.push(normalized);
+  }
+  if (sensorTypes.length === 0) {
+    throw new Error("license scope contains no display system");
+  }
+  return { isAllTypes: false, groupKeys: groupKeys, sensorTypes: sensorTypes };
+}
+
+/** 归一化授权范围：去空、去重、保持顺序；单条目降级为 string。会先展开校验一遍 */
+function normalizeLicenseFile(scope) {
+  if (scope === "all") return "all";
+  const entries = Array.isArray(scope) ? scope : [scope];
+  const normalized = [];
+  for (var i = 0; i < entries.length; i++) {
+    const value = String(entries[i] == null ? "" : entries[i]).trim();
+    if (!value || normalized.indexOf(value) !== -1) continue;
+    normalized.push(value);
+  }
+  expandLicenseFile(normalized);
+  return normalized.length === 1 ? normalized[0] : normalized;
+}
+
 /**
  * 生成密钥
- * @param {string|string[]} sensorTypes - 传感器类型，可以是单个 string、string 数组或 "all"
+ * @param {string|string[]} sensorTypes - "all" / 单个系统 key / 数组；数组元素可以是 `@group:<groupKey>` 分类令牌
  * @param {number} days - 有效期天数
  * @param {string} category - 密钥类型: "production"(量产) / "rental"(在线租赁)
  * @returns {string} hex 格式密钥字符串
+ * @throws 分类不存在、或授权范围为空
  */
 function generateLicenseKey(sensorTypes, days, category) {
   category = category || "production";
   const expireTimestamp = Date.now() + days * 24 * 60 * 60 * 1000;
 
-  var file;
-  if (sensorTypes === "all") {
-    file = "all";
-  } else if (Array.isArray(sensorTypes)) {
-    file = sensorTypes.length === 1 ? sensorTypes[0] : sensorTypes;
-  } else {
-    file = sensorTypes;
-  }
+  // 分类令牌原样保存 —— 禁止在此展开成系统数组，否则密钥就固化成签发当时的成员，
+  // 失去"随分类更新"的意义。normalizeLicenseFile 内部会校验未知分类 / 空范围。
+  const file = normalizeLicenseFile(sensorTypes);
 
   const payload = JSON.stringify({
     date: expireTimestamp,
     file: file,
     cat: category,
-    v: 2,
+    // 含分类令牌 → v3；老的单系统 / 固定数组 / all → 保持 v2
+    v: containsGroupScopeToken(file) ? 3 : 2,
     // 随机 nonce：ECB 确定性加密，加随机字段保证每把密钥串唯一（解密端自动忽略）
     n: CryptoJS.lib.WordArray.random(8).toString(),
   });
@@ -212,26 +464,36 @@ function decodeLicenseKey(hexKey, nowMs) {
     const remainingDays = Math.ceil(remainingMs / (24 * 60 * 60 * 1000));
     const expireDate = new Date(expireTimestamp).toISOString();
 
-    var sensorType, sensorTypes, isAllTypes = false;
-
-    if (parsed.file === "all") {
-      isAllTypes = true;
-      sensorType = "all";
-      sensorTypes = ALL_SENSORS.map(function(s) { return s.value; });
-    } else if (Array.isArray(parsed.file)) {
-      sensorTypes = parsed.file;
-      sensorType = parsed.file.join(",");
-    } else {
-      sensorType = parsed.file;
-      sensorTypes = [parsed.file];
+    // 分类令牌按当前注册表展开；未知分类一律判无效，不能降级当普通系统 key
+    var expanded;
+    try {
+      expanded = expandLicenseFile(parsed.file);
+    } catch (e) {
+      return {
+        valid: false,
+        error: "授权范围无效：" + (e && e.message),
+        expireTimestamp: expireTimestamp,
+        expireDate: expireDate,
+        remainingDays: remainingDays,
+        scope: parsed.file,
+        category: parsed.cat || "production",
+        version: parsed.v || 1,
+      };
     }
+
+    // sensorType 保持历史语义（逗号拼接的原始范围）
+    const sensorType = expanded.isAllTypes
+      ? "all"
+      : Array.isArray(parsed.file) ? parsed.file.join(",") : String(parsed.file);
 
     return {
       valid: remainingDays > 0,
       expireTimestamp: expireTimestamp,
       sensorType: sensorType,
-      sensorTypes: sensorTypes,
-      isAllTypes: isAllTypes,
+      sensorTypes: expanded.sensorTypes,
+      isAllTypes: expanded.isAllTypes,
+      groupKeys: expanded.groupKeys,
+      scope: parsed.file,
       category: parsed.cat || "production",
       expireDate: expireDate,
       remainingDays: remainingDays,
@@ -309,23 +571,26 @@ function verifyOfflineLicense(activationCode, options) {
     const now = (typeof options.nowMs === "number" && !isNaN(options.nowMs)) ? options.nowMs : Date.now();
     const remainingDays = Math.ceil((expireTimestamp - now) / (24 * 60 * 60 * 1000));
 
-    // 解析传感器类型
-    let sensorType, sensorTypes, isAllTypes = false;
+    // 解析传感器类型：与在线密钥同一套展开逻辑，未知分类判无效
     const f = payload.sensorTypes;
-    if (f === "all") {
-      isAllTypes = true; sensorType = "all"; sensorTypes = ALL_SENSORS.map(function (s) { return s.value; });
-    } else if (Array.isArray(f)) {
-      sensorTypes = f; sensorType = f.join(",");
-    } else {
-      sensorType = f; sensorTypes = [f];
+    var expanded;
+    try {
+      expanded = expandLicenseFile(f);
+    } catch (e) {
+      return { valid: false, error: "授权范围无效：" + (e && e.message), expireTimestamp: expireTimestamp, remainingDays: remainingDays, scope: f, version: payload.version || 2 };
     }
+    const sensorType = expanded.isAllTypes
+      ? "all"
+      : Array.isArray(f) ? f.join(",") : String(f);
 
     return {
       valid: remainingDays > 0,
       expireTimestamp: expireTimestamp,
       sensorType: sensorType,
-      sensorTypes: sensorTypes,
-      isAllTypes: isAllTypes,
+      sensorTypes: expanded.sensorTypes,
+      isAllTypes: expanded.isAllTypes,
+      groupKeys: expanded.groupKeys,
+      scope: f,
       remainingDays: remainingDays,
       version: payload.version || 2,
       error: remainingDays > 0 ? undefined : "授权已过期",
@@ -537,6 +802,8 @@ function evaluateOnlineLicense(p) {
       expireTimestamp: p.serverResult.expireTimestamp,
       sensorTypes: p.serverResult.sensorTypes,
       isAllTypes: !!p.serverResult.isAllTypes,
+      // v3：分类授权命中的分类 key，仅作展示/排查用（真正的授权判据是 sensorTypes）
+      groupKeys: p.serverResult.groupKeys,
       serverTime: p.serverResult.time,
       fetchedAt: localNow,
     });
@@ -546,7 +813,8 @@ function evaluateOnlineLicense(p) {
       valid: !!p.serverResult.valid, locked: false, rolledBack: false, offline: false,
       status: p.serverResult.status, reason: p.serverResult.reason,
       expireTimestamp: p.serverResult.expireTimestamp, sensorTypes: p.serverResult.sensorTypes,
-      isAllTypes: !!p.serverResult.isAllTypes, remainingDays: p.serverResult.remainingDays,
+      isAllTypes: !!p.serverResult.isAllTypes, groupKeys: p.serverResult.groupKeys,
+      remainingDays: p.serverResult.remainingDays,
     };
   }
 
@@ -569,7 +837,8 @@ function evaluateOnlineLicense(p) {
     valid: !expired, locked: false, rolledBack: false, offline: true,
     status: cache.status, reason: expired ? "密钥已过期" : undefined,
     expireTimestamp: cache.expireTimestamp, sensorTypes: cache.sensorTypes,
-    isAllTypes: cache.isAllTypes, remainingDays: remainingDays,
+    isAllTypes: cache.isAllTypes, groupKeys: cache.groupKeys,
+    remainingDays: remainingDays,
   };
 }
 
@@ -642,6 +911,20 @@ module.exports = {
   generateLicenseKey,
   decodeLicenseKey,
   verifyOfflineLicense,
+  // v3 分类授权
+  GROUP_SCOPE_PREFIX,
+  setLicenseSensorGroups,
+  getLicenseSensorGroups,
+  getLicenseGroupKeys,
+  getGroupSensorTypes,
+  getRegistrySensorTypes,
+  validateLicenseSensorGroups,
+  createGroupScopeToken,
+  isGroupScopeToken,
+  parseGroupScopeToken,
+  containsGroupScopeToken,
+  expandLicenseFile,
+  normalizeLicenseFile,
   // v2 统一时间闸 / 锁定 / 解锁
   checkTimeGuard,
   isLocked,

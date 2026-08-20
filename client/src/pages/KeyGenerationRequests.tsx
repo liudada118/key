@@ -25,6 +25,7 @@ import { Check, ClipboardCheck, KeyRound, Loader2, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+import { formatLicenseScope } from "@shared/licenseScopes";
 
 type RequestStatus = "PENDING" | "APPROVED" | "REJECTED";
 type StatusFilter = "ALL" | RequestStatus;
@@ -120,11 +121,10 @@ export default function KeyGenerationRequests() {
     [sensorGroups],
   );
 
+  /** `@group:precision` 渲染成「精密全部」，系统 key 渲染成中文名 */
   const formatSensors = (storedValue: string) => {
     const parsed = parseStoredSensorTypes(storedValue);
-    if (parsed === "all") return "全部传感器";
-    const values = Array.isArray(parsed) ? parsed : [parsed];
-    return values.map((value) => sensorLabels[value] || value).join("、");
+    return formatLicenseScope(parsed, sensorLabels) || "（空）";
   };
 
   const reviewMutation = trpc.keyGenerationRequests.review.useMutation({

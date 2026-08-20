@@ -1,0 +1,145 @@
+[
+  {
+    "key": "common",
+    "labelKey": "licenseAdmin.groups.common",
+    "icon": "⭐",
+    "items": [
+      {
+        "labelKey": "sensorHand",
+        "value": "hand"
+      }
+    ]
+  },
+  {
+    "key": "care",
+    "labelKey": "licenseAdmin.groups.care",
+    "icon": "❤️",
+    "items": [
+      {
+        "labelKey": "sensorJqbed",
+        "value": "jqbed"
+      },
+      {
+        "labelKey": "sensorPetCare",
+        "value": "petCare"
+      },
+      {
+        "labelKey": "sensorPetCareMini",
+        "value": "petCareMini"
+      }
+    ]
+  },
+  {
+    "key": "lab",
+    "labelKey": "licenseAdmin.groups.lab",
+    "icon": "🧪",
+    "items": [
+      {
+        "labelKey": "sensorBed4096",
+        "value": "bed4096"
+      },
+      {
+        "labelKey": "sensorBed4096num",
+        "value": "bed4096num"
+      }
+    ]
+  },
+  {
+    "key": "custom",
+    "labelKey": "licenseAdmin.groups.custom",
+    "icon": "⚙️",
+    "items": [
+      {
+        "labelKey": "sensorSmallBedNoAlg",
+        "value": "smallBedNoAlg"
+      },
+      {
+        "labelKey": "sensorSmallBed12B",
+        "value": "smallBed12B"
+      },
+      {
+        "labelKey": "sensorMatCol",
+        "value": "matCol"
+      },
+      {
+        "labelKey": "sensorTempFullBed",
+        "value": "tempFullBed"
+      },
+      {
+        "labelKey": "sensorWholeChair",
+        "value": "wholeChair"
+      },
+      {
+        "labelKey": "sensorMinzhen",
+        "value": "minzhen"
+      }
+    ]
+  },
+  {
+    "key": "precision",
+    "labelKey": "licenseAdmin.groups.precision",
+    "icon": "🔬",
+    "items": [
+      {
+        "labelKey": "sensorHandSinglePoint",
+        "value": "handSinglePoint"
+      },
+      {
+        "labelKey": "sensorHand0205",
+        "value": "hand0205"
+      },
+      {
+        "labelKey": "sensorHand0205Double",
+        "value": "hand0205Double"
+      },
+      {
+        "labelKey": "sensorHandGlove115200",
+        "value": "handGlove115200"
+      },
+      {
+        "labelKey": "sensorHandGloveFullPacket",
+        "value": "handGloveFullPacket"
+      },
+      {
+        "labelKey": "sensorSmallSample",
+        "value": "smallSample"
+      },
+      {
+        "labelKey": "sensorRobot1",
+        "value": "robot1"
+      },
+      {
+        "labelKey": "sensorRobotSY",
+        "value": "robotSY"
+      },
+      {
+        "labelKey": "sensorRobotLCF",
+        "value": "robotLCF"
+      },
+      {
+        "labelKey": "sensorFootVideo",
+        "value": "footVideo"
+      },
+      {
+        "labelKey": "sensorDaliegu",
+        "value": "daliegu"
+      },
+      {
+        "labelKey": "sensorFast256",
+        "value": "fast256"
+      },
+      {
+        "labelKey": "sensorFast1024",
+        "value": "fast1024"
+      },
+      {
+        "labelKey": "sensorHumanBody",
+        "value": "humanBody"
+      },
+      {
+        "labelKey": "sensorHumanBodyOptimized",
+        "value": "humanBodyOptimized"
+      }
+    ]
+  }
+]

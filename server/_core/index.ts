@@ -9,6 +9,13 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { ensureDefaultSuperAdmin, ensureDefaultSensorTypes, ensureRsaKeyPair, ensureDeviceCodeRecordsTable, ensureFeedbackTable, createFeedback, getLicenseKeyByString, markLicenseKeyActivated, markLicenseKeyExpired, recordClientTimeAndDetectTamper, getSensorTypesGrouped } from "../db";
 import { decodeLicenseKey } from "../../shared/crypto";
+import {
+  LICENSE_GROUP_META,
+  SENSOR_LABELS,
+  getLicenseGroupOptions,
+  getLicenseSensorGroups,
+} from "../../shared/licenseScopes";
+import { getLicenseRegistryInfo, loadLicenseRegistry } from "../licenseRegistry";
 import { registerFeishuKeyRequestCardCallback } from "../feishuKeyRequestCardCallback";
 
 function isPortAvailable(port: number): Promise<boolean> {
@@ -31,6 +38,11 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 }
 
 async function startServer() {
+  // 分类授权注册表必须在任何签发/校验之前就位。
+  // 故意放在下面数据库初始化的 try/catch 之外：注册表非法时要 fail-fast 让进程起不来，
+  // 绝不能退回空清单继续签发（文档 §11）。
+  loadLicenseRegistry();
+
   const app = express();
   const server = createServer(app);
   // 飞书验签需要原始请求体，因此必须在全局 JSON 解析器之前注册。
@@ -78,8 +90,10 @@ async function startServer() {
 
     // 用服务器时间判过期
     const decoded = decodeLicenseKey(key, now);
-    // 解密失败/格式错误（无到期时间即视为无法解析）
-    if (!decoded.valid && decoded.error && !decoded.expireTimestamp) {
+    // 解密失败/格式错误（无到期时间即视为无法解析），或授权范围无法展开
+    //（v3 未知 `@group:` 分类 / 空范围：有到期时间但拿不到 sensorTypes）——
+    // 一律判 INVALID，不能降级成"授权 0 个系统但 valid"。
+    if (!decoded.valid && decoded.error && (!decoded.expireTimestamp || !decoded.sensorTypes)) {
       return res.json({ time: now, valid: false, status: "INVALID", reason: decoded.error });
     }
 
@@ -145,18 +159,27 @@ async function startServer() {
       reason,
       expireTimestamp: effectiveExpire,
       remainingDays: effectiveRemainingDays,
+      // sensorTypes 已按当前注册表展开：分类密钥在这里自动拿到新增系统
       sensorTypes: decoded.sensorTypes ?? null,
       isAllTypes: decoded.isAllTypes ?? false,
+      // v3：命中的分类 key（无分类授权为空数组），仅供客户端展示/排查
+      groupKeys: decoded.groupKeys ?? [],
+      // 密钥里原样保存的授权范围（含 `@group:` 令牌），便于对账
+      scope: decoded.scope ?? null,
     });
   });
 
   // 传感器类型清单接口（桌面端拉取动态传感器类型；后台可在"传感器类型管理"里增删，客户端自动同步）
   // 与 /serverTime、/licenseCheck 同款：纯 REST + CORS，桌面端一次 fetch 即可用，无需走 tRPC/superjson
   // 请求: GET /sensorTypes
-  // 返回: { time, groups: [{ group, icon, items: [{ id, label, value }] }], flat: [{ label, value, group }], map: { value: label } }
+  // 返回: { time, groups: [{ group, groupKey, icon, items: [{ id, label, value }] }],
+  //        flat: [{ label, value, group }], map: { value: label },
+  //        licenseGroups: [{ key, token, label, icon, sensorTypes }], registrySha256 }
   app.get("/sensorTypes", async (_req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Cache-Control", "no-store");
+    const registry = getLicenseRegistryInfo();
+    const licenseGroups = getLicenseGroupOptions();
     try {
       const groups = await getSensorTypesGrouped();
       const flat: { label: string; value: string; group: string }[] = [];
@@ -167,10 +190,45 @@ async function startServer() {
           map[it.value] = it.label;
         }
       }
-      res.json({ time: Date.now(), groups, flat, map });
+      res.json({
+        time: Date.now(),
+        groups,
+        flat,
+        map,
+        licenseGroups,
+        registrySha256: registry.sha256,
+      });
     } catch (e) {
-      // DB 不可用时返回空清单 + 错误标记，桌面端可回退到本地缓存
-      res.status(500).json({ time: Date.now(), groups: [], flat: [], map: {}, error: "DB_ERROR" });
+      // DB 不可用时用注册表派生清单兜底（文档 §7：flat 不能为空，否则桌面端会以为一个系统都没授权）
+      const groups = getLicenseSensorGroups().map((group) => ({
+        group: LICENSE_GROUP_META[group.key]?.dbGroupName || group.key,
+        groupKey: group.key,
+        icon: group.icon || "📦",
+        items: group.items.map((item) => ({
+          id: -1,
+          label: SENSOR_LABELS[item.value] || item.value,
+          value: item.value,
+        })),
+      }));
+      const flat: { label: string; value: string; group: string }[] = [];
+      const map: Record<string, string> = {};
+      for (const g of groups) {
+        for (const it of g.items) {
+          flat.push({ label: it.label, value: it.value, group: g.group });
+          map[it.value] = it.label;
+        }
+      }
+      console.error("[sensorTypes] DB 不可用，回退到注册表派生清单:", e);
+      res.json({
+        time: Date.now(),
+        groups,
+        flat,
+        map,
+        licenseGroups,
+        registrySha256: registry.sha256,
+        source: "registry-fallback",
+        error: "DB_ERROR",
+      });
     }
   });
 

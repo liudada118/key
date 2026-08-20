@@ -38,6 +38,7 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { copyText } from "@/lib/clipboard";
 import { Textarea } from "@/components/ui/textarea";
+import { formatScopeEntry, isGroupScopeToken } from "@shared/licenseScopes";
 
 /** 状态 Badge 配置 */
 const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
@@ -235,7 +236,11 @@ export default function KeyList() {
     }
   };
 
-  /** 将逗号分隔的传感器类型转为标签显示 */
+  /**
+   * 将逗号分隔的授权范围转为标签显示。
+   * `@group:precision` 这类分类令牌显示成「精密全部」并用 default 底色区分 ——
+   * 它是随分类更新的动态授权，不是一个具体系统。
+   */
   const renderSensorTypes = (sensorTypeStr: string) => {
     if (sensorTypeStr === "all") {
       return (
@@ -245,11 +250,16 @@ export default function KeyList() {
       );
     }
     const types = sensorTypeStr.split(",").filter(Boolean);
+    const labelOf = (t: string) => formatScopeEntry(t, sensorLabelMap);
+    const badgeVariant = (t: string) =>
+      isGroupScopeToken(t) ? ("default" as const) : ("secondary" as const);
     if (types.length === 1) {
-      return (
-        <span className="text-sm text-foreground">
-          {sensorLabelMap[types[0]] || types[0]}
-        </span>
+      return isGroupScopeToken(types[0]) ? (
+        <Badge variant="default" className="text-[10px]" title="整个分类授权：随分类更新">
+          {labelOf(types[0])}
+        </Badge>
+      ) : (
+        <span className="text-sm text-foreground">{labelOf(types[0])}</span>
       );
     }
     const displayTypes = types.slice(0, 2);
@@ -259,8 +269,8 @@ export default function KeyList() {
         <TooltipTrigger asChild>
           <div className="flex flex-wrap gap-0.5 cursor-help">
             {displayTypes.map((t) => (
-              <Badge key={t} variant="secondary" className="text-[10px] h-4 px-1">
-                {sensorLabelMap[t] || t}
+              <Badge key={t} variant={badgeVariant(t)} className="text-[10px] h-4 px-1">
+                {labelOf(t)}
               </Badge>
             ))}
             {remaining > 0 && (
@@ -273,8 +283,8 @@ export default function KeyList() {
         <TooltipContent className="max-w-[300px]">
           <div className="flex flex-wrap gap-1">
             {types.map((t) => (
-              <Badge key={t} variant="secondary" className="text-[10px]">
-                {sensorLabelMap[t] || t}
+              <Badge key={t} variant={badgeVariant(t)} className="text-[10px]">
+                {labelOf(t)}
               </Badge>
             ))}
           </div>

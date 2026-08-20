@@ -108,6 +108,30 @@ import { sendFeishuKeyRequestApprovalCard } from "./feishuKeyRequestCard";
 import { reviewKeyGenerationRequest } from "./keyGenerationRequestApproval";
 import { prepareOnlineKeyGeneration } from "./onlineKeyGeneration";
 import { TRPCError } from "@trpc/server";
+import {
+  getLicenseGroupOptions,
+  normalizeLicenseFile,
+} from "@shared/licenseScopes";
+import { getLicenseRegistryInfo } from "./licenseRegistry";
+
+/**
+ * 授权范围入参的公共校验：`"all"` / 单系统 key / 数组（元素可为 `@group:<groupKey>` 分类令牌）。
+ * 未知分类、空范围一律 4xx 拒绝，绝不让非法范围走到 generateLicenseKey。
+ * 四处签发入口（keys.generate / keys.batchGenerate / offlineKeys.generate /
+ * keyGenerationRequests.create）共用这一份，避免复制成四份各自漂移。
+ */
+function licenseScopeSchema<T extends z.ZodTypeAny>(inner: T) {
+  return inner.superRefine((value, ctx) => {
+    try {
+      normalizeLicenseFile(value as string | string[]);
+    } catch (error) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `授权范围无效：${(error as Error).message}`,
+      });
+    }
+  });
+}
 
 async function getAccessibleFeishuContract(
   user: { role: string; name?: string | null },
@@ -481,6 +505,19 @@ export const appRouter = router({
       return getSensorTypesGrouped();
     }),
 
+    /**
+     * 授权分类清单（v3 分类授权）。后台「整个分类」勾选项用这个接口，
+     * token 字段就是要塞进密钥的 `@group:<key>` 令牌。
+     */
+    licenseGroups: publicProcedure.query(() => {
+      const registry = getLicenseRegistryInfo();
+      return {
+        groups: getLicenseGroupOptions(),
+        registrySha256: registry.sha256,
+        registrySource: registry.source,
+      };
+    }),
+
     /** 获取所有传感器类型（包括禁用的，管理用） */
     all: superAdminProcedure.query(async () => {
       return getAllSensorTypes();
@@ -552,8 +589,10 @@ export const appRouter = router({
     generate: protectedProcedure
       .input(
         z.object({
-          sensorTypes: z.union([z.literal("all"), z.array(z.string().min(1))]),
-          days: z.number().min(1).max(36500),
+          sensorTypes: licenseScopeSchema(
+            z.union([z.literal("all"), z.array(z.string().min(1)).min(1)])
+          ),
+          days: z.number().int().min(1).max(36500),
           customerId: z.number().optional(),
           customerName: z.string().optional(),
           contractId: z.number().optional(),
@@ -661,8 +700,10 @@ export const appRouter = router({
     generate: protectedProcedure
       .input(
         z.object({
-          sensorTypes: z.union([z.string(), z.array(z.string())]),
-          days: z.number().min(1).max(36500),
+          sensorTypes: licenseScopeSchema(
+            z.union([z.string().min(1), z.array(z.string().min(1)).min(1)])
+          ),
+          days: z.number().int().min(1).max(36500),
           category: z.enum(["production", "rental"]),
           customerId: z.number().optional(),
           customerName: z.string().optional(),
@@ -710,10 +751,12 @@ export const appRouter = router({
     batchGenerate: protectedProcedure
       .input(
         z.object({
-          sensorTypes: z.union([z.string(), z.array(z.string())]),
-          days: z.number().min(1).max(36500),
+          sensorTypes: licenseScopeSchema(
+            z.union([z.string().min(1), z.array(z.string().min(1)).min(1)])
+          ),
+          days: z.number().int().min(1).max(36500),
           category: z.enum(["production", "rental"]),
-          count: z.number().min(1).max(500),
+          count: z.number().int().min(1).max(500),
           customerId: z.number().optional(),
           customerName: z.string().optional(),
           contractId: z.number().optional(),
@@ -1321,13 +1364,12 @@ export const appRouter = router({
       .input(
         z.object({
           mode: z.enum(["single", "batch"]),
-          sensorTypes: z.union([
-            z.string().min(1),
-            z.array(z.string().min(1)).min(1),
-          ]),
-          days: z.number().min(1).max(36500),
+          sensorTypes: licenseScopeSchema(
+            z.union([z.string().min(1), z.array(z.string().min(1)).min(1)])
+          ),
+          days: z.number().int().min(1).max(36500),
           category: z.enum(["production", "rental"]),
-          count: z.number().min(1).max(500).optional(),
+          count: z.number().int().min(1).max(500).optional(),
           reason: z.string().trim().min(2, "请填写无合同生成原因").max(1000),
           generationRemark: z.string().trim().max(1000).optional(),
         })

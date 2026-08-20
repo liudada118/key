@@ -7,6 +7,7 @@ import {
   rejectKeyGenerationRequest,
 } from "./db";
 import { prepareOnlineKeyGeneration } from "./onlineKeyGeneration";
+import { normalizeLicenseFile } from "../shared/licenseScopes";
 
 const storedSensorTypesSchema = z.union([
   z.string().min(1),
@@ -111,9 +112,20 @@ export async function reviewKeyGenerationRequest(params: {
     });
   }
 
+  // 提交与批准之间分类可能被删（注册表同步过），批准时必须重新校验一次授权范围
+  let scope: string | string[];
+  try {
+    scope = normalizeLicenseFile(parsedSensorTypes.data);
+  } catch (error) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `申请中的授权范围已失效：${(error as Error).message}，请让申请人重新提交`,
+    });
+  }
+
   const prepared = prepareOnlineKeyGeneration({
     mode: request.mode,
-    sensorTypes: parsedSensorTypes.data,
+    sensorTypes: scope,
     days: request.days,
     category: request.category,
     count: request.mode === "batch" ? request.count : 1,

@@ -33,6 +33,15 @@ import {
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { generateLicenseKey, decodeLicenseKey } from "../shared/crypto";
+import {
+  GROUP_SCOPE_PREFIX,
+  LICENSE_GROUP_META,
+  SENSOR_LABELS,
+  containsGroupScopeToken,
+  getLicenseSensorGroups,
+  groupKeyByDbGroupName,
+  normalizeLicenseFile,
+} from "../shared/licenseScopes";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -177,57 +186,69 @@ export async function ensureDefaultSuperAdmin() {
 
 /** 确保默认传感器类型存在 */
 /**
- * 桌面端原有的授权传感器类型（权威清单，共 26 个）。
- * 与桌面端 Title.jsx 的 allSensorArr 授权闸对齐（value 逐字一致才能解锁）。
- * 约束：只增不删、不改 value（value 是桌面端识别键）；label 可改。
- * 新增类型必须同时在桌面端 allSensorArr 登记，否则发出的 key 用户选不到。
+ * 注册表外的"本地附加项"：注册表里没有它们，但后台仍要能选。
+ * 它们不属于任何分类令牌 —— `@group:common` 不会包含 normal，只能被单独勾选。
  */
-const DEFAULT_SENSOR_TYPES: InsertSensorType[] = [
-  // 常用
-  { label: "手部检测", value: "hand", groupName: "常用", groupIcon: "🖐️", sortOrder: 1, isActive: true },
-  // 关怀
-  { label: "小床监测", value: "jqbed", groupName: "关怀", groupIcon: "🛏️", sortOrder: 2, isActive: true },
-  { label: "宠物看护", value: "petCare", groupName: "关怀", groupIcon: "🛏️", sortOrder: 3, isActive: true },
-  { label: "mini看护", value: "petCareMini", groupName: "关怀", groupIcon: "🛏️", sortOrder: 4, isActive: true },
-  // lab
-  { label: "OneStep", value: "bed4096", groupName: "lab", groupIcon: "🧪", sortOrder: 5, isActive: true },
-  // 定制
-  { label: "小床检测(数据)", value: "smallBedNoAlg", groupName: "定制", groupIcon: "🛠️", sortOrder: 6, isActive: true },
-  { label: "小床检测(12B)", value: "smallBed12B", groupName: "定制", groupIcon: "🛠️", sortOrder: 7, isActive: true },
-  { label: "温度全床系统", value: "tempFullBed", groupName: "定制", groupIcon: "🛠️", sortOrder: 8, isActive: true },
-  { label: "整椅展示", value: "wholeChair", groupName: "定制", groupIcon: "🛠️", sortOrder: 9, isActive: true },
-  { label: "轮椅", value: "minzhen", groupName: "定制", groupIcon: "🛠️", sortOrder: 10, isActive: true },
-  // 精密
-  { label: "32*32(检测点)", value: "handSinglePoint", groupName: "精密", groupIcon: "🧤", sortOrder: 11, isActive: true },
-  { label: "触觉手套", value: "hand0205", groupName: "精密", groupIcon: "🧤", sortOrder: 12, isActive: true },
-  { label: "触觉手套2", value: "hand0205Double", groupName: "精密", groupIcon: "🧤", sortOrder: 13, isActive: true },
-  { label: "触觉手套(115200)", value: "handGlove115200", groupName: "精密", groupIcon: "🧤", sortOrder: 14, isActive: true },
-  { label: "触觉手套(整包)", value: "handGloveFullPacket", groupName: "精密", groupIcon: "🧤", sortOrder: 15, isActive: true },
-  { label: "10*10小样", value: "smallSample", groupName: "精密", groupIcon: "🧤", sortOrder: 16, isActive: true },
-  { label: "宇树G1触觉上衣", value: "robot1", groupName: "精密", groupIcon: "🧤", sortOrder: 17, isActive: true },
-  { label: "松延N2触觉上衣", value: "robotSY", groupName: "精密", groupIcon: "🧤", sortOrder: 18, isActive: true },
-  { label: "零次方H1触觉上衣", value: "robotLCF", groupName: "精密", groupIcon: "🧤", sortOrder: 19, isActive: true },
-  { label: "触觉足底", value: "footVideo", groupName: "精密", groupIcon: "🧤", sortOrder: 20, isActive: true },
-  { label: "14x20高速", value: "daliegu", groupName: "精密", groupIcon: "🧤", sortOrder: 21, isActive: true },
-  { label: "16x16高速", value: "fast256", groupName: "精密", groupIcon: "🧤", sortOrder: 22, isActive: true },
-  { label: "32x32高速", value: "fast1024", groupName: "精密", groupIcon: "🧤", sortOrder: 23, isActive: true },
-  { label: "人体全身", value: "humanBody", groupName: "精密", groupIcon: "🧤", sortOrder: 24, isActive: true },
-  { label: "64*64高速", value: "bed4096num", groupName: "精密", groupIcon: "🧤", sortOrder: 25, isActive: true },
-  // 常用（测试）
-  { label: "正常测试", value: "normal", groupName: "常用", groupIcon: "🖐️", sortOrder: 26, isActive: true },
+const LOCAL_EXTRA_SENSOR_TYPES: { value: string; groupKey: string }[] = [
+  { value: "normal", groupKey: "common" },
 ];
 
 /**
- * 将传感器类型表校准为权威清单（DEFAULT_SENSOR_TYPES，即桌面端识别的 24 个）。
- * 以桌面端为唯一标准，保证后台与桌面端完全一致，每次启动幂等执行：
+ * 授权传感器类型的权威清单，**由分类注册表派生**（config/licenseSensorGroups.json）。
+ * 文档 §2：服务端不得再维护第二份手写分类数组 —— 要加/移动系统请改注册表并重新同步。
+ *
+ * DB 这张表只负责"中文显示名 + 排序"，分类归属一律读注册表：
+ *   groupName 取 LICENSE_GROUP_META[key].dbGroupName（必须与历史值逐字一致，
+ *   departments.sensorGroup 是按这个字符串绑定部门的）；
+ *   label 取 SENSOR_LABELS[value]，缺失则回退成 value（新增系统时去 shared/licenseScopes.ts 补中文名）。
+ *
+ * 约束不变：只增不删、不改 value（value 是桌面端识别键，逐字比对才能解锁）。
+ */
+function buildDefaultSensorTypes(): InsertSensorType[] {
+  const rows: InsertSensorType[] = [];
+  let sortOrder = 0;
+  for (const group of getLicenseSensorGroups()) {
+    const meta = LICENSE_GROUP_META[group.key];
+    for (const item of group.items) {
+      sortOrder += 1;
+      rows.push({
+        label: SENSOR_LABELS[item.value] || item.value,
+        value: item.value,
+        groupName: meta?.dbGroupName || group.key,
+        groupIcon: group.icon || "📦",
+        sortOrder,
+        isActive: true,
+      });
+    }
+  }
+  for (const extra of LOCAL_EXTRA_SENSOR_TYPES) {
+    const group = getLicenseSensorGroups().find((g) => g.key === extra.groupKey);
+    sortOrder += 1;
+    rows.push({
+      label: SENSOR_LABELS[extra.value] || extra.value,
+      value: extra.value,
+      groupName: LICENSE_GROUP_META[extra.groupKey]?.dbGroupName || extra.groupKey,
+      groupIcon: group?.icon || "📦",
+      sortOrder,
+      isActive: true,
+    });
+  }
+  return rows;
+}
+
+/**
+ * 将传感器类型表校准为权威清单（由注册表派生）。
+ * 以注册表为唯一标准，保证后台与桌面端完全一致，每次启动幂等执行：
  *  1. 缺失的权威 value -> 插入；
- *  2. 已存在的权威 value -> 纠正 label/分组/图标/排序，并确保启用（覆盖历史脏数据，如 smallSample 的旧标签）；
+ *  2. 已存在的权威 value -> 纠正 label/分组/图标/排序，并确保启用（覆盖历史脏数据）；
  *  3. 不在权威清单内的旧类型（早期迁移脚本灌入的 gloves/car/volvo 等）-> 停用（软处理，按 value 授权仍有效，仅从列表隐藏）。
  */
 export async function ensureDefaultSensorTypes() {
   const db = await getDb();
   if (!db) return;
 
+  // 注册表可能在启动时被磁盘副本覆盖，所以每次调用都重新派生，不缓存成模块级常量
+  const DEFAULT_SENSOR_TYPES = buildDefaultSensorTypes();
   const authoritativeValues = DEFAULT_SENSOR_TYPES.map((s) => s.value);
   const existing = await db
     .select({
@@ -287,6 +308,17 @@ export async function ensureDefaultSensorTypes() {
     console.log(
       `[Init] Sensor types reconciled to authoritative list: +${inserted} inserted, ${corrected} corrected, ${staleActiveValues.length} deactivated (${authoritativeValues.length} authoritative)`
     );
+  }
+
+  // 便于排查注册表与 DB 的偏差（只打 value 与数量，不涉及密钥内容）
+  const missingLabels = DEFAULT_SENSOR_TYPES.filter((s) => s.label === s.value).map((s) => s.value);
+  if (missingLabels.length) {
+    console.warn(
+      `[Init] 注册表里这些系统还没有中文名（后台会显示 value），请在 shared/licenseScopes.ts 的 SENSOR_LABELS 补上：${missingLabels.join("、")}`
+    );
+  }
+  if (staleActiveValues.length) {
+    console.warn(`[Init] 已停用（DB 有但注册表没有）：${staleActiveValues.join("、")}`);
   }
 }
 
@@ -924,14 +956,26 @@ export async function expireStaleKeys(userIds: number[]) {
   );
 }
 
-/** 取某些传感器分组下的所有传感器 value（用于密钥管理“按分组跨部门可见”）。分组是动态的（超管可在传感器管理里改 groupName），故查询时实时读取。 */
+/**
+ * 取某些传感器分组下的所有传感器 value（用于密钥管理“按分组跨部门可见”）。
+ * 分组是动态的（超管可在传感器管理里改 groupName），故查询时实时读取。
+ *
+ * v3：额外把分组对应的 `@group:<key>` 令牌一起返回 —— 分类密钥的 sensorType 列里存的是令牌，
+ * 不含具体系统 value，不加这一步精密部门管理员就看不到 `@group:precision` 的密钥。
+ * 令牌本身不含逗号，调用方的 FIND_IN_SET 可以直接用。
+ */
 export async function getSensorValuesByGroups(groups: string[]): Promise<string[]> {
   if (!groups.length) return [];
   const db = await getDb();
   if (!db) return [];
   const rows = await db.select({ value: sensorTypes.value }).from(sensorTypes)
     .where(inArray(sensorTypes.groupName, groups));
-  return rows.map((r) => r.value);
+  const values = rows.map((r) => r.value);
+  for (const groupName of groups) {
+    const groupKey = groupKeyByDbGroupName(groupName);
+    if (groupKey) values.push(`${GROUP_SCOPE_PREFIX}${groupKey}`);
+  }
+  return Array.from(new Set(values));
 }
 
 export async function getLicenseKeys(opts: {
@@ -1199,11 +1243,16 @@ export async function getSensorTypesGrouped() {
     .where(eq(sensorTypes.isActive, true))
     .orderBy(sensorTypes.sortOrder);
 
-  // 按分组聚合
-  const groupMap = new Map<string, { group: string; icon: string; items: { label: string; value: string; id: number }[] }>();
+  // 按分组聚合；groupKey 是注册表里的分类 key，前端据此拼 `@group:<key>` 令牌做「整个分类」授权
+  const groupMap = new Map<string, { group: string; groupKey?: string; icon: string; items: { label: string; value: string; id: number }[] }>();
   for (const s of all) {
     if (!groupMap.has(s.groupName)) {
-      groupMap.set(s.groupName, { group: s.groupName, icon: s.groupIcon, items: [] });
+      groupMap.set(s.groupName, {
+        group: s.groupName,
+        groupKey: groupKeyByDbGroupName(s.groupName),
+        icon: s.groupIcon,
+        items: [],
+      });
     }
     groupMap.get(s.groupName)!.items.push({ label: s.label, value: s.value, id: s.id });
   }
@@ -1483,7 +1532,9 @@ export async function generateUnlockCode() {
 
 // ===== Offline Key Helpers =====
 
+/** 离线激活码的默认版本；含 `@group:` 分类令牌时提升为 3 */
 const LICENSE_VERSION = 2;
+const LICENSE_VERSION_WITH_GROUPS = 3;
 
 /** 生成离线激活码（RSA-SHA256 签名） */
 export async function generateOfflineActivationCode(params: {
@@ -1508,12 +1559,16 @@ export async function generateOfflineActivationCode(params: {
   // 计算到期时间
   const expireDate = params.expireDate || (Date.now() + params.days * 24 * 60 * 60 * 1000);
 
+  // 授权范围归一化 + 校验（未知分类 / 空范围直接 throw）；分类令牌原样保存，不在此展开
+  const scope = normalizeLicenseFile(params.sensorTypes);
+  const licenseVersion = containsGroupScopeToken(scope) ? LICENSE_VERSION_WITH_GROUPS : LICENSE_VERSION;
+
   // 构造 payload（已去掉机器码绑定：离线版不再绑定具体机器）
   const payload = {
-    sensorTypes: params.sensorTypes,
+    sensorTypes: scope,
     expireDate,
     issuedAt: Date.now(),
-    version: LICENSE_VERSION,
+    version: licenseVersion,
   };
 
   const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64");
@@ -1528,8 +1583,8 @@ export async function generateOfflineActivationCode(params: {
   const licenseObj = { payload: payloadB64, signature };
   const activationCode = Buffer.from(JSON.stringify(licenseObj)).toString("base64");
 
-  // 存储到数据库
-  const sensorTypeStr = params.sensorTypes === "all" ? "all" : params.sensorTypes.join(",");
+  // 存储到数据库：与 payload 的 sensorTypes 逐字一致（分类令牌原样存）
+  const sensorTypeStr = Array.isArray(scope) ? scope.join(",") : scope;
 
   await db.insert(offlineKeys).values({
     machineId: "", // 已弃用：离线版不再绑定机器码，占位空串（列仍为 notNull，避免 DB 迁移）
@@ -1545,14 +1600,15 @@ export async function generateOfflineActivationCode(params: {
     contractId: params.contractId || null,
     contractNo: params.contractNo || null,
     remark: params.remark || null,
-    licenseVersion: LICENSE_VERSION,
+    licenseVersion,
   });
 
   return {
     activationCode,
-    sensorTypes: params.sensorTypes,
+    sensorTypes: scope,
     expireDate,
     days: params.days,
+    licenseVersion,
   };
 }
 
@@ -1946,7 +2002,9 @@ export async function reissueLicenseKey(keyId: number, actorId: number, actorNam
   const old = await getLicenseKeyById(keyId);
   if (!old) throw new Error("原密钥不存在");
 
-  // 重建传感器入参并生成新串
+  // 重建传感器入参并生成新串。
+  // sensorType 列存的是原始范围（可能含 `@group:precision` 令牌），split 后令牌被原样带回
+  // generateLicenseKey —— 分类语义得以保留，重签的密钥仍会随分类更新。
   const sensorsArg: string | string[] = old.sensorType === "all" ? "all" : old.sensorType.split(",");
   const newKeyString = generateLicenseKey(sensorsArg, old.days, old.category as "production" | "rental");
   const decoded = decodeLicenseKey(newKeyString);

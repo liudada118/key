@@ -25,11 +25,20 @@ describe("Feishu key request webhook", () => {
     expect(text).toContain("申请编号：KGR-20260730-TEST1234");
     expect(text).toContain("申请人：测试申请人");
     expect(text).toContain("生成方式：批量（3 个）");
-    expect(text).toContain("授权范围：hand、seat");
+    // hand 有中文名 → 手部检测；seat 不在清单里 → 原样显示
+    expect(text).toContain("授权范围：手部检测、seat");
     expect(text).toContain("有效期：30 天");
     expect(text).toContain("申请原因：客户现场急用");
     expect(text).toContain("生成备注：回归测试");
     expect(text).toContain("提交时间：2026/07/30 16:00:00");
+  });
+
+  it("renders a category token as its Chinese scope label", () => {
+    const text = buildKeyRequestNotificationText({
+      ...request,
+      sensorTypes: ["@group:precision", "humanBodyOptimized"],
+    });
+    expect(text).toContain("授权范围：精密全部、人体全身优化");
   });
 
   it("posts a UTF-8 text message to the configured webhook", async () => {
