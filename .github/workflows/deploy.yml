@@ -10,6 +10,111 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      # SSH 步骤失败时 appleboy 的报错很含糊,而完整 job 日志要 repo admin 权限才看得到,
+      # 所以先在这里自检一遍:哪个 Secret 空了、私钥格式对不对、端口通不通。
+      # 只打印名字、长度和判定结果,不打印任何 Secret 的值。
+      - name: 自检 Secrets 与连通性
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_CONTRACT_BASE_URL: ${{ secrets.FEISHU_CONTRACT_BASE_URL }}
+          FEISHU_KEY_REQUEST_WEBHOOK_URL: ${{ secrets.FEISHU_KEY_REQUEST_WEBHOOK_URL }}
+          FEISHU_APPROVAL_CHAT_ID: ${{ secrets.FEISHU_APPROVAL_CHAT_ID }}
+          FEISHU_VERIFICATION_TOKEN: ${{ secrets.FEISHU_VERIFICATION_TOKEN }}
+          FEISHU_CALLBACK_ENCRYPT_KEY: ${{ secrets.FEISHU_CALLBACK_ENCRYPT_KEY }}
+          FEISHU_APPROVAL_REVIEWER_USERNAME: ${{ secrets.FEISHU_APPROVAL_REVIEWER_USERNAME }}
+        run: |
+          fatal=0
+
+          report() {
+            # $1=名称 $2=值 $3=required|optional
+            if [ -z "$2" ]; then
+              if [ "$3" = required ]; then
+                echo "  ✗ $1 未设置或为空"
+                fatal=1
+              else
+                echo "  · $1 未设置(可选,对应功能会关掉)"
+              fi
+            else
+              echo "  ✓ $1 已设置(${#2} 字符)"
+            fi
+          }
+
+          echo "== 登录用 Secrets(缺一不可) =="
+          report SERVER_HOST "$SERVER_HOST" required
+          report SERVER_PORT "$SERVER_PORT" required
+          report SERVER_USER "$SERVER_USER" required
+          report SERVER_SSH_KEY "$SERVER_SSH_KEY" required
+
+          echo "== 运行时 Secrets =="
+          report DATABASE_URL "$DATABASE_URL" required
+          report JWT_SECRET "$JWT_SECRET" required
+          for name in FEISHU_APP_ID FEISHU_APP_SECRET FEISHU_CONTRACT_BASE_URL \
+                      FEISHU_KEY_REQUEST_WEBHOOK_URL FEISHU_APPROVAL_CHAT_ID \
+                      FEISHU_VERIFICATION_TOKEN FEISHU_CALLBACK_ENCRYPT_KEY \
+                      FEISHU_APPROVAL_REVIEWER_USERNAME; do
+            eval "value=\${$name}"
+            report "$name" "$value" optional
+          done
+
+          echo "== SERVER_PORT 格式 =="
+          case "$SERVER_PORT" in
+            '') ;;
+            *[!0-9]*) echo "  ✗ 不是纯数字(有空格或换行也会这样)"; fatal=1 ;;
+            *) echo "  ✓ 纯数字" ;;
+          esac
+
+          echo "== SERVER_SSH_KEY 格式 =="
+          if [ -n "$SERVER_SSH_KEY" ]; then
+            # 用 case 匹配,避免把私钥内容 echo 出来
+            case "$SERVER_SSH_KEY" in
+              "-----BEGIN "*)
+                echo "  ✓ 以 -----BEGIN 开头" ;;
+              "ssh-rsa "*|"ssh-ed25519 "*|"ecdsa-sha2-"*)
+                echo "  ✗ 这是公钥(.pub)。这里要填私钥全文,公钥是放到服务器 ~/.ssh/authorized_keys 的"
+                fatal=1 ;;
+              *)
+                echo "  ✗ 开头不是 -----BEGIN,可能贴错内容或有前导空白/引号"
+                fatal=1 ;;
+            esac
+            lines=$(printf '%s\n' "$SERVER_SSH_KEY" | wc -l)
+            if [ "$lines" -lt 3 ]; then
+              echo "  ✗ 只有 $lines 行 —— 私钥被压成单行了,粘贴时必须保留原始换行"
+              fatal=1
+            else
+              echo "  ✓ $lines 行"
+            fi
+            case "$SERVER_SSH_KEY" in
+              *"PRIVATE KEY"*) echo "  ✓ 含 PRIVATE KEY 标记" ;;
+              *) echo "  ✗ 不含 PRIVATE KEY 标记"; fatal=1 ;;
+            esac
+          fi
+
+          echo "== TCP 连通性 =="
+          if [ -n "$SERVER_HOST" ] && [ -n "$SERVER_PORT" ]; then
+            if timeout 15 bash -c "cat < /dev/null > /dev/tcp/$SERVER_HOST/$SERVER_PORT" 2>/dev/null; then
+              echo "  ✓ 端口可达 —— 后面若仍失败就是认证问题(私钥 / authorized_keys / 用户名)"
+            else
+              echo "  ✗ 连不上 —— 阿里云安全组没放行 GitHub runner 出口 IP,或 HOST/PORT 填错"
+              echo "    (这一条不拦截,让下一步的 appleboy 报错也一起打出来)"
+            fi
+          fi
+
+          if [ "$fatal" = 1 ]; then
+            echo ""
+            echo "上面标 ✗ 的项需要在 Settings → Secrets and variables → Actions 里重新设置,"
+            echo "然后在 Actions 页面点 Run workflow 重跑,不用新提交。"
+            exit 1
+          fi
+          echo ""
+          echo "自检通过。"
+
       - name: SSH 登录服务器并部署
         uses: appleboy/ssh-action@v1.2.0
         with:
