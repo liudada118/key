@@ -96,24 +96,62 @@ jobs:
             esac
           fi
 
+          verdict=""
+
           echo "== TCP 连通性 =="
+          tcp=unknown
           if [ -n "$SERVER_HOST" ] && [ -n "$SERVER_PORT" ]; then
             if timeout 15 bash -c "cat < /dev/null > /dev/tcp/$SERVER_HOST/$SERVER_PORT" 2>/dev/null; then
-              echo "  ✓ 端口可达 —— 后面若仍失败就是认证问题(私钥 / authorized_keys / 用户名)"
+              tcp=ok;   echo "  ✓ 端口可达"
             else
-              echo "  ✗ 连不上 —— 阿里云安全组没放行 GitHub runner 出口 IP,或 HOST/PORT 填错"
-              echo "    (这一条不拦截,让下一步的 appleboy 报错也一起打出来)"
+              tcp=fail; fatal=1
+              echo "  ✗ 连不上(拒绝或超时)——HOST/PORT 指错机器,或 sshd 没起,或安全组挡了"
             fi
+          fi
+          verdict="TCP=$tcp"
+
+          # 亲自连一次并保留 ssh -v 的判定,好把结论写进 annotation。
+          # appleboy 也是这么落盘私钥的;这里 umask 077 + trap 清理,且全程不打印私钥内容。
+          echo "== SSH 握手 =="
+          if [ "$fatal" = 0 ] && [ "$tcp" = ok ]; then
+            keyfile="${RUNNER_TEMP:-/tmp}/deploy_probe_key"
+            trap 'rm -f "$keyfile"' EXIT
+            (umask 077; printf '%s\n' "$SERVER_SSH_KEY" > "$keyfile")
+            if sshout=$(ssh -v -i "$keyfile" \
+                            -o BatchMode=yes \
+                            -o StrictHostKeyChecking=no \
+                            -o UserKnownHostsFile=/dev/null \
+                            -o ConnectTimeout=10 \
+                            -o NumberOfPasswordPrompts=0 \
+                            -p "$SERVER_PORT" "$SERVER_USER@$SERVER_HOST" \
+                            'echo PROBE_OK' 2>&1); then
+              echo "  ✓ 登录成功"
+              verdict="$verdict SSH=ok"
+            else
+              # 丢掉 debug 噪音,只留判定性的那几行,不回显整段 -v 输出
+              real=$(printf '%s\n' "$sshout" | grep -v '^debug')
+              reason=$(printf '%s\n' "$real" | grep -Ei \
+                'permission denied|invalid format|error in libcrypto|bad permissions|not accessible|refused|timed out|closed by|too many|unable to negotiate|no matching|verification failed|load key' \
+                | head -3 | tr '\n' ';')
+              [ -n "$reason" ] || reason=$(printf '%s\n' "$real" | grep -v '^$' | tail -2 | tr '\n' ';')
+              echo "  ✗ 登录失败:$reason"
+              verdict="$verdict SSH=fail 原因:$reason"
+              fatal=1
+            fi
+            rm -f "$keyfile"; trap - EXIT
+          else
+            echo "  - 跳过(前置检查未通过或端口不通)"
           fi
 
           if [ "$fatal" = 1 ]; then
             echo ""
-            echo "上面标 ✗ 的项需要在 Settings → Secrets and variables → Actions 里重新设置,"
-            echo "然后在 Actions 页面点 Run workflow 重跑,不用新提交。"
+            echo "$verdict"
+            # 写成 annotation,这样在 Actions 首页的 Annotations 区就能直接看到结论
+            echo "::error title=部署自检失败::$verdict"
             exit 1
           fi
           echo ""
-          echo "自检通过。"
+          echo "自检通过($verdict)。"
 
       - name: SSH 登录服务器并部署
         uses: appleboy/ssh-action@v1.2.0
