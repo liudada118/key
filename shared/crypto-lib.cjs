@@ -178,6 +178,7 @@ ALL_SENSORS.forEach((s) => { SENSOR_LABEL_MAP[s.value] = s.label; });
 /** 分类令牌前缀，与服务端 shared/licenseScopes.ts 保持一致 */
 const GROUP_SCOPE_PREFIX = "@group:";
 
+/* --- BEGIN GENERATED REGISTRY SNAPSHOT --- 请勿手改，用 pnpm registry:snapshot 重新生成 */
 /** 内联注册表快照（sha256=268b6077ad11f63dd1f71afda1bd7f96381035681c710a72bacfb67076422f0f） */
 const BUNDLED_LICENSE_SENSOR_GROUPS = [
   { key: "common", icon: "⭐", items: [{ value: "hand" }] },
@@ -186,7 +187,11 @@ const BUNDLED_LICENSE_SENSOR_GROUPS = [
     icon: "❤️",
     items: [{ value: "jqbed" }, { value: "petCare" }, { value: "petCareMini" }],
   },
-  { key: "lab", icon: "🧪", items: [{ value: "bed4096" }, { value: "bed4096num" }] },
+  {
+    key: "lab",
+    icon: "🧪",
+    items: [{ value: "bed4096" }, { value: "bed4096num" }],
+  },
   {
     key: "custom",
     icon: "⚙️",
@@ -221,6 +226,7 @@ const BUNDLED_LICENSE_SENSOR_GROUPS = [
     ],
   },
 ];
+/* --- END GENERATED REGISTRY SNAPSHOT --- */
 
 /**
  * 校验注册表结构：分类为空 / 分类 key 重复或非法 / 分类无系统 / 系统 value 全局重复 全部 throw。
