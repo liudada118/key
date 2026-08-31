@@ -133,10 +133,6 @@
         "value": "fast1024"
       },
       {
-        "labelKey": "sensorHumanBody",
-        "value": "humanBody"
-      },
-      {
         "labelKey": "sensorHumanBodyOptimized",
         "value": "humanBodyOptimized"
       }

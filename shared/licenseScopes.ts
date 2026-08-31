@@ -399,7 +399,6 @@ export const SENSOR_LABELS: Record<string, string> = {
   daliegu: "14x20高速",
   fast256: "16x16高速",
   fast1024: "32x32高速",
-  humanBody: "人体全身",
   humanBodyOptimized: "人体全身优化",
   // 注册表外的本地附加项
   normal: "正常测试",

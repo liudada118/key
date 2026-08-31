@@ -179,7 +179,7 @@ ALL_SENSORS.forEach((s) => { SENSOR_LABEL_MAP[s.value] = s.label; });
 const GROUP_SCOPE_PREFIX = "@group:";
 
 /* --- BEGIN GENERATED REGISTRY SNAPSHOT --- 请勿手改，用 pnpm registry:snapshot 重新生成 */
-/** 内联注册表快照（sha256=268b6077ad11f63dd1f71afda1bd7f96381035681c710a72bacfb67076422f0f） */
+/** 内联注册表快照（sha256=c1694700ac56992310da0f642a2feb74e0119813d24b6f95e279c3561d8411f0） */
 const BUNDLED_LICENSE_SENSOR_GROUPS = [
   { key: "common", icon: "⭐", items: [{ value: "hand" }] },
   {
@@ -221,7 +221,6 @@ const BUNDLED_LICENSE_SENSOR_GROUPS = [
       { value: "daliegu" },
       { value: "fast256" },
       { value: "fast1024" },
-      { value: "humanBody" },
       { value: "humanBodyOptimized" },
     ],
   },
