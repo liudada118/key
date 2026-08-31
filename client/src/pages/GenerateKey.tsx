@@ -318,6 +318,12 @@ function KeyGenerator({
     if (mode === "batch" && (!count || parseInt(count) < 1)) {
       return toast.error("请输入生成数量");
     }
+    // 不强制绑定合同时直接签发，不再弹「确认生成方式」。
+    // policy 还没回来时按需要绑定处理（弹窗），避免这一瞬间绕过服务端策略。
+    if (contractPolicy && !contractPolicy.requireContract) {
+      handleGenerateWithoutContract();
+      return;
+    }
     setGateOpen(true);
   };
 
