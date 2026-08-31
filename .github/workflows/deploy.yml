@@ -183,6 +183,9 @@ jobs:
             DATABASE_URL=${{ secrets.DATABASE_URL }}
             JWT_SECRET=${{ secrets.JWT_SECRET }}
             PORT=3000
+            # 生成密钥是否强制绑定合同,默认不强制(空值即不强制)。
+            # 需要恢复"必须绑合同"就把 Secret KEY_REQUIRE_CONTRACT 设为 true。
+            KEY_REQUIRE_CONTRACT=${{ secrets.KEY_REQUIRE_CONTRACT }}
             FEISHU_CONTRACTS_ENABLED=true
             FEISHU_APP_ID=${{ secrets.FEISHU_APP_ID }}
             FEISHU_APP_SECRET=${{ secrets.FEISHU_APP_SECRET }}

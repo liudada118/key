@@ -150,6 +150,9 @@ function KeyGenerator({
     contractData && "error" in contractData ? contractData.error : undefined;
   const contractsError = contractQueryError?.message || contractSourceError;
 
+  // 强制绑定合同的开关在服务端（KEY_REQUIRE_CONTRACT）；关掉时所有人都能无合同直接生成
+  const { data: contractPolicy } = trpc.contracts.policy.useQuery();
+
   // 结果状态
   const [singleResult, setSingleResult] = useState<{
     keyString: string;
@@ -862,7 +865,10 @@ function KeyGenerator({
         count={mode === "batch" ? parseInt(count) || 1 : 1}
         category={category}
         generationRemark={remark.trim() || undefined}
-        canGenerateWithoutContract={user?.role === "super_admin"}
+        canGenerateWithoutContract={
+          user?.role === "super_admin" || contractPolicy?.requireContract === false
+        }
+        isSuperAdmin={user?.role === "super_admin"}
         directGenerationPending={isPending}
         onGenerateWithContract={handleGenerateWithContract}
         onGenerateWithoutContract={handleGenerateWithoutContract}

@@ -153,6 +153,20 @@ export function isFeishuContractsConfigured() {
   );
 }
 
+/**
+ * 生成密钥时是否强制绑定合同。**默认不强制**（生成密钥与合同解绑）。
+ *
+ * - `KEY_REQUIRE_CONTRACT=1|true` → 打开强制绑定，恢复"必须绑合同、无合同走审批"的旧行为
+ * - 其余情况（含未设置、空值）→ 不强制：合同仍可选择并记录到密钥上，只是不再拦截签发
+ *
+ * 注意：合同列表本身仍受 isFeishuContractsConfigured() 控制，飞书没配好时列表为空，
+ * 此时若强制绑定就等于把签发功能整体锁死 —— 这也是默认值取"不强制"的原因之一。
+ */
+export function isContractBindingRequired() {
+  const raw = process.env.KEY_REQUIRE_CONTRACT?.trim().toLowerCase();
+  return raw === "1" || raw === "true";
+}
+
 function getBaseAppToken() {
   const raw = process.env.FEISHU_CONTRACT_BASE_APP_TOKEN
     || process.env.FEISHU_CONTRACT_BASE_URL

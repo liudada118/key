@@ -102,6 +102,8 @@ import {
 import {
   getFeishuContracts,
   getFeishuContractSubmitterScope,
+  isContractBindingRequired,
+  isFeishuContractsConfigured,
 } from "./feishuContracts";
 import { notifyFeishuKeyRequest } from "./feishuKeyRequestWebhook";
 import { sendFeishuKeyRequestApprovalCard } from "./feishuKeyRequestCard";
@@ -141,7 +143,12 @@ async function getAccessibleFeishuContract(
   const hasContractId = typeof contractId === "number";
   const trimmedContractNo = contractNo?.trim();
   const hasContractNo = Boolean(trimmedContractNo);
-  if (!hasContractId && !hasContractNo && user.role === "super_admin") {
+  // 一个都没传：超级管理员一直可以，其他人看强制绑定开关（KEY_REQUIRE_CONTRACT）。
+  if (
+    !hasContractId
+    && !hasContractNo
+    && (user.role === "super_admin" || !isContractBindingRequired())
+  ) {
     return null;
   }
   if (!hasContractId || !hasContractNo) {
@@ -739,7 +746,10 @@ export const appRouter = router({
             userName: ctx.user.name || ctx.user.username,
             action: "CREATE",
             resourceType: "licenseKey",
-            description: "超级管理员无合同直接生成 1 个在线密钥",
+            description:
+              ctx.user.role === "super_admin"
+                ? "超级管理员无合同直接生成 1 个在线密钥"
+                : "已关闭强制绑定合同，无合同直接生成 1 个在线密钥",
             ip: ctx.req?.headers?.["x-forwarded-for"] as string || ctx.req?.socket?.remoteAddress || null,
             userAgent: ctx.req?.headers?.["user-agent"] || null,
           });
@@ -790,7 +800,10 @@ export const appRouter = router({
             userName: ctx.user.name || ctx.user.username,
             action: "CREATE",
             resourceType: "licenseKey",
-            description: `超级管理员无合同直接生成 ${prepared.keys.length} 个在线密钥`,
+            description:
+              ctx.user.role === "super_admin"
+                ? `超级管理员无合同直接生成 ${prepared.keys.length} 个在线密钥`
+                : `已关闭强制绑定合同，无合同直接生成 ${prepared.keys.length} 个在线密钥`,
             ip: ctx.req?.headers?.["x-forwarded-for"] as string || ctx.req?.socket?.remoteAddress || null,
             userAgent: ctx.req?.headers?.["user-agent"] || null,
           });
@@ -1495,6 +1508,15 @@ export const appRouter = router({
 
   // ===== 合同管理 =====
   contracts: router({
+    /**
+     * 生成密钥的合同策略，供前端决定「无合同」按钮是直接生成还是提交审批。
+     * 只暴露布尔判定，不返回任何飞书凭据。
+     */
+    policy: protectedProcedure.query(() => ({
+      requireContract: isContractBindingRequired(),
+      feishuConfigured: isFeishuContractsConfigured(),
+    })),
+
     /** 获取合同列表 */
     list: protectedProcedure
       .input(z.object({
