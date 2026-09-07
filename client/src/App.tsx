@@ -26,6 +26,7 @@ import ContractManagement from "./pages/ContractManagement";
 import HeartbeatMonitor from "./pages/HeartbeatMonitor";
 import TamperedKeys from "./pages/TamperedKeys";
 import FeedbackManagement from "./pages/FeedbackManagement";
+import SdkRequestManagement from "./pages/SdkRequestManagement";
 import Login from "./pages/Login";
 import { useAuth } from "./_core/hooks/useAuth";
 import { Loader2 } from "lucide-react";
@@ -55,6 +56,7 @@ function AuthenticatedRouter() {
         <Route path={"/heartbeat"} component={HeartbeatMonitor} />
         <Route path={"/tampered"} component={TamperedKeys} />
         <Route path={"/feedback"} component={FeedbackManagement} />
+        <Route path={"/sdk-requests"} component={SdkRequestManagement} />
         <Route path={"/404"} component={NotFound} />
         <Route component={NotFound} />
       </Switch>

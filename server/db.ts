@@ -18,6 +18,10 @@ import {
   type Feedback,
   type InsertFeedback,
   type FeedbackStatus,
+  sdkRequests,
+  type SdkRequest,
+  type InsertSdkRequest,
+  type SdkRequestStatus,
   type InsertCustomer,
   type InsertLicenseKey,
   type InsertOfflineKey,
@@ -2252,6 +2256,125 @@ export async function deleteFeedback(id: number): Promise<void> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   await db.delete(feedback).where(eq(feedback.id, id));
+}
+
+// ─── SDK 获取登记（sdkRequests） ──────────────────────────────────────────────
+//
+// 和 feedback 几乎同构，只有一处有意不同：feedback 能靠 licenseKeyTail 反查密钥归属做数据域过滤，
+// SDK 登记是纯匿名线索，没有任何东西可挂靠，所以这里不做 scope，改在 router 层用 adminProcedure 收口。
+
+/** 确保 sdkRequests 表存在（运行时兜底，免迁移即可用） */
+export async function ensureSdkRequestsTable() {
+  const db = await getDb();
+  if (!db) return;
+  await db.execute(sql.raw(`CREATE TABLE IF NOT EXISTS \`sdkRequests\` (
+    \`id\` int AUTO_INCREMENT NOT NULL,
+    \`name\` varchar(128) NOT NULL,
+    \`phone\` varchar(64),
+    \`email\` varchar(128),
+    \`organization\` varchar(255),
+    \`sdkVersion\` varchar(32),
+    \`source\` varchar(64) NOT NULL DEFAULT 'sdk-web',
+    \`userAgent\` varchar(512),
+    \`ipAddress\` varchar(64),
+    \`referer\` varchar(512),
+    \`status\` enum('new','contacted','closed') NOT NULL DEFAULT 'new',
+    \`remark\` text,
+    \`handledById\` int,
+    \`handledByName\` varchar(128),
+    \`handledAt\` timestamp NULL,
+    \`createdAt\` timestamp NOT NULL DEFAULT (now()),
+    CONSTRAINT \`sdkRequests_id\` PRIMARY KEY(\`id\`)
+  )`));
+}
+
+/** 新增一条 SDK 获取登记（REST /sdk-requests 调用），返回插入后的 id */
+export async function createSdkRequest(input: InsertSdkRequest): Promise<number | null> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result: any = await db.insert(sdkRequests).values(input);
+  // mysql2 driver: insertId 在结果首元素
+  const insertId = Array.isArray(result) ? result[0]?.insertId : result?.insertId;
+  return insertId != null ? Number(insertId) : null;
+}
+
+/** 登记列表（分页 + 可选状态筛选 + 关键字搜索，倒序） */
+export async function getSdkRequestList(opts: {
+  page: number;
+  pageSize: number;
+  status?: SdkRequestStatus;
+  keyword?: string;
+}): Promise<{ items: SdkRequest[]; total: number }> {
+  const db = await getDb();
+  if (!db) return { items: [], total: 0 };
+
+  const conditions = [] as any[];
+  if (opts.status) conditions.push(eq(sdkRequests.status, opts.status));
+  if (opts.keyword) {
+    const kw = `%${opts.keyword}%`;
+    conditions.push(or(
+      like(sdkRequests.name, kw),
+      like(sdkRequests.phone, kw),
+      like(sdkRequests.email, kw),
+      like(sdkRequests.organization, kw),
+    ));
+  }
+  const where = conditions.length ? and(...conditions) : undefined;
+  const offset = (opts.page - 1) * opts.pageSize;
+
+  const [items, totalResult] = await Promise.all([
+    db.select().from(sdkRequests).where(where).orderBy(desc(sdkRequests.createdAt)).limit(opts.pageSize).offset(offset),
+    db.select({ count: count() }).from(sdkRequests).where(where),
+  ]);
+  return { items, total: totalResult[0]?.count ?? 0 };
+}
+
+/** 各状态计数（仪表展示用） */
+export async function getSdkRequestStats(): Promise<Record<SdkRequestStatus, number> & { total: number }> {
+  const db = await getDb();
+  const empty = { new: 0, contacted: 0, closed: 0, total: 0 };
+  if (!db) return empty;
+  const rows = await db.select({ status: sdkRequests.status, c: count() }).from(sdkRequests).groupBy(sdkRequests.status);
+  const stats = { ...empty };
+  for (const row of rows as Array<{ status: SdkRequestStatus; c: number }>) {
+    stats[row.status] = Number(row.c) || 0;
+    stats.total += Number(row.c) || 0;
+  }
+  return stats;
+}
+
+/** 获取单条登记 */
+export async function getSdkRequestById(id: number): Promise<SdkRequest | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const result = await db.select().from(sdkRequests).where(eq(sdkRequests.id, id)).limit(1);
+  return result[0] || null;
+}
+
+/** 更新登记的跟进状态 / 备注 / 跟进人 */
+export async function updateSdkRequest(
+  id: number,
+  patch: { status?: SdkRequestStatus; remark?: string; handledById?: number; handledByName?: string }
+): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const values: Record<string, unknown> = {};
+  if (patch.status !== undefined) {
+    values.status = patch.status;
+    values.handledAt = new Date();
+  }
+  if (patch.remark !== undefined) values.remark = patch.remark;
+  if (patch.handledById !== undefined) values.handledById = patch.handledById;
+  if (patch.handledByName !== undefined) values.handledByName = patch.handledByName;
+  if (Object.keys(values).length === 0) return;
+  await db.update(sdkRequests).set(values).where(eq(sdkRequests.id, id));
+}
+
+/** 删除登记 */
+export async function deleteSdkRequest(id: number): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(sdkRequests).where(eq(sdkRequests.id, id));
 }
 
 

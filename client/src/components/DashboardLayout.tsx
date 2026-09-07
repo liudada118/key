@@ -29,6 +29,7 @@ import {
   Building2,
   ClipboardList,
   Cpu,
+  Download,
   FileText,
   Globe,
   KeyRound,
@@ -121,6 +122,9 @@ const menuSections: MenuSection[] = [
     items: [
       { icon: AlertTriangle, label: "异常密钥", path: "/tampered", roles: ["super_admin", "admin"] },
       { icon: MessageSquare, label: "反馈管理", path: "/feedback" },
+      // roles 必须写死成管理员及以上：后端 sdkRequests 全部走 adminProcedure，
+      // 菜单要是对子账号可见，点进去只会看到一个 FORBIDDEN
+      { icon: Download, label: "SDK 获取", path: "/sdk-requests", roles: ["super_admin", "admin"] },
     ],
   },
   {

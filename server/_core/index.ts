@@ -7,7 +7,7 @@ import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { ensureDefaultSuperAdmin, ensureDefaultSensorTypes, ensureRsaKeyPair, ensureDeviceCodeRecordsTable, ensureFeedbackTable, createFeedback, getLicenseKeyByString, markLicenseKeyActivated, markLicenseKeyExpired, recordClientTimeAndDetectTamper, getSensorTypesGrouped } from "../db";
+import { ensureDefaultSuperAdmin, ensureDefaultSensorTypes, ensureRsaKeyPair, ensureDeviceCodeRecordsTable, ensureFeedbackTable, createFeedback, ensureSdkRequestsTable, createSdkRequest, getLicenseKeyByString, markLicenseKeyActivated, markLicenseKeyExpired, recordClientTimeAndDetectTamper, getSensorTypesGrouped } from "../db";
 import { decodeLicenseKey } from "../../shared/crypto";
 
 function isPortAvailable(port: number): Promise<boolean> {
@@ -43,6 +43,7 @@ async function startServer() {
     await ensureRsaKeyPair();
     await ensureDeviceCodeRecordsTable();
     await ensureFeedbackTable();
+    await ensureSdkRequestsTable();
     console.log("[Init] Database initialization complete");
   } catch (error) {
     console.warn("[Init] Database initialization failed (will retry on first request):", error);
@@ -219,6 +220,62 @@ async function startServer() {
       res.json({ ok: true, id });
     } catch (e) {
       console.error("[Feedback] 提交失败:", e);
+      res.status(500).json({ ok: false, error: "服务暂不可用，请稍后重试" });
+    }
+  });
+
+  // SDK 获取登记接口（开发者站点 shroomSDKWEB 点「获取 SDK」时提交）
+  // 与 /feedback 同款：纯 REST + CORS，站点一次 fetch 即可；无需鉴权（公开提交）
+  // 注意这不是审批 —— 站点那边填完表单当场就开始下载，这里失败也不会挡住用户拿到 SDK。
+  // 请求: POST /sdk-requests  body: { name, phone?, email?, organization?, sdkVersion?, source?, userAgent? }
+  // 返回: { ok: true, id } | { ok: false, error }
+  app.options("/sdk-requests", (_req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.sendStatus(204);
+  });
+  app.post("/sdk-requests", async (req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Cache-Control", "no-store");
+    try {
+      const body = req.body || {};
+      const name = (body.name != null ? String(body.name) : "").trim();
+      const phone = (body.phone != null ? String(body.phone) : "").trim();
+      const email = (body.email != null ? String(body.email) : "").trim();
+      if (!name) {
+        return res.status(400).json({ ok: false, error: "缺少姓名" });
+      }
+      // 手机和邮箱至少留一个，否则这条线索没法跟进，存下来也没意义
+      if (!phone && !email) {
+        return res.status(400).json({ ok: false, error: "请至少留一个联系方式" });
+      }
+
+      // 取来源 IP（兼容反向代理）
+      const xff = req.headers["x-forwarded-for"];
+      const ipAddress = (Array.isArray(xff) ? xff[0] : xff || req.socket.remoteAddress || "")
+        .toString()
+        .split(",")[0]
+        .trim()
+        .slice(0, 64);
+
+      const truncate = (val: unknown, max: number) =>
+        val != null ? String(val).slice(0, max) : undefined;
+
+      const id = await createSdkRequest({
+        name: name.slice(0, 128),
+        phone: phone.slice(0, 64) || undefined,
+        email: email.slice(0, 128) || undefined,
+        organization: truncate(body.organization, 255),
+        sdkVersion: truncate(body.sdkVersion, 32),
+        source: truncate(body.source, 64) || "sdk-web",
+        userAgent: truncate(req.headers["user-agent"], 512),
+        referer: truncate(req.headers.referer, 512),
+        ipAddress,
+      });
+      res.json({ ok: true, id });
+    } catch (e) {
+      console.error("[SdkRequest] 提交失败:", e);
       res.status(500).json({ ok: false, error: "服务暂不可用，请稍后重试" });
     }
   });

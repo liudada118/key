@@ -490,3 +490,47 @@ export const feedback = mysqlTable("feedback", {
 export type Feedback = typeof feedback.$inferSelect;
 export type InsertFeedback = typeof feedback.$inferInsert;
 export type FeedbackStatus = "pending" | "processing" | "resolved" | "closed";
+
+/**
+ * SDK 获取登记表 - 开发者站点点「获取 SDK」时留下的资料
+ * 来源：shroomSDKWEB 下载弹窗 → POST /sdk-requests
+ *
+ * 注意这不是审批：填完表单当场就开始下载，这里只是留一条线索方便后续联系。
+ * 所以没有「通过/驳回」这类状态，只有跟进进度。
+ */
+export const sdkRequests = mysqlTable("sdkRequests", {
+  id: int("id").autoincrement().primaryKey(),
+  /** 姓名（必填） */
+  name: varchar("name", { length: 128 }).notNull(),
+  /** 手机号 */
+  phone: varchar("phone", { length: 64 }),
+  /** 邮箱 */
+  email: varchar("email", { length: 128 }),
+  /** 所在公司 / 学校 / 机构 */
+  organization: varchar("organization", { length: 255 }),
+  /** 下载的 SDK 版本（前端带上来，便于日后对版本） */
+  sdkVersion: varchar("sdkVersion", { length: 32 }),
+  /** 来源标识（如 sdk-web） */
+  source: varchar("source", { length: 64 }).default("sdk-web").notNull(),
+  /** 浏览器 UA */
+  userAgent: varchar("userAgent", { length: 512 }),
+  /** 提交方 IP（后台从请求中解析记录） */
+  ipAddress: varchar("ipAddress", { length: 64 }),
+  /** 来源页面地址 */
+  referer: varchar("referer", { length: 512 }),
+  /** 跟进状态：new(待联系) / contacted(已联系) / closed(已关闭) */
+  status: mysqlEnum("status", ["new", "contacted", "closed"]).default("new").notNull(),
+  /** 后台跟进备注 */
+  remark: text("remark"),
+  /** 跟进人用户 ID */
+  handledById: int("handledById"),
+  /** 跟进人名称 */
+  handledByName: varchar("handledByName", { length: 128 }),
+  /** 跟进时间 */
+  handledAt: timestamp("handledAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type SdkRequest = typeof sdkRequests.$inferSelect;
+export type InsertSdkRequest = typeof sdkRequests.$inferInsert;
+export type SdkRequestStatus = "new" | "contacted" | "closed";

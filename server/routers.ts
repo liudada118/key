@@ -90,6 +90,11 @@ import {
   getFeedbackById,
   updateFeedback,
   deleteFeedback,
+  getSdkRequestList,
+  getSdkRequestStats,
+  getSdkRequestById,
+  updateSdkRequest,
+  deleteSdkRequest,
 } from "./db";
 import {
   decodeLicenseKey,
@@ -1513,6 +1518,54 @@ export const appRouter = router({
           throw new TRPCError({ code: "FORBIDDEN", message: "无权操作此反馈" });
         }
         await deleteFeedback(input.id);
+        return { success: true };
+      }),
+  }),
+
+  // ─── SDK 获取登记 ───────────────────────────────────────────────────────────
+  // 开发者站点点「获取 SDK」时留下的资料，由公开的 REST POST /sdk-requests 写入。
+  // 和 feedback 不同：这是匿名线索，没有密钥可以反查归属，做不出数据域，
+  // 所以整个模块一律 adminProcedure —— 子账号不该看到全部客户线索。
+  sdkRequests: router({
+    /** 登记列表（分页 + 状态筛选 + 关键字搜索） */
+    list: adminProcedure
+      .input(z.object({
+        page: z.number().min(1).default(1),
+        pageSize: z.number().min(1).max(100).default(20),
+        status: z.enum(["new", "contacted", "closed"]).optional(),
+        keyword: z.string().max(128).optional(),
+      }))
+      .query(async ({ input }) => getSdkRequestList(input)),
+
+    /** 各状态计数 */
+    stats: adminProcedure.query(async () => getSdkRequestStats()),
+
+    /** 更新跟进状态 / 备注 */
+    update: adminProcedure
+      .input(z.object({
+        id: z.number(),
+        status: z.enum(["new", "contacted", "closed"]).optional(),
+        remark: z.string().max(2000).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const rec = await getSdkRequestById(input.id);
+        if (!rec) throw new TRPCError({ code: "NOT_FOUND", message: "记录不存在" });
+        await updateSdkRequest(input.id, {
+          status: input.status,
+          remark: input.remark,
+          handledById: ctx.user.id,
+          handledByName: ctx.user.name || ctx.user.username,
+        });
+        return { success: true };
+      }),
+
+    /** 删除登记 */
+    delete: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        const rec = await getSdkRequestById(input.id);
+        if (!rec) throw new TRPCError({ code: "NOT_FOUND", message: "记录不存在" });
+        await deleteSdkRequest(input.id);
         return { success: true };
       }),
   }),
