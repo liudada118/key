@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { useState, useMemo } from "react";
 import { toast } from "sonner";
+import { LICENSE_GROUP_META, expandLicenseFile } from "@shared/licenseScopes";
 
 /* ============ 密钥生命周期状态标签 ============ */
 const STATUS_LABELS: Record<string, { label: string; className: string }> = {
@@ -40,8 +41,13 @@ type OnlineVerifyResult = {
   statusReason?: string | null;
   expireTimestamp?: number;
   sensorType?: string;
+  /** 展开后的具体系统（分类令牌已按服务端注册表展开） */
   sensorTypes?: string[];
   isAllTypes?: boolean;
+  /** 命中的分类 key（v3 分类授权才有） */
+  groupKeys?: string[];
+  /** 密钥里原样保存的授权范围，可能含 `@group:` 令牌 */
+  scope?: string | string[];
   category?: string;
   expireDate?: string;
   remainingDays?: number;
@@ -58,8 +64,13 @@ type OnlineVerifyResult = {
 /* ============ 离线密钥验证结果字段 ============ */
 type OfflineVerifyResult = {
   valid: boolean;
+  /** 展开后的具体系统；`"all"` 表示全部授权 */
   sensorTypes?: string[] | string;
   isAllTypes?: boolean;
+  /** 命中的分类 key（v3 分类授权才有） */
+  groupKeys?: string[];
+  /** 激活码 payload 里原样保存的授权范围，可能含 `@group:` 令牌 */
+  scope?: string | string[];
   days?: number;
   expireDate?: string;
   remainingDays?: number;
@@ -208,14 +219,38 @@ export default function VerifyKey() {
       ? Math.max(0, Math.ceil((expireTs - now) / (1000 * 60 * 60 * 24)))
       : undefined;
 
-    const sensorTypes = payload.sensorTypes || payload.types || [];
-    const isAllTypes = sensorTypes === "all" || (Array.isArray(sensorTypes) && sensorTypes.includes("all"));
+    const scope = payload.sensorTypes || payload.types || [];
+    const isAllTypes = scope === "all" || (Array.isArray(scope) && scope.includes("all"));
+
+    // v3 分类授权：payload 里存的是 `@group:<key>` 令牌，这里按前端打包的注册表展开。
+    // 注册表比签发时新 → 旧激活码自动多出新增系统（这正是分类授权的目的）。
+    // 未知分类 → expandLicenseFile 抛错，与服务端一致判为无效。
+    let expanded: string[] = [];
+    let groupKeys: string[] = [];
+    if (!isAllTypes) {
+      try {
+        const r = expandLicenseFile(scope);
+        expanded = r.sensorTypes;
+        groupKeys = r.groupKeys;
+      } catch (e) {
+        setResult({
+          kind: "offline",
+          valid: false,
+          error: `授权范围无效：${(e as Error).message}`,
+          scope,
+        });
+        toast.error("激活码授权范围无效");
+        return;
+      }
+    }
 
     setResult({
       kind: "offline",
       valid: !isExpired,
-      sensorTypes: isAllTypes ? "all" : sensorTypes,
+      sensorTypes: isAllTypes ? "all" : expanded,
       isAllTypes,
+      groupKeys,
+      scope,
       days: payload.days,
       expireDate: expireTs ? new Date(expireTs).toLocaleString("zh-CN") : undefined,
       remainingDays,
@@ -254,29 +289,36 @@ export default function VerifyKey() {
 
   const sensorDisplay = useMemo(() => {
     if (!result || result.kind === "invalid") return null;
+    // 分类令牌 → 「精密全部」，单独一行展示；下面的 types 是展开后的具体系统
+    const groupScopeLabels = (result.groupKeys || []).map(
+      (key) => LICENSE_GROUP_META[key]?.scopeLabel || `${key}全部`,
+    );
     if (result.isAllTypes) {
-      return { mode: "全部授权", types: [] as string[] };
+      return { mode: "全部授权", types: [] as string[], groupScopeLabels };
     }
+    const modeOf = (types: string[]) =>
+      groupScopeLabels.length > 0
+        ? `分类授权 (${groupScopeLabels.length}) · 共 ${types.length} 项`
+        : types.length === 1
+          ? "单类型"
+          : `多类型 (${types.length})`;
     if (result.kind === "online") {
       if (result.sensorTypes && result.sensorTypes.length > 0) {
-        return {
-          mode: result.sensorTypes.length === 1 ? "单类型" : `多类型 (${result.sensorTypes.length})`,
-          types: result.sensorTypes,
-        };
+        return { mode: modeOf(result.sensorTypes), types: result.sensorTypes, groupScopeLabels };
       }
       if (result.sensorType) {
         const types = result.sensorType.split(",").filter(Boolean);
-        return { mode: types.length === 1 ? "单类型" : `多类型 (${types.length})`, types };
+        return { mode: modeOf(types), types, groupScopeLabels };
       }
       return null;
     }
-    // offline
+    // offline（sensorTypes 已在 verifyOffline 里展开）
     const types = Array.isArray(result.sensorTypes)
       ? result.sensorTypes
       : typeof result.sensorTypes === "string"
         ? result.sensorTypes.split(",").filter(Boolean)
         : [];
-    return { mode: types.length === 1 ? "单类型" : `多类型 (${types.length})`, types };
+    return { mode: modeOf(types), types, groupScopeLabels };
   }, [result]);
 
   return (
@@ -339,6 +381,7 @@ export default function VerifyKey() {
                     isAllTypes={result.isAllTypes}
                     mode={sensorDisplay.mode}
                     types={sensorDisplay.types}
+                    groupScopeLabels={sensorDisplay.groupScopeLabels}
                     labelMap={sensorLabelMap}
                   />
                 )}
@@ -493,11 +536,14 @@ function SensorTypesDisplay({
   isAllTypes,
   mode,
   types,
+  groupScopeLabels = [],
   labelMap,
 }: {
   isAllTypes?: boolean;
   mode: string;
   types: string[];
+  /** 「整个分类」授权的中文名，如「精密全部」 */
+  groupScopeLabels?: string[];
   labelMap: Record<string, string>;
 }) {
   return (
@@ -509,6 +555,19 @@ function SensorTypesDisplay({
           {mode}
         </Badge>
       </div>
+      {/* 分类授权：密钥里存的是分类令牌，下面的具体系统是按当前注册表展开的结果 */}
+      {groupScopeLabels.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1">
+          {groupScopeLabels.map((label) => (
+            <Badge key={label} variant="default" className="text-[10px]">
+              {label}
+            </Badge>
+          ))}
+          <span className="text-[10px] text-muted-foreground ml-1">
+            （随分类更新，下列系统按当前注册表展开）
+          </span>
+        </div>
+      )}
       {isAllTypes ? (
         <Badge variant="default" className="text-xs">
           全部传感器类型

@@ -15,10 +15,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -111,14 +111,16 @@ export default function AccountManagement() {
   );
 
   const createMutation = trpc.accounts.create.useMutation({
-    onSuccess: () => {
+    onSuccess: async () => {
+      await utils.accounts.list.invalidate();
       toast.success("账号创建成功");
-      setCreateOpen(false);
       setNewUsername("");
       setNewPassword("");
       setNewName("");
+      setNewRole("user");
       setNewRemark("");
-      utils.accounts.list.invalidate();
+      setNewDeptId("");
+      setCreateOpen(false);
     },
     onError: (err) => toast.error(err.message),
   });
@@ -270,15 +272,16 @@ export default function AccountManagement() {
         </div>
         {user?.role !== "user" && (
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-          <DialogTrigger asChild>
-            <Button>
-              <Plus className="h-4 w-4 mr-2" />
-              创建账号
-            </Button>
-          </DialogTrigger>
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus className="h-4 w-4 mr-2" />
+            创建账号
+          </Button>
           <DialogContent className="bg-card border-border">
             <DialogHeader>
               <DialogTitle className="text-foreground">创建新账号</DialogTitle>
+              <DialogDescription className="sr-only">
+                创建管理员或子账号并设置姓名、部门和备注。
+              </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-2">
               <div className="space-y-2">

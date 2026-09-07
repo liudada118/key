@@ -27,6 +27,7 @@ import {
   AlertTriangle,
   BarChart3,
   Building2,
+  ClipboardCheck,
   ClipboardList,
   Cpu,
   Download,
@@ -90,6 +91,7 @@ const menuSections: MenuSection[] = [
     icon: Wifi,
     items: [
       { icon: KeyRound, label: "生成密钥", path: "/generate" },
+      { icon: ClipboardCheck, label: "无合同申请", path: "/key-generation-requests" },
       { icon: BarChart3, label: "密钥管理", path: "/keys" },
     ],
   },

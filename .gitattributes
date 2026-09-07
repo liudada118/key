@@ -1,0 +1,4 @@
+# 分类授权注册表必须是 LF：server/licenseRegistry.ts 对原始字节算 SHA-256，
+# 若 Windows 工作副本被 core.autocrlf 转成 CRLF，本地算出的哈希就与 Linux
+# 生产环境不一致，DEPLOY.md §3.4 的两端核对会永远对不上。
+config/licenseSensorGroups.json text eol=lf

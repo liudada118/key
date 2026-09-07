@@ -79,9 +79,10 @@ const clientApiGroups: ApiGroup[] = [
           { name: "message", type: "string", desc: "结果消息" },
           { name: "error", type: "string", desc: "错误信息（失败时）" },
           { name: "alreadyActivated", type: "boolean", desc: "是否此前已激活过" },
-          { name: "sensorType", type: "string", desc: "授权的传感器类型（逗号分隔，或 all）" },
-          { name: "sensorTypes", type: "string[]", desc: "授权的传感器类型数组" },
+          { name: "sensorType", type: "string", desc: "密钥里原样保存的授权范围（逗号分隔，可能含 @group: 令牌，或 all）" },
+          { name: "sensorTypes", type: "string[]", desc: "展开后的具体系统数组（分类令牌已按服务端当前注册表展开）" },
           { name: "isAllTypes", type: "boolean", desc: "是否全部授权" },
+          { name: "groupKeys", type: "string[]", desc: "v3 分类授权命中的分类 key（无分类授权为空数组）" },
           { name: "expireDate", type: "string", desc: "到期时间（ISO 格式）" },
           { name: "expireTimestamp", type: "number", desc: "到期时间戳（毫秒）" },
           { name: "remainingDays", type: "number", desc: "剩余天数" },
@@ -115,12 +116,27 @@ const clientApiGroups: ApiGroup[] = [
   "category": "production"
 }
 
+// ✅ v3 分类授权密钥（sensorType 存令牌，sensorTypes 是按当前注册表展开的结果）
+{
+  "success": true,
+  "message": "密钥有效",
+  "alreadyActivated": true,
+  "sensorType": "@group:precision",
+  "sensorTypes": ["handSinglePoint", "hand0205", ..., "humanBodyOptimized"],
+  "isAllTypes": false,
+  "groupKeys": ["precision"],
+  "expireDate": "2027-03-20T00:00:00.000Z",
+  "expireTimestamp": 1805500800000,
+  "remainingDays": 365,
+  "category": "production"
+}
+
 // ❌ 密钥无效或已过期
 {
   "success": false,
   "error": "密钥无效或已过期"
 }`,
-        notes: "公开接口，无需登录。客户端每次启动时调用此接口即可：密钥有效则返回授权信息（首次调用会标记为已激活），被吊销/暂停/过期则返回失败。",
+        notes: "公开接口，无需登录。客户端每次启动时调用此接口即可：密钥有效则返回授权信息（首次调用会标记为已激活），被吊销/暂停/过期则返回失败。客户端应当按 sensorTypes（已展开）判权限，不要自己解析 sensorType 里的 @group: 令牌。",
         callExample: `// Python 调用示例
 import requests
 
@@ -140,6 +156,67 @@ if result["success"]:
     print(f"剩余天数: {result['remainingDays']}")
 else:
     print(f"失败: {result['error']}")`,
+      },
+    ],
+  },
+  {
+    title: "在线校验（纯 REST，桌面端推荐）",
+    desc: "非 tRPC 接口，带 CORS，桌面端一次 fetch 即可用；返回吊销/暂停/防回拨状态与展开后的授权范围",
+    endpoints: [
+      {
+        name: "POST /licenseCheck",
+        method: "mutation",
+        auth: "public",
+        desc: "校验在线密钥：按服务器时间判过期，按数据库判吊销/暂停/篡改，并返回按当前注册表展开的授权范围。",
+        params: [
+          { name: "key", type: "string", required: true, desc: "密钥字符串" },
+          { name: "clientTime", type: "number", required: false, desc: "客户端本机时间（毫秒），用于防回拨高水位检测" },
+          { name: "tamper", type: "boolean", required: false, desc: "客户端自检发现篡改时上报 true" },
+        ],
+        response: [
+          { name: "time", type: "number", desc: "服务器时间（毫秒），客户端应以此为准" },
+          { name: "valid", type: "boolean", desc: "是否有效" },
+          { name: "status", type: "string", desc: "ISSUED / ACTIVATED / SUSPENDED / EXPIRED / REVOKED / TAMPERED / UNKNOWN / DB_ERROR / INVALID" },
+          { name: "reason", type: "string", desc: "无效原因（有效时不返回）" },
+          { name: "expireTimestamp", type: "number", desc: "到期时间戳（以数据库为准，支持后台续期）" },
+          { name: "remainingDays", type: "number", desc: "剩余天数" },
+          { name: "sensorTypes", type: "string[]", desc: "展开后的具体系统 —— 客户端按这个判权限" },
+          { name: "isAllTypes", type: "boolean", desc: "是否全部授权（true 时忽略 sensorTypes）" },
+          { name: "groupKeys", type: "string[]", desc: "v3 命中的分类 key，仅供展示/排查" },
+          { name: "scope", type: "string | string[]", desc: "密钥里原样保存的授权范围（含 @group: 令牌），便于对账" },
+        ],
+        responseExample: `// ✅ v3 分类密钥：@group:precision 按服务端当前注册表展开
+{
+  "time": 1750000000000,
+  "valid": true,
+  "status": "ACTIVATED",
+  "expireTimestamp": 1805500800000,
+  "remainingDays": 365,
+  "sensorTypes": ["handSinglePoint", "hand0205", ..., "humanBodyOptimized"],
+  "isAllTypes": false,
+  "groupKeys": ["precision"],
+  "scope": "@group:precision"
+}
+
+// ❌ 未知分类（注册表里已删掉该分类）→ 一律判无效，不会降级成"授权 0 个系统"
+{
+  "time": 1750000000000,
+  "valid": false,
+  "status": "INVALID",
+  "reason": "授权范围无效：unknown license group: nope"
+}`,
+        notes:
+          "分类授权的核心语义：密钥里存的是 @group:<groupKey> 稳定令牌，展开发生在校验时。" +
+          "所以往某个分类里新增系统后，未过期的旧分类密钥在下一次 /licenseCheck 就会自动多出该系统，无需重新发证；" +
+          "而用固定系统数组签发的老密钥不会越权拿到新增系统。",
+        callExample: `const resp = await fetch(BASE_URL + "/licenseCheck", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ key, clientTime: Date.now() }),
+});
+const r = await resp.json();
+// 判权限只看展开结果，不要自己解析 @group: 令牌
+const allowed = r.valid && (r.isAllTypes || r.sensorTypes.includes("humanBodyOptimized"));`,
       },
     ],
   },
@@ -219,25 +296,76 @@ for group in groups:
         responseExample: `["触觉手套", "汽车座椅", "其他"]`,
       },
       {
+        name: "sensors.licenseGroups",
+        method: "query",
+        auth: "public",
+        desc: "获取分类授权清单：生成密钥时可用的 @group: 令牌，以及每个分类当前包含哪些系统。数据源是与桌面端同源的 licenseSensorGroups.json。",
+        response: [
+          { name: "groups", type: "array", desc: "[{ key, token, label, scopeLabel, dbGroupName, icon, sensorTypes }]" },
+          { name: "registrySha256", type: "string", desc: "注册表 SHA-256，与桌面端比对可确认两边分类归属同步" },
+          { name: "registrySource", type: "string", desc: "注册表来源：bundled（构建内联）/ 磁盘文件路径" },
+        ],
+        responseExample: `{
+  "groups": [
+    {
+      "key": "precision",
+      "token": "@group:precision",
+      "label": "精密",
+      "scopeLabel": "精密全部",
+      "dbGroupName": "精密",
+      "icon": "🔬",
+      "sensorTypes": ["handSinglePoint", "hand0205", "...", "humanBodyOptimized"]
+    }
+  ],
+  "registrySha256": "268b6077ad11f63d...",
+  "registrySource": "E:\\\\key\\\\config\\\\licenseSensorGroups.json"
+}`,
+        notes: "sensorTypes 只是「当前」成员，用于界面提示；密钥里保存的是 token，不是这个数组。",
+      },
+      {
         name: "GET /sensorTypes",
         method: "query",
         auth: "public",
-        desc: "桌面端专用：纯 REST 接口（非 tRPC），返回当前启用的传感器类型清单 + value→label 映射。带 CORS，桌面端一次 fetch 即可用，无需解析 superjson。后台在「传感器类型管理」里增删后，桌面端自动同步。",
+        desc: "桌面端专用：纯 REST 接口（非 tRPC），返回当前启用的传感器类型清单 + value→label 映射 + 分类授权清单。带 CORS，桌面端一次 fetch 即可用，无需解析 superjson。后台在「传感器类型管理」里增删后，桌面端自动同步。",
         responseExample: `{
   "time": 1750000000000,
   "groups": [
     {
-      "group": "触觉手套",
-      "icon": "🧤",
+      "group": "精密",
+      "groupKey": "precision",
+      "icon": "🔬",
       "items": [
         { "id": 1, "label": "触觉手套", "value": "hand0205" }
       ]
     }
   ],
   "flat": [
-    { "label": "触觉手套", "value": "hand0205", "group": "触觉手套" }
+    { "label": "触觉手套", "value": "hand0205", "group": "精密" }
   ],
-  "map": { "hand0205": "触觉手套" }
+  "map": { "hand0205": "触觉手套" },
+  // 分类授权清单（与桌面端 licenseSensorGroups.json 同源）
+  "licenseGroups": [
+    {
+      "key": "precision",
+      "token": "@group:precision",
+      "label": "精密",
+      "scopeLabel": "精密全部",
+      "dbGroupName": "精密",
+      "icon": "🔬",
+      "sensorTypes": ["handSinglePoint", "hand0205", "...", "humanBodyOptimized"]
+    }
+  ],
+  // 注册表 SHA-256：与桌面端的值一致才说明两边分类归属同步了
+  "registrySha256": "268b6077ad11f63d..."
+}
+
+// DB 不可用时：仍返回 200 与注册表派生清单（flat 不会为空），并带上标记
+{
+  "time": 1750000000000,
+  "source": "registry-fallback",
+  "error": "DB_ERROR",
+  "groups": [ ... ], "flat": [ ... ], "map": { ... },
+  "licenseGroups": [ ... ], "registrySha256": "268b6077ad11f63d..."
 }`,
         callExample: `// 桌面端启动时拉取（替换本地硬编码 sensorArr）
 const BASE_URL = "https://your-domain.com";
@@ -245,7 +373,10 @@ const resp = await fetch(BASE_URL + "/sensorTypes");
 const data = await resp.json();
 // data.flat   → [{ label, value, group }]  做选择列表
 // data.map    → { value: label }  把授权到的 value 翻译成中文名
-const label = data.map["hand0205"]; // "触觉手套"`,
+const label = data.map["hand0205"]; // "触觉手套"
+// data.registrySha256 与本地 licenseSensorGroups.json 的 sha256 比对，
+// 不一致说明发证服务与客户端的分类归属不同步，需要重新同步注册表
+if (data.registrySha256 !== localRegistrySha256) console.warn("分类注册表不同步");`,
       },
     ],
   },
@@ -320,7 +451,7 @@ const adminApiGroups: ApiGroup[] = [
         auth: "protected",
         desc: "生成单个在线密钥",
         params: [
-          { name: "sensorTypes", type: "string | string[]", required: true, desc: "传感器类型标识符，单个字符串或数组" },
+          { name: "sensorTypes", type: '"all" | string | string[]', required: true, desc: '授权范围："all" / 单个系统 key / 数组；数组元素可以是 "@group:<groupKey>" 分类令牌' },
           { name: "days", type: "number", required: true, desc: "有效期天数（1-36500）" },
           { name: "category", type: "enum", required: true, desc: "密钥类型：production / rental" },
           { name: "customerId", type: "number", required: false, desc: "关联客户 ID" },
@@ -335,6 +466,11 @@ const adminApiGroups: ApiGroup[] = [
   "keyString": "a1b2c3d4e5f6...（hex 密钥）",
   "expireTimestamp": 1743465600000
 }`,
+        notes:
+          '授权范围支持 5 种写法：「all」全部；「"hand0205"」单系统；「["hand0205","humanBodyOptimized"]」固定数组（不随分类更新）；' +
+          '「"@group:precision"」整个分类（密钥里存令牌，随分类更新）；「["@group:care","humanBodyOptimized"]」分类 + 单系统混合。' +
+          "含分类令牌时密钥 payload 版本为 v3，否则保持 v2。未知分类 / 未知空范围一律返回 BAD_REQUEST，不会签发。" +
+          "可用分类见 sensors.licenseGroups 或 GET /sensorTypes 的 licenseGroups 字段。",
       },
       {
         name: "keys.batchGenerate",
@@ -342,7 +478,7 @@ const adminApiGroups: ApiGroup[] = [
         auth: "protected",
         desc: "批量生成在线密钥",
         params: [
-          { name: "sensorTypes", type: "string | string[]", required: true, desc: "传感器类型" },
+          { name: "sensorTypes", type: '"all" | string | string[]', required: true, desc: '授权范围，同 keys.generate（支持 "@group:<groupKey>" 分类令牌）' },
           { name: "days", type: "number", required: true, desc: "有效期天数（1-36500）" },
           { name: "category", type: "enum", required: true, desc: "密钥类型：production / rental" },
           { name: "count", type: "number", required: true, desc: "生成数量（1-500）" },
@@ -430,7 +566,7 @@ const adminApiGroups: ApiGroup[] = [
         desc: "生成离线激活码（RSA-SHA256 签名）",
         params: [
           { name: "machineId", type: "string", required: true, desc: "机器码（16位十六进制）" },
-          { name: "sensorTypes", type: '"all" | string[]', required: true, desc: '传感器类型："all" 或类型数组' },
+          { name: "sensorTypes", type: '"all" | string[]', required: true, desc: '授权范围："all" 或数组；数组元素可以是 "@group:<groupKey>" 分类令牌' },
           { name: "days", type: "number", required: true, desc: "有效期天数（1-36500）" },
           { name: "customerId", type: "number", required: false, desc: "关联客户 ID" },
           { name: "customerName", type: "string", required: false, desc: "客户名称" },
@@ -1077,9 +1213,14 @@ Content-Type: application/json
 # 密钥有效 → 返回授权信息（首次调用标记为已激活）；吊销/暂停/过期 → 返回失败
 
 # 其他辅助接口
+POST /licenseCheck                    # 在线校验（纯 REST + CORS）：状态 + 展开后的 sensorTypes + groupKeys
 GET /api/trpc/offlineKeys.publicKey   # RSA 公钥（离线密钥用）
 GET /api/trpc/sensors.groups          # 传感器类型列表（tRPC，含 superjson 包装）
-GET /sensorTypes                      # 传感器类型清单（纯 REST + CORS，桌面端推荐用这个）`}</pre>
+GET /sensorTypes                      # 传感器类型清单 + licenseGroups + registrySha256（桌面端推荐用这个）
+
+# 分类授权（v3）：密钥里存 "@group:precision" 这类稳定令牌，展开发生在校验时。
+# 往分类里新增系统后，未过期的旧分类密钥自动获得新增系统，无需重新发证。
+# 客户端判权限只看 /licenseCheck 返回的 sensorTypes（已展开）+ isAllTypes，不要自己解析令牌。`}</pre>
               </>
             ) : (
               <>

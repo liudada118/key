@@ -33,6 +33,7 @@ import {
 import { useState, useMemo } from "react";
 import { toast } from "sonner";
 import { copyText } from "@/lib/clipboard";
+import { formatScopeEntry, isGroupScopeToken } from "@shared/licenseScopes";
 
 /* ============ 离线密钥状态判定 ============ */
 function getStatusBadge(item: { status?: string; expireDate: number }) {
@@ -223,9 +224,15 @@ export default function OfflineKeyList() {
                                 <Badge variant="default" className="text-[10px]">全部授权</Badge>
                               ) : (
                                 <>
+                                  {/* 分类令牌（@group:precision）显示成「精密全部」，default 底色区分动态授权 */}
                                   {sensorTypesArr.slice(0, 3).map((t: string) => (
-                                    <Badge key={t} variant="secondary" className="text-[10px]">
-                                      {sensorLabelMap[t] || t}
+                                    <Badge
+                                      key={t}
+                                      variant={isGroupScopeToken(t) ? "default" : "secondary"}
+                                      className="text-[10px]"
+                                      title={isGroupScopeToken(t) ? "整个分类授权：随分类更新" : undefined}
+                                    >
+                                      {formatScopeEntry(t, sensorLabelMap)}
                                     </Badge>
                                   ))}
                                   {sensorTypesArr.length > 3 && (

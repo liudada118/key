@@ -1,13 +1,13 @@
 # 密钥管理系统 — 独立部署指南
 
-**版本：** v1.5
-**更新日期：** 2026-03-19
+**版本：** v1.6
+**更新日期：** 2026-08-19
 
 ---
 
 ## 1. 项目概述
 
-密钥管理系统（Key Manager）是一个基于 Shroom1.0 传感器项目的独立 Web 应用，用于管理传感器设备的授权密钥。系统采用三级权限体系（超级管理员 → 管理员 → 子账号），支持量产密钥和在线租赁密钥两种类型，使用 AES-256-GCM 加密算法，集成 Web Serial API 实现设备 MAC 地址自动读取。
+密钥管理系统（Key Manager）是一个基于 Shroom1.0 传感器项目的独立 Web 应用，用于管理传感器设备的授权密钥。系统采用三级权限体系（超级管理员 → 管理员 → 子账号），支持量产密钥和在线租赁密钥两种类型，密钥使用与桌面端互通的 AES-128/ECB 加密，授权范围支持「整个分类」（`@group:` 令牌），集成 Web Serial API 实现设备 MAC 地址自动读取。
 
 本文档提供完整的独立部署方案，系统不依赖任何第三方平台，可在任何支持 Node.js 和 MySQL 的服务器上运行。
 
@@ -70,6 +70,10 @@ JWT_SECRET=your-random-secret-key-at-least-32-chars
 
 # 服务端口（默认 3000）
 PORT=3000
+
+# 分类授权注册表路径（默认 <工作目录>/config/licenseSensorGroups.json）
+# 只有把注册表放在别处时才需要设置，详见 3.4
+LICENSE_REGISTRY_PATH=/opt/key-manager/config/licenseSensorGroups.json
 ```
 
 **DATABASE_URL 格式示例：**
@@ -90,7 +94,41 @@ DATABASE_URL=mysql://user:password@gateway01.us-east-1.prod.aws.tidbcloud.com:40
 > node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 > ```
 
-### 3.4 初始化数据库
+### 3.4 同步分类授权注册表（部署前置步骤）
+
+`config/licenseSensorGroups.json` 是分类与系统归属的**唯一数据源**：密钥里保存的是 `@group:<分类>` 令牌，具体包含哪些系统在校验时按这份注册表展开。它必须与桌面端 `E:\shroom1\licenseSensorGroups.json` 完全一致，否则客户端与发证服务对同一把密钥的授权范围理解会不同。
+
+仓库里已随代码提交了一份，**桌面端注册表有更新时必须先同步再部署**：
+
+```bash
+# 在桌面端仓库执行，把注册表写入发证服务的 config/ 目录
+cd /e/shroom1 && node scripts/sync-license-registry.cjs /path/to/key/config/licenseSensorGroups.json
+```
+
+同步后核对两端 SHA-256 一致：
+
+```bash
+# Linux / macOS
+sha256sum /e/shroom1/licenseSensorGroups.json /path/to/key/config/licenseSensorGroups.json
+
+# Windows (Git Bash 亦可用上面的 sha256sum)
+certutil -hashfile config\licenseSensorGroups.json SHA256
+```
+
+服务启动时会打印实际加载的注册表，用它做最后确认：
+
+```
+[License] 注册表已加载（config/licenseSensorGroups.json）：5 个分类 / 27 个系统，sha256=268b6077...
+```
+
+注意事项：
+
+- 加载顺序为「`LICENSE_REGISTRY_PATH` → `<工作目录>/config/licenseSensorGroups.json` → 构建内联快照」。文件缺失时会 warn 并使用内联快照继续启动；文件存在但**格式非法**（重复分类 key、重复系统、空分类等）时**直接终止启动**（fail-fast），不会退回空清单继续签发。
+- 部署顺序：先同步注册表并重启发证服务，再发布新版桌面客户端。
+- 服务不提供「客户端运行时上传注册表」的接口，同步只能由开发或 CI/CD 完成。
+- Docker 部署需把 `config/` 挂载或复制进镜像（见 4.3）。
+
+### 3.5 初始化数据库
 
 ```bash
 # 创建数据库（如果还没创建）
@@ -110,7 +148,7 @@ pnpm db:push
 
 > 如果 `pnpm db:push` 出现交互式提示（如 "create column" 或 "rename column"），选择 **create column**。
 
-### 3.5 启动
+### 3.6 启动
 
 **开发模式：**
 
@@ -287,6 +325,8 @@ RUN pnpm install --frozen-lockfile --prod
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/drizzle ./drizzle
 COPY --from=builder /app/drizzle.config.ts ./drizzle.config.ts
+# 分类授权注册表（缺失时会退回构建内联快照，建议显式带上）
+COPY --from=builder /app/config ./config
 
 ENV NODE_ENV=production
 ENV PORT=3000
@@ -438,9 +478,13 @@ if (result.valid) {
 
 // 生成密钥
 const key = generateLicenseKey(['hand0205', 'robot1'], 365, 'production');
+
+// 生成分类密钥（v3）：保存令牌本身，随分类更新
+const groupKey = generateLicenseKey('@group:precision', 365, 'production');
+console.log(decodeLicenseKey(groupKey).groupKeys); // ['precision']
 ```
 
-密钥字符串为 hex 编码，结构为 `IV(24字符) + AuthTag(32字符) + Ciphertext(hex)`。加密载荷 JSON 格式：
+密钥字符串为 AES-128/ECB 密文的 hex 编码。加密载荷 JSON 格式：
 
 ```json
 {
@@ -451,7 +495,30 @@ const key = generateLicenseKey(['hand0205', 'robot1'], 365, 'production');
 }
 ```
 
-其中 `file` 字段可以是单个传感器类型字符串、传感器类型数组或 `"all"`（全部类型）。
+`file` 就是授权范围本身，共 5 种形态：
+
+| 形态 | 示例 | `v` | 语义 |
+|:---|:---|:---|:---|
+| 全部 | `"all"` | 2 | 全部系统 |
+| 单个系统 | `"humanBodyOptimized"` | 2 | 只授权该系统 |
+| 固定数组 | `["hand0205","humanBodyOptimized"]` | 2 | 签发即冻结，之后分类新增系统不会影响它 |
+| 整个分类 | `"@group:precision"` | 3 | 解码时按注册表展开，**分类新增系统后旧密钥自动获得** |
+| 分类 + 系统 | `["@group:care","humanBodyOptimized"]` | 3 | 混合授权 |
+
+`crypto-lib.cjs` 是自包含副本，内置一份注册表快照。分类归属更新后有两种同步方式：
+
+```bash
+# 方式一：把注册表 JSON 放到 crypto-lib.cjs 同目录，自动覆盖内联快照
+cp config/licenseSensorGroups.json /path/to/your-electron-project/lib/
+```
+
+```javascript
+// 方式二：运行时注入
+const lib = require('./lib/crypto-lib.cjs');
+lib.setLicenseSensorGroups(require('./licenseSensorGroups.json'));
+```
+
+客户端应当按 `result.sensorTypes`（已展开）判断权限，不要自己解析 `@group:` 令牌。未知分类的密钥会返回 `valid: false`。
 
 ---
 
@@ -501,6 +568,12 @@ pnpm build
 pm2 restart key-manager  # 或 docker compose up -d --build
 ```
 
+如果桌面端的分类归属有变动，先按 3.4 同步 `config/licenseSensorGroups.json` 并核对 SHA-256，再重启服务；重启日志里的 `[License] 注册表已加载…` 是本次生效的注册表。
+
+### Q: 启动时报注册表校验失败
+
+`config/licenseSensorGroups.json` 格式非法（重复分类 key、重复系统 value、空分类等）时服务会**主动终止启动**，避免用错误的分类继续签发密钥。按日志里的具体原因修正该文件，或重新执行 3.4 的同步命令。
+
 ---
 
 ## 9. 安全建议
@@ -525,7 +598,7 @@ pm2 restart key-manager  # 或 docker compose up -d --build
 | `pnpm build` | 构建生产版本（前端 + 后端） |
 | `pnpm start` | 启动生产服务器 |
 | `pnpm check` | TypeScript 类型检查 |
-| `pnpm test` | 运行 Vitest 测试（25 个测试用例） |
+| `pnpm test` | 运行 Vitest 测试（115 个测试用例） |
 | `pnpm db:push` | 生成并执行数据库迁移 |
 | `pnpm format` | 代码格式化（Prettier） |
 
@@ -553,12 +626,16 @@ key-manager/
 │   ├── _core/                  # 框架核心（认证、路由、Vite）
 │   ├── routers.ts              # API 路由定义
 │   ├── db.ts                   # 数据库查询
-│   └── crypto.test.ts          # 测试文件（24 个用例）
+│   ├── licenseRegistry.ts      # 分类授权注册表加载（磁盘优先 + fail-fast + SHA-256）
+│   └── crypto.test.ts          # 加密与分类授权测试
+├── config/                     # 运行时配置
+│   └── licenseSensorGroups.json # 分类授权注册表（唯一数据源，需与桌面端一致）
 ├── drizzle/                    # 数据库 schema 和迁移
 │   └── schema.ts               # 表结构定义（users + licenseKeys + customers）
 ├── shared/                     # 前后端共享代码
-│   ├── crypto.ts               # AES-256-GCM 加密模块（ESM）
-│   ├── crypto-lib.cjs          # 独立加密库（CJS，供 Electron 使用）
+│   ├── crypto.ts               # AES-128/ECB 密钥生成与解码（ESM）
+│   ├── crypto-lib.cjs          # 独立自包含副本（CJS，供 Electron 使用）
+│   ├── licenseScopes.ts        # 分类授权逻辑（@group: 令牌、范围展开）
 │   └── sensor-types.ts         # 54+ 种传感器类型定义（7 大分组）
 ├── .env                        # 环境变量（需自行创建）
 ├── package.json

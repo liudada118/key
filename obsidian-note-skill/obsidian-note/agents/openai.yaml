@@ -1,0 +1,4 @@
+interface:
+  display_name: "Obsidian Note"
+  short_description: "Create and auto-save structured Obsidian Markdown notes."
+  default_prompt: "Use $obsidian-note to organize the content below and automatically save it as a UTF-8 Markdown note."
