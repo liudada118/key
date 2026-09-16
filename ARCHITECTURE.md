@@ -1,6 +1,6 @@
 # 架构文档
 
-> 本文档由 Manus 自动生成和维护。最后更新于：2026-07-30
+> 本文档由 Manus 自动生成和维护。最后更新于：2026-09-16
 
 ## 1. 项目概述
 
@@ -26,7 +26,7 @@
 | **加密算法** | AES-128/ECB/Pkcs7 (CryptoJS) + RSA-SHA256 | 与桌面端互通；payload 带随机 `n`，离线激活码 RSA 签名 |
 | **路由** | wouter | 轻量前端路由 |
 | **数据序列化** | Superjson | tRPC 数据传输 |
-| **测试** | Vitest | 115 个测试用例全部通过，覆盖服务端规则、分类授权注册表与 v3 密钥、飞书通知/审批回调与按钮 DOM 稳定性 |
+| **测试** | Vitest | 118 个测试用例全部通过，覆盖服务端规则、分类授权注册表与 v3 密钥、飞书通知/审批回调与按钮 DOM 稳定性 |
 
 ## 3. 目录结构
 
@@ -291,7 +291,7 @@ graph TD
 
 **做法**：分类密钥在 payload 的 `file` 里保存**稳定的 `@group:<groupKey>` 令牌**，而不是签发当时展开的系统数组；展开发生在**解码/校验时**。于是往分类里新增系统后，未过期的旧分类密钥在新版客户端就自动获得新增系统，无需重新发证；而用固定数组签发的老密钥不会越权拿到新增系统。
 
-**唯一数据源**：`config/licenseSensorGroups.json`（5 个分类 / 27 个系统），由桌面端 `E:\shroom1` 同步过来，SHA-256 与桌面端一致。服务端**不得**再维护第二份手写分类数组——需要新增/移动系统时改注册表并重新同步：
+**唯一数据源**：`config/licenseSensorGroups.json`（5 个分类 / 26 个系统），由桌面端 `E:\shroom1` 同步过来，SHA-256 与桌面端一致。服务端**不得**再维护第二份手写分类数组——需要新增/移动系统时改注册表并重新同步：
 
 ```bash
 cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSensorGroups.json
@@ -313,7 +313,7 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 | v2 | `"all"` / 单系统 / 系统数组 | 原样 | 否 |
 | v3 | `"@group:precision"` / `["@group:care","humanBodyOptimized"]` | 按当前注册表展开分类，混合项按请求顺序去重 | **是** |
 
-`"all"` 的展开清单 = 注册表全部系统 ∪ 历史 `ALL_SENSORS`（只增不减，老客户端拿到的清单不会变短）；真正的"全部授权"语义由 `isAllTypes: true` 承载。未知 `@group:` 一律判无效（`valid: false`），**不会**降级成普通系统 key，也不会变成"授权 0 个系统但有效"。
+`"all"` 按当前注册表展开；真正的“全部授权”语义由 `isAllTypes: true` 承载。旧 `humanBody`（人体全身）已退出注册表并保持停用，现行全身系统仅为 `humanBodyOptimized`（人体全身传感）；已有固定数组密钥仍可按原值解码，但新密钥不会再提供旧值。未知 `@group:` 一律判无效（`valid: false`），**不会**降级成普通系统 key，也不会变成“授权 0 个系统但有效”。
 
 **接口出口**：`POST /licenseCheck` 返回展开后的 `sensorTypes` + `isAllTypes` + `groupKeys` + 原始 `scope`；`GET /sensorTypes` 与 `sensors.licenseGroups` 返回 `licenseGroups` 与 `registrySha256`（与桌面端比对可确认两边分类归属同步）。客户端判权限只看 `sensorTypes`/`isAllTypes`，不要自己解析令牌。
 
@@ -387,6 +387,8 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 | 2026-07-30 | main | 密钥申请飞书通知 | 普通账号提交无合同密钥申请后自动推送飞书提醒，通知故障不影响申请入库 |
 | 2026-07-30 | main | 飞书群内快速审批 | 应用机器人发送可交互审批卡片，指定超管群可免登录同意或拒绝，并与网站共用事务审批逻辑 |
 | 2026-08-19 | main | 分类授权（v3 `@group:` 密钥） | 引入 `config/licenseSensorGroups.json` 唯一数据源与 `shared/licenseScopes.ts`，密钥保存分类令牌、解码时展开；生成/离线页支持「整个分类」，各列表与 `/licenseCheck`、`/sensorTypes` 同步；测试从 53 增至 115 个 |
+| 2026-09-16 | main | 人体全身系统名称校准 | 停用旧“人体全身”后，将 `humanBodyOptimized` 的显示名统一为“人体全身优化系统”，协议值保持不变 |
+| 2026-09-16 | main | 人体全身传感命名 | 将现行全身系统显示名调整为“人体全身传感” |
 
 ## 10. 更新日志
 
@@ -416,6 +418,8 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 | 2026-07-30 | main | 新增功能 | 新增飞书应用机器人审批卡片和加密回调接口，校验 App ID、Verification Token、签名、时间窗口及审批群；抽取网站/飞书统一审批服务并保留 Webhook 兜底 |
 | 2026-08-19 | main | 新增功能 | 密钥授权范围支持分类令牌 `@group:<key>`（payload `v: 3`）：注册表以桌面端 `licenseSensorGroups.json` 为唯一数据源、启动 fail-fast 校验并打印 SHA-256；`/licenseCheck` 返回 `groupKeys`/`sensorTypes`，`/sensorTypes` 返回 `licenseGroups`；DB 传感器清单以注册表重建（补 `matCol`、`humanBodyOptimized`，`bed4096num` 归入 lab）；v1/v2 老密钥继续兼容 |
 | 2026-08-19 | main | 文档更新 | 修正本文档中沿用错误的 “AES-256-GCM / IV+AuthTag” 描述为实际的 AES-128/ECB/Pkcs7，并新增 §7.4 分类授权注册表说明 |
+| 2026-09-16 | main | 配置变更 | 将 `humanBodyOptimized` 的中文显示名统一为“人体全身优化系统”，旧 `humanBody` 保持停用，并同步测试与桌面端对接文档 |
+| 2026-09-16 | main | 配置变更 | 按最新命名将 `humanBodyOptimized` 显示为“人体全身传感”，同步通知测试与对接文档 |
 
 *变更类型：`新增功能` / `优化重构` / `修复缺陷` / `配置变更` / `文档更新` / `依赖升级` / `初始化`*
 

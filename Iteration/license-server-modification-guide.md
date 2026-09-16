@@ -325,13 +325,13 @@ GET /sensorTypes
   "time": 1790000000000,
   "flat": [
     {
-      "label": "人体全身优化",
+      "label": "人体全身传感",
       "value": "humanBodyOptimized",
       "group": "精密"
     }
   ],
   "map": {
-    "humanBodyOptimized": "人体全身优化"
+    "humanBodyOptimized": "人体全身传感"
   }
 }
 ```

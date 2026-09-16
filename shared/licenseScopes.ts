@@ -338,7 +338,7 @@ export function getLicenseGroupOptions() {
  * 单个授权范围条目 → 中文显示名。
  *  - `"all"`                 → 全部传感器
  *  - `"@group:precision"`    → 精密全部
- *  - `"humanBodyOptimized"`  → 人体全身优化
+ *  - `"humanBodyOptimized"`  → 人体全身传感
  *
  * @param labelMap 优先使用的 value → label 映射（后台传 DB 里的传感器名，保证与传感器管理页一致）
  */
@@ -350,7 +350,7 @@ export function formatScopeEntry(entry: string, labelMap?: Record<string, string
   return labelMap?.[value] || SENSOR_LABELS[value] || value;
 }
 
-/** 整个授权范围 → 中文显示串（如 "精密全部、人体全身优化"）。字符串入参按逗号拆分 */
+/** 整个授权范围 → 中文显示串（如 "精密全部、人体全身传感"）。字符串入参按逗号拆分 */
 export function formatLicenseScope(
   scope: string | string[] | null | undefined,
   labelMap?: Record<string, string>
@@ -399,7 +399,7 @@ export const SENSOR_LABELS: Record<string, string> = {
   daliegu: "14x20高速",
   fast256: "16x16高速",
   fast1024: "32x32高速",
-  humanBodyOptimized: "人体全身优化",
+  humanBodyOptimized: "人体全身传感",
   // 注册表外的本地附加项
   normal: "正常测试",
 };

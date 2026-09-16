@@ -38,7 +38,7 @@ describe("Feishu key request webhook", () => {
       ...request,
       sensorTypes: ["@group:precision", "humanBodyOptimized"],
     });
-    expect(text).toContain("授权范围：精密全部、人体全身优化");
+    expect(text).toContain("授权范围：精密全部、人体全身传感");
   });
 
   it("posts a UTF-8 text message to the configured webhook", async () => {

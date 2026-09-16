@@ -94,6 +94,8 @@ describe("Registry accessors", () => {
     const flat = getRegistrySensorTypes();
     expect(flat).toEqual(PRISTINE.flatMap((g) => g.items.map((i) => i.value)));
     expect(new Set(flat).size).toBe(flat.length);
+    expect(flat).toContain("humanBodyOptimized");
+    expect(flat).not.toContain("humanBody");
   });
 
   it("returns a group's members, and [] for an unknown group", () => {
@@ -272,8 +274,8 @@ describe("buildLicenseFile (doc §5.2)", () => {
       "hand0205"
     );
     expect(
-      buildLicenseFile({ scopeType: "systems", sensorTypes: ["hand0205", "humanBody"] })
-    ).toEqual(["hand0205", "humanBody"]);
+      buildLicenseFile({ scopeType: "systems", sensorTypes: ["hand0205", "legacySystem"] })
+    ).toEqual(["hand0205", "legacySystem"]);
   });
 
   it('scopeType "mixed" → tokens first, then systems', () => {
@@ -302,9 +304,9 @@ describe("normalizeLicenseFile", () => {
   });
 
   it("trims, dedupes, preserves order, and downgrades a single entry to string", () => {
-    expect(normalizeLicenseFile([" hand0205 ", "hand0205", "", "humanBody"])).toEqual([
+    expect(normalizeLicenseFile([" hand0205 ", "hand0205", "", "legacySystem"])).toEqual([
       "hand0205",
-      "humanBody",
+      "legacySystem",
     ]);
     expect(normalizeLicenseFile(["  hand0205  "])).toBe("hand0205");
     expect(normalizeLicenseFile("hand0205")).toBe("hand0205");
@@ -337,7 +339,7 @@ describe("Display helpers", () => {
   it("formats a single scope entry", () => {
     expect(formatScopeEntry("all")).toBe("全部传感器");
     expect(formatScopeEntry("@group:precision")).toBe("精密全部");
-    expect(formatScopeEntry("humanBodyOptimized")).toBe("人体全身优化");
+    expect(formatScopeEntry("humanBodyOptimized")).toBe("人体全身传感");
     expect(formatScopeEntry("unknownSystem")).toBe("unknownSystem");
     expect(formatScopeEntry("")).toBe("");
     // 传入的 labelMap（后台读 DB 的传感器名）优先于内置中文名
@@ -347,10 +349,10 @@ describe("Display helpers", () => {
   it("formats a whole scope, splitting comma strings", () => {
     expect(formatLicenseScope("all")).toBe("全部传感器");
     expect(formatLicenseScope("@group:precision,humanBodyOptimized")).toBe(
-      "精密全部、人体全身优化"
+      "精密全部、人体全身传感"
     );
     expect(formatLicenseScope(["@group:care", "humanBodyOptimized"])).toBe(
-      "关怀全部、人体全身优化"
+      "关怀全部、人体全身传感"
     );
     expect(formatLicenseScope(null)).toBe("");
     expect(formatLicenseScope(undefined)).toBe("");
