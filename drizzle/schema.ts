@@ -11,6 +11,8 @@ import {
   varchar,
 } from "drizzle-orm/mysql-core";
 
+export * from "./agentSyncSchema";
+
 /**
  * 用户表 - 三级权限体系
  * super_admin: 超级管理员（创建管理员）

@@ -1,6 +1,6 @@
 # 架构文档
 
-> 本文档由 Manus 自动生成和维护。最后更新于：2026-09-16
+> 本文档由 Manus 自动生成和维护。最后更新于：2026-09-22
 
 ## 1. 项目概述
 
@@ -26,7 +26,7 @@
 | **加密算法** | AES-128/ECB/Pkcs7 (CryptoJS) + RSA-SHA256 | 与桌面端互通；payload 带随机 `n`，离线激活码 RSA 签名 |
 | **路由** | wouter | 轻量前端路由 |
 | **数据序列化** | Superjson | tRPC 数据传输 |
-| **测试** | Vitest | 118 个测试用例全部通过，覆盖服务端规则、分类授权注册表与 v3 密钥、飞书通知/审批回调与按钮 DOM 稳定性 |
+| **测试** | Vitest | 129 个常规测试通过，另有 8 个显式启用的本机 MySQL 集成测试；覆盖授权、飞书、DOM 稳定性与 Agent 同步接收/查询/隔离/事务 |
 
 ## 3. 目录结构
 
@@ -319,6 +319,16 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 
 **部署顺序**：桌面端注册表更新后必须**先**同步到 `config/` 并重启发证服务，再发新版客户端。
 
+### 7.5. Agent 聊天同步
+
+`server/agentSync.ts` 在全局正文解析器之前注册 `POST /api/agent/conversations`，先用独立 Bearer 凭证鉴权，再校验 8 MiB 以内的白名单快照。`agentSyncSchema.ts` 对齐桌面端版本 1 契约；客户归属取凭证对应的现有 `customers.id`。
+
+`agentSyncStore.ts` 在事务内锁定事件回执、校验请求摘要并按 revision 原子更新最新快照，提交后才 ACK。旧版成功确认但不覆盖新版，同事件不同内容返回 409。迁移 `0013_agent_chat_sync.sql` 增加 `agent_upload_credentials`、`agent_conversations`、`agent_sync_events` 三张 InnoDB 表；ID 使用区分大小写的索引。
+
+`agentSyncRouter.ts` 提供启用中超管专用的凭证签发/列表/撤销接口；`scripts/agentSyncCredential.ts` 提供本机运维命令。凭证仅保存 SHA-256 摘要、固定客户归属、上传权限与有效期，明文仅签发时返回。接口每进程每客户限流 60 次/分钟，12 秒未完成返回 503，重试由数据库回执去重。详细部署、反向代理配置及接入步骤见 `docs/agent-chat-sync-service.md`。
+
+`client/src/pages/AgentChats.tsx` 提供 `/agent-chats` 只读查看页，左侧菜单入口为“监控与安全 → Agent 聊天”。`agentSync.chatCustomers`、`conversations`、`conversation` 查询均限启用中超管使用；按客户筛选、以客户/安装/会话复合键定位详情。列表仅返回限长预览，消息与任务各每页 50 条，每 30 秒刷新。消息以纯文本展示，附件只显示元数据；服务端生成的同步时间按数据库 epoch 读取，避免会话时区引入显示偏差。客户端必须先成功上传，页面才会有记录。
+
 ## 8. 环境变量
 
 | 变量名 | 描述 |
@@ -389,6 +399,8 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 | 2026-08-19 | main | 分类授权（v3 `@group:` 密钥） | 引入 `config/licenseSensorGroups.json` 唯一数据源与 `shared/licenseScopes.ts`，密钥保存分类令牌、解码时展开；生成/离线页支持「整个分类」，各列表与 `/licenseCheck`、`/sensorTypes` 同步；测试从 53 增至 115 个 |
 | 2026-09-16 | main | 人体全身系统名称校准 | 停用旧“人体全身”后，将 `humanBodyOptimized` 的显示名统一为“人体全身优化系统”，协议值保持不变 |
 | 2026-09-16 | main | 人体全身传感命名 | 将现行全身系统显示名调整为“人体全身传感” |
+| 2026-09-22 | main | Agent 聊天同步接收服务 | 新增客户上传凭证、严格事件校验、事务回执去重与版本控制，提供超管管理 API 和运维命令 |
+| 2026-09-22 | main | Agent 聊天网页查看 | 新增超管专用聊天菜单、客户筛选、消息及任务分页，完成桌面和手机端浏览验证 |
 
 ## 10. 更新日志
 
@@ -420,6 +432,8 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 | 2026-08-19 | main | 文档更新 | 修正本文档中沿用错误的 “AES-256-GCM / IV+AuthTag” 描述为实际的 AES-128/ECB/Pkcs7，并新增 §7.4 分类授权注册表说明 |
 | 2026-09-16 | main | 配置变更 | 将 `humanBodyOptimized` 的中文显示名统一为“人体全身优化系统”，旧 `humanBody` 保持停用，并同步测试与桌面端对接文档 |
 | 2026-09-16 | main | 配置变更 | 按最新命名将 `humanBodyOptimized` 显示为“人体全身传感”，同步通知测试与对接文档 |
+| 2026-09-22 | main | 新增功能 | 接入 `POST /api/agent/conversations` 与三张持久化表，补充 HTTP 接收、权限和真实 MySQL 并发/回滚测试以及部署文档 |
+| 2026-09-22 | main | 新增功能 | 新增 `/agent-chats` 与三项只读查询，校验超管权限和复合归属，提供纯文本消息、附件名称及任务查看，补充查询分页与同步时间回归测试 |
 
 *变更类型：`新增功能` / `优化重构` / `修复缺陷` / `配置变更` / `文档更新` / `依赖升级` / `初始化`*
 

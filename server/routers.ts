@@ -120,6 +120,7 @@ import {
   normalizeLicenseFile,
 } from "@shared/licenseScopes";
 import { getLicenseRegistryInfo } from "./licenseRegistry";
+import { agentSyncRouter } from "./agentSyncRouter";
 
 /**
  * 授权范围入参的公共校验：`"all"` / 单系统 key / 数组（元素可为 `@group:<groupKey>` 分类令牌）。
@@ -193,6 +194,7 @@ async function getAccessibleFeishuContract(
 }
 
 export const appRouter = router({
+  agentSync: agentSyncRouter,
   system: systemRouter,
 
   auth: router({

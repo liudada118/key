@@ -92,6 +92,13 @@
       "when": 1785394918440,
       "tag": "0012_departments_table_compat",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "5",
+      "when": 1790035200000,
+      "tag": "0013_agent_chat_sync",
+      "breakpoints": true
     }
   ]
 }
