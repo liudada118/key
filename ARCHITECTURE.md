@@ -1,6 +1,6 @@
 # 架构文档
 
-> 本文档由 Manus 自动生成和维护。最后更新于：2026-09-22
+> 本文档由 Manus 自动生成和维护。最后更新于：2026-09-23
 
 ## 1. 项目概述
 
@@ -26,7 +26,7 @@
 | **加密算法** | AES-128/ECB/Pkcs7 (CryptoJS) + RSA-SHA256 | 与桌面端互通；payload 带随机 `n`，离线激活码 RSA 签名 |
 | **路由** | wouter | 轻量前端路由 |
 | **数据序列化** | Superjson | tRPC 数据传输 |
-| **测试** | Vitest | 129 个常规测试通过，另有 8 个显式启用的本机 MySQL 集成测试；覆盖授权、飞书、DOM 稳定性与 Agent 同步接收/查询/隔离/事务 |
+| **测试** | Vitest | 131 个常规测试通过，另有 10 个显式启用的本机 MySQL 集成测试；覆盖授权、飞书、DOM 稳定性与 Agent 同步接收/查询/密钥鉴权/隔离/事务 |
 
 ## 3. 目录结构
 
@@ -321,13 +321,15 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 
 ### 7.5. Agent 聊天同步
 
-`server/agentSync.ts` 在全局正文解析器之前注册 `POST /api/agent/conversations`，先用独立 Bearer 凭证鉴权，再校验 8 MiB 以内的白名单快照。`agentSyncSchema.ts` 对齐桌面端版本 1 契约；客户归属取凭证对应的现有 `customers.id`。
+`server/agentSync.ts` 在全局正文解析器之前注册 `POST /api/agent/conversations`，先用软件密钥或独立 Bearer 凭证鉴权，再校验 8 MiB 以内的白名单快照。`agentSyncSchema.ts` 对齐桌面端版本 1 契约；归属由服务器登记的密钥或凭证确定。
 
 `agentSyncStore.ts` 在事务内锁定事件回执、校验请求摘要并按 revision 原子更新最新快照，提交后才 ACK。旧版成功确认但不覆盖新版，同事件不同内容返回 409。迁移 `0013_agent_chat_sync.sql` 增加 `agent_upload_credentials`、`agent_conversations`、`agent_sync_events` 三张 InnoDB 表；ID 使用区分大小写的索引。
 
 `agentSyncRouter.ts` 提供启用中超管专用的凭证签发/列表/撤销接口；`scripts/agentSyncCredential.ts` 提供本机运维命令。凭证仅保存 SHA-256 摘要、固定客户归属、上传权限与有效期，明文仅签发时返回。接口每进程每客户限流 60 次/分钟，12 秒未完成返回 503，重试由数据库回执去重。详细部署、反向代理配置及接入步骤见 `docs/agent-chat-sync-service.md`。
 
 `client/src/pages/AgentChats.tsx` 提供 `/agent-chats` 只读查看页，左侧菜单入口为“监控与安全 → Agent 聊天”。`agentSync.chatCustomers`、`conversations`、`conversation` 查询均限启用中超管使用；按客户筛选、以客户/安装/会话复合键定位详情。列表仅返回限长预览，消息与任务各每页 50 条，每 30 秒刷新。消息以纯文本展示，附件只显示元数据；服务端生成的同步时间按数据库 epoch 读取，避免会话时区引入显示偏差。客户端必须先成功上传，页面才会有记录。
+
+2026-09-23 新增 `Authorization: License <软件密钥>`，每次检查服务器登记、授权范围、到期时间、删除/暂停/吊销/异常状态和关联客户可用性，数据库错误时不放行。独立 Bearer 凭证继续兼容。迁移 `0014_agent_chat_license_auth.sql` 新增 `agent_chat_sources`，保留旧客户来源 ID 并为每个软件密钥分配稳定来源；聊天/回执 `tenant_id` 指该来源 ID。展示名称优先关联客户、其次密钥冗余公司名，否则按密钥标记未绑定公司；不使用客户端自报归属。密钥变更公司不移动会话历史，来源保持隔离。对应桌面端仅向固定官方 HTTPS 接口自动发送软件密钥，按密钥摘要隔离队列；上线须同步更新服务端与客户端。
 
 ## 8. 环境变量
 
@@ -401,6 +403,7 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 | 2026-09-16 | main | 人体全身传感命名 | 将现行全身系统显示名调整为“人体全身传感” |
 | 2026-09-22 | main | Agent 聊天同步接收服务 | 新增客户上传凭证、严格事件校验、事务回执去重与版本控制，提供超管管理 API 和运维命令 |
 | 2026-09-22 | main | Agent 聊天网页查看 | 新增超管专用聊天菜单、客户筛选、消息及任务分页，完成桌面和手机端浏览验证 |
+| 2026-09-23 | main | Agent 软件密钥上传 | 有效密钥直接上传，自动显示公司名，未绑定公司按密钥隔离；新增来源迁移与失效/续期回归 |
 
 ## 10. 更新日志
 
@@ -434,6 +437,7 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 | 2026-09-16 | main | 配置变更 | 按最新命名将 `humanBodyOptimized` 显示为“人体全身传感”，同步通知测试与对接文档 |
 | 2026-09-22 | main | 新增功能 | 接入 `POST /api/agent/conversations` 与三张持久化表，补充 HTTP 接收、权限和真实 MySQL 并发/回滚测试以及部署文档 |
 | 2026-09-22 | main | 新增功能 | 新增 `/agent-chats` 与三项只读查询，校验超管权限和复合归属，提供纯文本消息、附件名称及任务查看，补充查询分页与同步时间回归测试 |
+| 2026-09-23 | main | 新增功能 | 接入软件密钥鉴权及稳定聊天来源，保留 Bearer 兼容；联动桌面端自动读取、官方接口限制、队列隔离与凭据不回显 |
 
 *变更类型：`新增功能` / `优化重构` / `修复缺陷` / `配置变更` / `文档更新` / `依赖升级` / `初始化`*
 

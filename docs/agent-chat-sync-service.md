@@ -1,13 +1,14 @@
 # Agent 聊天同步服务
 
-更新：2026-09-22。对应客户端契约 `E:/shroom1/docs/agent-chat-sync-api.md`。
+更新：2026-09-23。对应客户端契约 `E:/shroom1/docs/agent-chat-sync-api.md`。
 
 ## 接入
 
 - 本地完整地址：`http://localhost:3005/api/agent/conversations`。
 - 生产完整地址：`https://你的服务域名/api/agent/conversations`。使用实际部署域名，客户端不自动追加路径。
-- 客户端在 Agent → 模型设置 → 聊天同步填写地址、独立上传凭证，启用后保存。
-- `POST` 请求头：`Authorization: Bearer <上传凭证>`、`Idempotency-Key: <eventId>`、`Content-Type: application/json`。
+- 新版客户端在 Agent → 模型设置 → 聊天同步保留官方地址，上传凭证留空，开启并保存；主进程自动读取现有软件密钥。已有独立凭证可清除后改用软件密钥。
+- 软件密钥鉴权请求头：`Authorization: License <软件密钥>`、`Idempotency-Key: <eventId>`、`Content-Type: application/json`。
+- 兼容旧方式 `Authorization: Bearer <ags_上传凭证>`；自定义地址仍需独立凭证，不会自动接收本机软件密钥。默认同步关闭，不使用模型 API Key。
 - 本服务与密钥管理后端一起启动，不需要独立进程。
 
 ## 部署
@@ -18,8 +19,8 @@ pnpm build
 pnpm start
 ```
 
-发布时执行已提交的 `0013_agent_chat_sync.sql`，然后重启应用。不运行 `db:push` 来代替迁移。
-MySQL 必须使用 InnoDB，`max_allowed_packet` 建议至少 32 MiB。新增三张表；不修改已有聊天或授权记录。
+发布时执行已提交的 `0013_agent_chat_sync.sql` 和 `0014_agent_chat_license_auth.sql`，然后重启应用。不运行 `db:push` 来代替迁移。
+MySQL 必须使用 InnoDB，`max_allowed_packet` 建议至少 32 MiB。新增四张表；归属迁移保留旧聊天和回执的原主键，不修改授权记录。
 HTTP 接收器先鉴权，再运行独立的 8 MiB JSON 解析器，注册在项目全局 50 MB 解析器之前。
 仅接收非压缩 UTF-8 JSON。每客户、每服务进程最多 60 次/分钟，超限返回 429；多实例部署应在网关增加共享限流。
 接口等待超过 12 秒返回 503；事务仍可能完成，客户端重试会通过持久化回执去重。
@@ -51,7 +52,9 @@ location = /api/agent/conversations {
 
 ## 签发上传凭证
 
-先在密钥系统“客户管理”中建立客户，使用其数据库 ID。`tenantId` 即该客户 ID，由凭证绑定；上传正文不能指定归属。
+此节仅用于旧客户端或自定义集成。新版官方客户端不需要逐客户签发独立凭证。
+
+先在密钥系统“客户管理”中建立客户，使用其数据库 ID。签发参数 `tenantId` 即客户 ID，由凭证绑定；上传正文不能指定归属。
 
 超管登录后的 tRPC 管理入口：
 
@@ -78,6 +81,19 @@ pnpm agent-sync:credential revoke --id 456 --admin admin
 客户停用、删除或上传权限失效会阻止继续上传；凭证过期/撤销返回 401。
 
 ## 校验与持久化
+
+### 软件密钥校验与公司归属
+
+- 必须是服务器 `licenseKeys` 中存在且可解析的密钥，不接受只在本地解码通过但服务器没有登记的密钥。
+- 每次上传检查服务器到期时间、软删除标记及状态；仅 `ISSUED`、`ACTIVATED`、`RENEWED` 且未过期可用。`SUSPENDED`、`REVOKED`、`TAMPERED`、`EXPIRED` 均拒绝；续期以数据库期限为准。数据库不可用返回 503，不降级放行。
+- 绑定客户已停用或已删除时拒绝上传。未绑定公司的有效密钥允许上传，并独立显示“未绑定公司 · 密钥 #ID”。
+- 显示名优先取关联客户名称，再取服务器密钥记录中的公司名称（兼容飞书合同自动生成）；不接受客户端提交公司名或客户 ID。
+- `agent_chat_sources` 为每个密钥或旧客户凭证建立稳定来源 ID。会话表/回执表的 `tenant_id` 现在指来源 ID；旧客户来源沿用原 ID。网页查询的历史参数名 `customerId` 指列表返回的来源 ID，不应自行填入客户表 ID。
+- 同公司多把密钥仍按密钥隔离快照，名称可相同；绑定关系变化只更新展示名称，不搬迁回执或重置 revision。
+- 客户端按官方地址与软件密钥摘要隔离队列，切换密钥不把旧队列交给新密钥；安装标识不变。软件密钥不另存至同步配置，不写入快照、日志或返回给模型/页面。
+- 401 `INVALID_LICENSE` 表示密钥格式错误或未登记；403 `LICENSE_UNAVAILABLE` 表示状态、到期或客户绑定不允许上传。原独立凭证方式保持兼容。
+
+### 事件数据
 
 - 版本固定为 `1`，事件类型固定为 `agent.conversation.upsert`；拒绝所有层级未支持字段。
 - eventId/installationId 为 UUID，其他 ID 为 1～160 位字母、数字或 `_ . : -`；会话内消息、任务、附件 ID 分别不能重复。
@@ -111,4 +127,4 @@ $env:AGENT_SYNC_TEST_ADMIN_URL = 'mysql://root@127.0.0.1:3307'
 pnpm exec vitest run server/agentSync.integration.test.ts
 ```
 
-测试覆盖鉴权先于正文解析、8 MiB 边界、无效字段、权限、限流、错误 ACK 防护、并发重复、乱序版本、事务回滚、客户/安装隔离、大快照存储、查询分页和同步时间。网页已用临时数据验证桌面/手机布局、客户筛选、消息/任务分页及纯文本安全展示。生产 HTTPS 与实际 Electron 客户端接入需在部署后验证。
+测试覆盖鉴权先于正文解析、8 MiB 边界、无效字段、权限、限流、错误 ACK 防护、并发重复、乱序版本、事务回滚、客户/安装隔离、大快照存储、查询分页、同步时间，以及密钥状态/到期/续期、公司显示和未绑定密钥隔离。已用临时密钥通过本地真实 HTTP 上传并验证桌面/手机网页；生产 HTTPS 与更新后的 Electron 客户端仍需部署后联调。

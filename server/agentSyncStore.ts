@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, asc, count, desc, eq, sql } from "drizzle-orm";
-import { agentConversations, agentSyncEvents, agentUploadCredentials, customers } from "../drizzle/schema";
+import { agentChatSources, agentConversations, agentSyncEvents, agentUploadCredentials, customers, licenseKeys } from "../drizzle/schema";
 import { getDb } from "./db";
+import { decodeLicenseKey } from "../shared/crypto";
 import type { AgentSyncEvent } from "./agentSyncSchema";
 
 export class AgentSyncError extends Error {
@@ -48,10 +49,15 @@ export async function revokeUploadCredential(id: number) {
 
 export async function listAgentChatCustomers() {
   const db = await database();
-  return db.select({ customerId: agentConversations.tenantId, name: customers.name, conversationCount: count() })
-    .from(agentConversations).leftJoin(customers, eq(customers.id, agentConversations.tenantId))
-    .groupBy(agentConversations.tenantId, customers.name).orderBy(asc(agentConversations.tenantId));
+  return db.select({ customerId: agentConversations.tenantId, name: sourceName, conversationCount: count() })
+    .from(agentConversations)
+    .leftJoin(agentChatSources, eq(agentChatSources.id, agentConversations.tenantId))
+    .leftJoin(licenseKeys, eq(licenseKeys.id, agentChatSources.licenseKeyId))
+    .leftJoin(customers, eq(customers.id, sql`COALESCE(${agentChatSources.customerId}, ${licenseKeys.customerId})`))
+    .groupBy(agentConversations.tenantId, sourceName).orderBy(asc(agentConversations.tenantId));
 }
+
+const sourceName = sql<string>`COALESCE(NULLIF(${customers.name}, ''), NULLIF(${licenseKeys.customerName}, ''), IF(${agentChatSources.licenseKeyId} IS NOT NULL, CONCAT('未绑定公司 · 密钥 #', ${agentChatSources.licenseKeyId}), CONCAT('客户 #', ${agentChatSources.customerId}, '（已删除）')))`;
 
 // Read database-generated timestamps as epoch seconds, independent of the MySQL session timezone.
 const receivedAt = sql`UNIX_TIMESTAMP(${agentConversations.receivedAt})`.mapWith(value => new Date(Number(value) * 1000));
@@ -63,12 +69,15 @@ export async function listAgentConversations(input: { customerId?: number; page:
   const page = Math.min(input.page, Math.max(1, Math.ceil(total / input.pageSize)));
   // Return bounded previews, not the full (up to 8 MiB) snapshots, for the list.
   const items = await db.select({
-    customerId: agentConversations.tenantId, customerName: customers.name,
+    customerId: agentConversations.tenantId, customerName: sourceName,
     installationId: agentConversations.installationId, conversationId: agentConversations.conversationId,
     revision: agentConversations.revision, receivedAt,
     preview: sql<string>`LEFT(JSON_UNQUOTE(JSON_EXTRACT(${agentConversations.snapshotJson}, '$.conversation.messages[0].text')), 160)`,
     messageCount: sql<number>`JSON_LENGTH(JSON_EXTRACT(${agentConversations.snapshotJson}, '$.conversation.messages'))`,
-  }).from(agentConversations).leftJoin(customers, eq(customers.id, agentConversations.tenantId))
+  }).from(agentConversations)
+    .leftJoin(agentChatSources, eq(agentChatSources.id, agentConversations.tenantId))
+    .leftJoin(licenseKeys, eq(licenseKeys.id, agentChatSources.licenseKeyId))
+    .leftJoin(customers, eq(customers.id, sql`COALESCE(${agentChatSources.customerId}, ${licenseKeys.customerId})`))
     .where(where).orderBy(desc(agentConversations.receivedAt), asc(agentConversations.tenantId),
       asc(agentConversations.installationId), asc(agentConversations.conversationId))
     .limit(input.pageSize).offset((page - 1) * input.pageSize);
@@ -80,8 +89,11 @@ export async function getAgentConversation(input: {
 }) {
   const db = await database();
   const [row] = await db.select({ snapshotJson: agentConversations.snapshotJson, receivedAt,
-    customerName: customers.name, revision: agentConversations.revision,
-  }).from(agentConversations).leftJoin(customers, eq(customers.id, agentConversations.tenantId))
+    customerName: sourceName, revision: agentConversations.revision,
+  }).from(agentConversations)
+    .leftJoin(agentChatSources, eq(agentChatSources.id, agentConversations.tenantId))
+    .leftJoin(licenseKeys, eq(licenseKeys.id, agentChatSources.licenseKeyId))
+    .leftJoin(customers, eq(customers.id, sql`COALESCE(${agentChatSources.customerId}, ${licenseKeys.customerId})`))
     .where(and(eq(agentConversations.tenantId, input.customerId),
       eq(agentConversations.installationId, input.installationId.toLowerCase()),
       eq(agentConversations.conversationId, input.conversationId))).limit(1);
@@ -104,6 +116,28 @@ export async function getAgentConversation(input: {
   };
 }
 
+async function resolveSource(db: Awaited<ReturnType<typeof database>>, identity: { customerId: number } | { licenseKeyId: number }) {
+  await db.insert(agentChatSources).values(identity).onDuplicateKeyUpdate({ set: { id: sql`id` } });
+  const [source] = await db.select({ id: agentChatSources.id }).from(agentChatSources)
+    .where('customerId' in identity ? eq(agentChatSources.customerId, identity.customerId) : eq(agentChatSources.licenseKeyId, identity.licenseKeyId)).limit(1);
+  return source.id;
+}
+
+export async function authenticateLicenseUpload(key: string) {
+  const db = await database();
+  const now = Date.now();
+  const decoded = decodeLicenseKey(key, now);
+  if (!decoded.expireTimestamp || !decoded.sensorTypes?.length) throw new AgentSyncError(401, "INVALID_LICENSE");
+  const [row] = await db.select({ id: licenseKeys.id, status: licenseKeys.status, expiresAt: licenseKeys.expireTimestamp,
+    deleted: licenseKeys.isDeleted, customerId: licenseKeys.customerId, customerActive: customers.isActive,
+  }).from(licenseKeys).leftJoin(customers, eq(customers.id, licenseKeys.customerId))
+    .where(eq(licenseKeys.keyString, key)).limit(1);
+  if (!row) throw new AgentSyncError(401, "INVALID_LICENSE");
+  if (row.deleted || !["ISSUED", "ACTIVATED", "RENEWED"].includes(row.status) || row.expiresAt <= now
+    || (row.customerId !== null && row.customerActive !== true)) throw new AgentSyncError(403, "LICENSE_UNAVAILABLE");
+  return { tenantId: await resolveSource(db, { licenseKeyId: row.id }), credentialId: 0 };
+}
+
 export async function authenticateUpload(token: string) {
   const db = await database();
   const [row] = await db.select({ credential: agentUploadCredentials, active: customers.isActive })
@@ -113,7 +147,7 @@ export async function authenticateUpload(token: string) {
     throw new AgentSyncError(401, "INVALID_CREDENTIAL");
   }
   if (!row.active || row.credential.scope !== "agent:upload") throw new AgentSyncError(403, "UPLOAD_FORBIDDEN");
-  return { tenantId: row.credential.tenantId, credentialId: row.credential.id };
+  return { tenantId: await resolveSource(db, { customerId: row.credential.tenantId }), credentialId: row.credential.id };
 }
 
 export async function persistAgentEvent(tenantId: number, event: AgentSyncEvent, connection?: Awaited<ReturnType<typeof database>>) {

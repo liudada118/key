@@ -28,22 +28,38 @@ afterEach(async () => {
 
 async function harness(overrides: Partial<Parameters<typeof registerAgentSync>[1]> = {}) {
   const authenticate = vi.fn(async () => ({ tenantId: 42, credentialId: 1 }));
+  const authenticateLicense = vi.fn(async () => ({ tenantId: 43, credentialId: 0 }));
   const persist = vi.fn(async () => {});
   const app = express();
-  registerAgentSync(app, { authenticate, persist, ...overrides });
+  registerAgentSync(app, { authenticate, authenticateLicense, persist, ...overrides });
   app.use(express.json({ limit: "50mb" }));
   const server = createServer(app);
   servers.push(server);
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as { port: number }).port;
-  const send = (event = sampleEvent(), options: { body?: string; token?: string; eventId?: string } = {}) => fetch(`http://127.0.0.1:${port}${AGENT_SYNC_PATH}`, {
-    method: "POST", headers: { Authorization: `Bearer ${options.token ?? token}`, "Content-Type": "application/json", "Idempotency-Key": options.eventId ?? event.eventId },
+  const send = (event = sampleEvent(), options: { body?: string; token?: string; eventId?: string; scheme?: string } = {}) => fetch(`http://127.0.0.1:${port}${AGENT_SYNC_PATH}`, {
+    method: "POST", headers: { Authorization: `${options.scheme ?? 'Bearer'} ${options.token ?? token}`, "Content-Type": "application/json", "Idempotency-Key": options.eventId ?? event.eventId },
     body: options.body ?? JSON.stringify(event),
   });
-  return { send, authenticate, persist };
+  return { send, authenticate, authenticateLicense, persist };
 }
 
 describe("Agent conversation receiver", () => {
+  it("accepts License authentication separately from upload credentials", async () => {
+    const { send, authenticate, authenticateLicense, persist } = await harness();
+    const key = 'ab'.repeat(64), event = sampleEvent();
+    expect((await send(event, { scheme: 'License', token: key })).status).toBe(200);
+    expect(authenticateLicense).toHaveBeenCalledWith(key);
+    expect(authenticate).not.toHaveBeenCalled();
+    expect(persist).toHaveBeenCalledWith(43, agentSyncEventSchema.parse(event));
+    expect((await send(event, { scheme: 'License', token: 'bad-key' })).status).toBe(401);
+  });
+
+  it("rejects unavailable licenses before JSON parsing", async () => {
+    const { send, persist } = await harness({ authenticateLicense: async () => { throw new AgentSyncError(403, 'LICENSE_UNAVAILABLE'); } });
+    expect((await send(sampleEvent(), { scheme: 'License', token: 'ab'.repeat(64), body: '{bad' })).status).toBe(403);
+    expect(persist).not.toHaveBeenCalled();
+  });
   it("persists using authenticated tenant and confirms the exact event", async () => {
     const { send, persist } = await harness();
     const event = sampleEvent();

@@ -1,5 +1,11 @@
 import { bigint, index, int, longtext, mysqlTable, primaryKey, timestamp, varchar } from "drizzle-orm/mysql-core";
 
+export const agentChatSources = mysqlTable("agent_chat_sources", {
+  id: int("id").autoincrement().primaryKey(),
+  customerId: int("customer_id").unique("agent_source_customer"),
+  licenseKeyId: int("license_key_id").unique("agent_source_license"),
+});
+
 export const agentUploadCredentials = mysqlTable("agent_upload_credentials", {
   id: int("id").autoincrement().primaryKey(),
   tokenHash: varchar("token_hash", { length: 64 }).notNull().unique("token_hash"),

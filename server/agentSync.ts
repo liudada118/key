@@ -1,11 +1,11 @@
 import express, { type ErrorRequestHandler, type Express } from "express";
 import { agentSyncEventSchema, MAX_AGENT_EVENT_BYTES } from "./agentSyncSchema";
-import { AgentSyncError, authenticateUpload, persistAgentEvent } from "./agentSyncStore";
+import { AgentSyncError, authenticateLicenseUpload, authenticateUpload, persistAgentEvent } from "./agentSyncStore";
 
 export const AGENT_SYNC_PATH = "/api/agent/conversations";
 
 export function registerAgentSync(app: Express, dependencies = {
-  authenticate: authenticateUpload, persist: persistAgentEvent,
+  authenticate: authenticateUpload, authenticateLicense: authenticateLicenseUpload, persist: persistAgentEvent,
 }) {
   const route = express.Router();
   const buckets = new Map<number, { start: number; count: number }>();
@@ -26,9 +26,10 @@ export function registerAgentSync(app: Express, dependencies = {
   });
   route.use(async (req, res, next) => {
     const match = /^Bearer (ags_[A-Za-z0-9_-]{43})$/i.exec(req.headers.authorization ?? "");
-    if (!match) { next(new AgentSyncError(401, "INVALID_CREDENTIAL")); return; }
+    const license = /^License ([a-fA-F0-9]{32,8192})$/.exec(req.headers.authorization ?? "");
+    if (!match && !license) { next(new AgentSyncError(401, "INVALID_CREDENTIAL")); return; }
     try {
-      const principal = await dependencies.authenticate(match[1]);
+      const principal = license ? await dependencies.authenticateLicense(license[1]) : await dependencies.authenticate(match![1]);
       if (res.writableEnded || res.destroyed) return;
       const now = Date.now();
       buckets.forEach((bucket, key) => { if (now - bucket.start >= 60000) buckets.delete(key); });

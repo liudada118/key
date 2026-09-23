@@ -4,6 +4,8 @@ import mysql, { type Pool, type Connection, type RowDataPacket } from "mysql2/pr
 import { drizzle } from "drizzle-orm/mysql2";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agentSyncEventSchema } from "./agentSyncSchema";
+import { generateLicenseKey } from "../shared/crypto";
+import { authenticateLicenseUpload } from "./agentSyncStore";
 
 let testDb: ReturnType<typeof drizzle>;
 vi.mock("./db", () => ({ getDb: async () => testDb }));
@@ -35,6 +37,9 @@ describe.skipIf(!adminUrl)("Agent sync MySQL transactions", () => {
     await pool.query("INSERT INTO customers VALUES (1,1,'Customer A'),(2,1,'Customer B'),(3,0,'Inactive')");
     const migration = await readFile(new URL("../drizzle/0013_agent_chat_sync.sql", import.meta.url), "utf8");
     for (const statement of migration.split("--> statement-breakpoint")) await pool.query(statement);
+    await pool.query("CREATE TABLE licenseKeys (id int AUTO_INCREMENT PRIMARY KEY, keyString text, status varchar(32), expireTimestamp bigint, isDeleted boolean DEFAULT 0, customerId int, customerName varchar(256))");
+    const sourceMigration = await readFile(new URL("../drizzle/0014_agent_chat_license_auth.sql", import.meta.url), "utf8");
+    for (const statement of sourceMigration.split("--> statement-breakpoint")) await pool.query(statement);
   });
   afterAll(async () => {
     await pool?.end();
@@ -136,5 +141,50 @@ describe.skipIf(!adminUrl)("Agent sync MySQL transactions", () => {
     expect(await getAgentConversation({ ...key, customerId: 1 })).toBeNull();
     expect(await getAgentConversation({ ...key, installationId: randomUUID() })).toBeNull();
     expect((await listAgentChatCustomers()).map(customer => customer.customerId)).toEqual([1, 2]);
+  });
+
+  it("authenticates only registered active licenses and keeps a stable source with company labels", async () => {
+    const key = generateLicenseKey('car', 30, 'rental');
+    await expect(authenticateLicenseUpload(key)).rejects.toMatchObject({ status: 401 });
+    await expect(authenticateLicenseUpload('invalid')).rejects.toMatchObject({ status: 401 });
+    const [insert] = await pool.query<mysql.ResultSetHeader>("INSERT INTO licenseKeys (keyString,status,expireTimestamp,customerId) VALUES (?,'ISSUED',?,1)", [key, Date.now() + 86400000]);
+    const principals = await Promise.all(Array.from({ length: 4 }, () => authenticateLicenseUpload(key)));
+    const sourceId = principals[0].tenantId;
+    expect(principals.every(item => item.tenantId === sourceId)).toBe(true);
+    expect(sourceId).not.toBe(1);
+    await persistAgentEvent(sourceId, event(1, 'license-company'));
+    expect((await listAgentConversations({ customerId: sourceId, page: 1, pageSize: 20 })).items[0].customerName).toBe('Customer A');
+    await pool.query("UPDATE licenseKeys SET customerId=NULL, customerName='Contract Company' WHERE id=?", [insert.insertId]);
+    expect((await authenticateLicenseUpload(key)).tenantId).toBe(sourceId);
+    expect((await listAgentChatCustomers()).find(item => item.customerId === sourceId)?.name).toBe('Contract Company');
+    await pool.query("UPDATE licenseKeys SET customerName=NULL WHERE id=?", [insert.insertId]);
+    expect((await listAgentChatCustomers()).find(item => item.customerId === sourceId)?.name).toBe(`未绑定公司 · 密钥 #${insert.insertId}`);
+    for (const status of ['SUSPENDED', 'REVOKED', 'TAMPERED', 'EXPIRED']) {
+      await pool.query('UPDATE licenseKeys SET status=? WHERE id=?', [status, insert.insertId]);
+      await expect(authenticateLicenseUpload(key)).rejects.toMatchObject({ status: 403 });
+    }
+    await pool.query("UPDATE licenseKeys SET status='ACTIVATED', isDeleted=1 WHERE id=?", [insert.insertId]);
+    await expect(authenticateLicenseUpload(key)).rejects.toMatchObject({ status: 403 });
+    await pool.query('UPDATE licenseKeys SET isDeleted=0, expireTimestamp=? WHERE id=?', [Date.now() - 1, insert.insertId]);
+    await expect(authenticateLicenseUpload(key)).rejects.toMatchObject({ status: 403 });
+    await pool.query("UPDATE licenseKeys SET expireTimestamp=?, customerId=3 WHERE id=?", [Date.now() + 86400000, insert.insertId]);
+    await expect(authenticateLicenseUpload(key)).rejects.toMatchObject({ status: 403 });
+    await pool.query("UPDATE licenseKeys SET customerId=999 WHERE id=?", [insert.insertId]);
+    await expect(authenticateLicenseUpload(key)).rejects.toMatchObject({ status: 403 });
+    await pool.query("UPDATE licenseKeys SET customerId=NULL, status='RENEWED' WHERE id=?", [insert.insertId]);
+    expect((await authenticateLicenseUpload(key)).tenantId).toBe(sourceId);
+  });
+
+  it("isolates unbound licenses and honors database renewal of an expired encoded key", async () => {
+    const expired = generateLicenseKey('car', -1, 'rental');
+    const other = generateLicenseKey('car', 30, 'rental');
+    for (const key of [expired, other]) await pool.query("INSERT INTO licenseKeys (keyString,status,expireTimestamp) VALUES (?,'RENEWED',?)", [key, Date.now() + 86400000]);
+    const a = await authenticateLicenseUpload(expired), b = await authenticateLicenseUpload(other);
+    expect(a.tenantId).not.toBe(b.tenantId);
+    const payload = event(1, 'same-license-conversation');
+    await persistAgentEvent(a.tenantId, payload);
+    await persistAgentEvent(b.tenantId, payload);
+    expect((await rows('SELECT * FROM agent_conversations WHERE conversation_id=?', [payload.conversationId])).length).toBe(2);
+    expect((await authenticateUpload((await issueUploadCredential({ tenantId: 2, name: 'Legacy', days: 1, createdById: 1 })).token)).tenantId).toBe(2);
   });
 });

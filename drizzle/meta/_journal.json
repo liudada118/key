@@ -99,6 +99,13 @@
       "when": 1790035200000,
       "tag": "0013_agent_chat_sync",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "5",
+      "when": 1790131020776,
+      "tag": "0014_agent_chat_license_auth",
+      "breakpoints": true
     }
   ]
 }
