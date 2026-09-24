@@ -30,6 +30,7 @@ import SdkRequestManagement from "./pages/SdkRequestManagement";
 import KeyGenerationRequests from "./pages/KeyGenerationRequests";
 import Login from "./pages/Login";
 import AgentChats from "./pages/AgentChats";
+import UsageAnalytics from "./pages/UsageAnalytics";
 import { useAuth } from "./_core/hooks/useAuth";
 import { Loader2 } from "lucide-react";
 
@@ -61,6 +62,7 @@ function AuthenticatedRouter() {
         <Route path={"/feedback"} component={FeedbackManagement} />
         <Route path={"/sdk-requests"} component={SdkRequestManagement} />
         <Route path={"/agent-chats"} component={AgentChats} />
+        <Route path={"/usage-analytics"} component={UsageAnalytics} />
         <Route path={"/404"} component={NotFound} />
         <Route component={NotFound} />
       </Switch>

@@ -1,6 +1,6 @@
 # 架构文档
 
-> 本文档由 Manus 自动生成和维护。最后更新于：2026-09-23
+> 本文档由 Manus 自动生成和维护。最后更新于：2026-09-24
 
 ## 1. 项目概述
 
@@ -26,7 +26,7 @@
 | **加密算法** | AES-128/ECB/Pkcs7 (CryptoJS) + RSA-SHA256 | 与桌面端互通；payload 带随机 `n`，离线激活码 RSA 签名 |
 | **路由** | wouter | 轻量前端路由 |
 | **数据序列化** | Superjson | tRPC 数据传输 |
-| **测试** | Vitest | 131 个常规测试通过，另有 10 个显式启用的本机 MySQL 集成测试；覆盖授权、飞书、DOM 稳定性与 Agent 同步接收/查询/密钥鉴权/隔离/事务 |
+| **测试** | Vitest | 141 个常规测试与 15 个显式启用的本机 MySQL 集成测试；覆盖授权、飞书、DOM 稳定性、Agent 同步和客户埋点/错误接收、归属隔离、事务回执及统计查询 |
 
 ## 3. 目录结构
 
@@ -54,6 +54,7 @@ key-manager/
 │   │   │   ├── OfflineKeyList.tsx     # 离线密钥管理
 │   │   │   ├── AccountManagement.tsx  # 账号管理
 │   │   │   ├── CustomerManagement.tsx # 客户管理
+│   │   │   ├── UsageAnalytics.tsx     # 超管客户功能分析、时间线与错误上下文
 │   │   │   ├── SensorManagement.tsx   # 传感器类型管理
 │   │   │   ├── MacReader.tsx          # MAC 地址读取
 │   │   │   └── NotFound.tsx    # 404 页面
@@ -68,6 +69,10 @@ key-manager/
 │   │   └── ...                 # 其他核心模块
 │   ├── db.ts                   # 数据库查询 helpers（账号 + 密钥 CRUD）
 │   ├── routers.ts              # tRPC 路由定义（keys + accounts + auth + sensors + customers + offline）
+│   ├── usage.ts                # 业务埋点/错误批量接收（鉴权、限额、提交后确认）
+│   ├── usageSchema.ts          # 版本 1 白名单与错误脱敏
+│   ├── usageStore.ts           # 不可变归属、事务去重、聚合与会话查询
+│   ├── usageRouter.ts          # 启用中超管专用只读统计 API
 │   ├── feishuContracts.ts       # 飞书合同读取、字段映射、编号去重和提交人过滤
 │   ├── feishuContracts.test.ts  # 飞书合同去重与权限范围测试
 │   ├── feishuKeyRequestWebhook.ts # 无合同密钥申请飞书机器人通知
@@ -242,6 +247,8 @@ graph TD
 | `tRPC` | `keyGenerationRequests.list` | 登录 | 超管查看全部申请，其他账号仅查看本人申请 |
 | `tRPC` | `keyGenerationRequests.review` | 超级管理员 | 批准并事务生成密钥，或填写原因拒绝申请 |
 | `POST` | `/api/feishu/key-request/card-action` | 飞书验签 + 指定审批群 | 接收应用机器人卡片操作并调用统一审批服务 |
+| `POST` | `/api/usage/events/batch` | 有效登记软件密钥 | ≤50 条白名单埋点/错误，事务去重，提交后确认全部 ID |
+| `tRPC` | `usage.customers/overview/events/context` | 启用中的超级管理员 | 客户功能统计、日期/环境/模块/版本筛选、分页事件和同会话上下文 |
 | `tRPC` | `system.notifyOwner` | 登录 | 向 Owner 发送通知 |
 
 ## 6. 数据库表结构
@@ -256,6 +263,8 @@ graph TD
 | `sensor_types` | id, value, label, groupName, groupIcon, sortOrder | 传感器类型表 |
 | `offline_keys` | id, machineId, activationCode, sensorType, days | 离线密钥表 |
 | `rsa_key_pairs` | id, publicKey, privateKey, isActive | RSA 密钥对表 |
+| `usage_sources` | source_id, customer_id, customer_name, first_received_at | 首次上传时固定的客户归属快照；来源复用软件密钥稳定 ID |
+| `usage_events` | source_id, installation_id, event_id, session_id, occurred_ms, event_name, payload_hash, payload_json | 脱敏事件兼去重回执，索引支持环境/日期、客户来源、错误及会话查询 |
 
 ## 7. 加密模块
 
@@ -331,11 +340,22 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 
 2026-09-23 新增 `Authorization: License <软件密钥>`，每次检查服务器登记、授权范围、到期时间、删除/暂停/吊销/异常状态和关联客户可用性，数据库错误时不放行。独立 Bearer 凭证继续兼容。迁移 `0014_agent_chat_license_auth.sql` 新增 `agent_chat_sources`，保留旧客户来源 ID 并为每个软件密钥分配稳定来源；聊天/回执 `tenant_id` 指该来源 ID。展示名称优先关联客户、其次密钥冗余公司名，否则按密钥标记未绑定公司；不使用客户端自报归属。密钥变更公司不移动会话历史，来源保持隔离。对应桌面端仅向固定官方 HTTPS 接口自动发送软件密钥，按密钥摘要隔离队列；上线须同步更新服务端与客户端。
 
+### 7.6. 客户功能使用与错误上报
+
+`server/usage.ts` 在全局正文解析之前注册 `POST /api/usage/events/batch`，复用已有软件密钥校验；只接收版本 1、每批至多 50 条/256 KiB、单事件至多 4 KiB 的严格白名单。普通行为和 `error_reported` 共用批次，错误消息/堆栈另行限长与脱敏。每来源每进程 60 批/分钟，12 秒接收超时；所有错误响应只含固定错误码。
+
+`usageStore.ts` 在同一 InnoDB 事务中首次固定来源的客户 ID/名称，按来源/安装/事件 ID 写不可变记录并比对内容摘要；完全重复的重传正常 ACK，内容冲突导致整批回滚。公司绑定变化不会把既有行为移给别的客户，同一密钥后续记录保持首次归属。迁移 `0015_usage_analytics.sql` 只增加两张 usage 表及索引，不执行在线数据回填或自动迁移。
+
+`/usage-analytics` 入口为“监控与安全 → 客户使用分析”，查询只向启用中的超管开放。按 UTC 事件日期（至多 93 天）、环境、客户、版本、错误模块筛选；SQL 聚合全部匹配记录，排行各限前 100 条并明确标注，时间线每页 50 条。错误次数按客户端重复聚合的 count 累加，不同错误按脱敏指纹去重；详情上下文只匹配同来源/安装/会话最近 20 条。空数据明确表示未观测到，不能等同未使用；记录发生与接收时间分别显示。
+
+接入部署顺序、字段契约、统计口径及验证边界见 `docs/usage-analytics-service.md`。当前为代码完成、本机隔离数据库与合成浏览器数据验证；未执行生产迁移、发布或真实客户上传。未新增运行时依赖，构建产物均位于系统临时目录。
+
 ## 8. 环境变量
 
 | 变量名 | 描述 |
 | :--- | :--- |
 | `DATABASE_URL` | 数据库连接字符串 |
+| `USAGE_TEST_ADMIN_URL` | 仅显式启用本机 MySQL 集成测试；测试创建并删除自己的随机数据库，不用于运行时 |
 | `LICENSE_REGISTRY_PATH` | 分类授权注册表路径，默认 `<cwd>/config/licenseSensorGroups.json`；文件非法则启动失败（见 7.4） |
 | `JWT_SECRET` | Session Cookie 签名密钥 |
 | `VITE_APP_ID` | Manus OAuth 应用 ID |
@@ -404,6 +424,8 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 | 2026-09-22 | main | Agent 聊天同步接收服务 | 新增客户上传凭证、严格事件校验、事务回执去重与版本控制，提供超管管理 API 和运维命令 |
 | 2026-09-22 | main | Agent 聊天网页查看 | 新增超管专用聊天菜单、客户筛选、消息及任务分页，完成桌面和手机端浏览验证 |
 | 2026-09-23 | main | Agent 软件密钥上传 | 有效密钥直接上传，自动显示公司名，未绑定公司按密钥隔离；新增来源迁移与失效/续期回归 |
+| 2026-09-24 | codex/usage-errors-analytics | 客户使用分析与错误接收 | 完成事务批量接收、固定客户归属、超管统计/时间线/错误上下文页和 14 项专项测试；尚未上线 |
+| 2026-09-24 | codex/usage-errors-analytics | 诊断凭据脱敏加固 | 凭据键值支持 JSON、单双引号、空格和转义引号，新增完整值回归，专项 HTTP/权限 10 项通过 |
 
 ## 10. 更新日志
 
@@ -438,6 +460,8 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 | 2026-09-22 | main | 新增功能 | 接入 `POST /api/agent/conversations` 与三张持久化表，补充 HTTP 接收、权限和真实 MySQL 并发/回滚测试以及部署文档 |
 | 2026-09-22 | main | 新增功能 | 新增 `/agent-chats` 与三项只读查询，校验超管权限和复合归属，提供纯文本消息、附件名称及任务查看，补充查询分页与同步时间回归测试 |
 | 2026-09-23 | main | 新增功能 | 接入软件密钥鉴权及稳定聊天来源，保留 Bearer 兼容；联动桌面端自动读取、官方接口限制、队列隔离与凭据不回显 |
+| 2026-09-24 | codex/usage-errors-analytics | 新增功能 | 新增 usage 接收、白名单脱敏、不可变事件与归属、0015 迁移和超管使用分析页；完成临时 MySQL 事务验证、类型检查、临时生产构建与合成浏览器检查 |
+| 2026-09-24 | codex/usage-errors-analytics | 修复缺陷 | 诊断错误中的带引号凭据值整体脱敏，补充含空格/转义字符回归；只运行受影响的 10 项 HTTP/权限测试 |
 
 *变更类型：`新增功能` / `优化重构` / `修复缺陷` / `配置变更` / `文档更新` / `依赖升级` / `初始化`*
 

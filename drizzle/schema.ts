@@ -12,6 +12,7 @@ import {
 } from "drizzle-orm/mysql-core";
 
 export * from "./agentSyncSchema";
+export * from "./usageSchema";
 
 /**
  * 用户表 - 三级权限体系

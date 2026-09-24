@@ -125,6 +125,7 @@ const menuSections: MenuSection[] = [
       { icon: AlertTriangle, label: "异常密钥", path: "/tampered", roles: ["super_admin", "admin"] },
       { icon: MessageSquare, label: "反馈管理", path: "/feedback" },
       { icon: MessageSquare, label: "Agent 聊天", path: "/agent-chats", roles: ["super_admin"] },
+      { icon: BarChart3, label: "客户使用分析", path: "/usage-analytics", roles: ["super_admin"] },
       // roles 必须写死成管理员及以上：后端 sdkRequests 全部走 adminProcedure，
       // 菜单要是对子账号可见，点进去只会看到一个 FORBIDDEN
       { icon: Download, label: "SDK 获取", path: "/sdk-requests", roles: ["super_admin", "admin"] },
