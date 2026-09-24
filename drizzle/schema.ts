@@ -13,6 +13,7 @@ import {
 
 export * from "./agentSyncSchema";
 export * from "./usageSchema";
+export * from "./systemPackageSchema";
 
 /**
  * 用户表 - 三级权限体系

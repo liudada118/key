@@ -18,6 +18,7 @@ import {
 import { getLicenseRegistryInfo, loadLicenseRegistry } from "../licenseRegistry";
 import { registerFeishuKeyRequestCardCallback } from "../feishuKeyRequestCardCallback";
 import { registerAgentSync } from "../agentSync";
+import { registerSystemPackages } from "../systemPackages";
 import { registerUsage } from "../usage";
 
 function isPortAvailable(port: number): Promise<boolean> {
@@ -50,6 +51,7 @@ async function startServer() {
   // 飞书验签需要原始请求体，因此必须在全局 JSON 解析器之前注册。
   registerFeishuKeyRequestCardCallback(app);
   registerAgentSync(app);
+  registerSystemPackages(app);
   registerUsage(app);
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
