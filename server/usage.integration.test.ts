@@ -96,6 +96,26 @@ describe.skipIf(!adminUrl)("usage MySQL transaction and attribution", () => {
     await expect(persistUsageBatch(scope, [{ ...error, properties: { ...error.properties, message: "token=other failure" } }])).rejects.toMatchObject({ status: 409 });
   });
 
+  it("separates performance units, active windows and pseudonymous system groups", async () => {
+    const scope = { sourceId: 104, customerId: 12, customerName: "Coverage" };
+    const installationId = randomUUID(), sessionId = randomUUID();
+    const make = (eventName: UsageEvent["eventName"], properties: UsageEvent["properties"]) => event({ eventName, properties, installationId, sessionId });
+    await persistUsageBatch(scope, [
+      make("system_entered", { systemType: "custom.0123456789abcdef", systemOrigin: "custom" }),
+      make("system_entered", { systemType: "custom.fedcba9876543210", systemOrigin: "custom" }),
+      make("monitoring_usage_summary", { systemType: "custom.0123456789abcdef", featureId: "monitoring", durationMs: 30000 }),
+      make("usage_session_summary", { featureId: "foreground", durationMs: 60000 }),
+      make("usage_session_summary", { featureId: "interaction", durationMs: 15000 }),
+      make("usage_session_summary", { featureId: "main_memory", count: 512 }),
+    ]);
+    const data = await getUsageOverview({ ...filters, customerKey: "customer:12" });
+    expect(data.customers[0]).toMatchObject({ monitoringMs: 30000, foregroundMs: 60000, interactionMs: 15000 });
+    expect(data.systems).toHaveLength(2);
+    expect(data.systems.find(row => row.systemType === "custom.0123456789abcdef")).toMatchObject({ entries: 1, monitoringMs: 30000 });
+    const selected = await listUsageEvents({ filters: { ...filters, customerKey: "customer:12", featureId: "main_memory" }, errorsOnly: false, page: 1 });
+    expect(selected.total).toBe(1); expect(selected.items[0].event.properties.count).toBe(512);
+  });
+
   it("authenticates only usable registered licenses and fixes company attribution at first durable upload", async () => {
     const key = generateLicenseKey("car", 30, "rental");
     await expect(authenticateUsage(key)).rejects.toMatchObject({ status: 401 });

@@ -350,6 +350,8 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 
 接入部署顺序、字段契约、统计口径及验证边界见 `docs/usage-analytics-service.md`。当前为代码完成、本机隔离数据库与合成浏览器数据验证；未执行生产迁移、发布或真实客户上传。未新增运行时依赖，构建产物均位于系统临时目录。
 
+2026-09-24 覆盖扩展：管理查询增加 `featureId` 精确筛选，`overview.systems` 对匿名 systemType 分组前 100 项；客户表分别累加 foreground/interaction 会话摘要，监测与采集仍只累计对应业务事件。`client/src/lib/usagePresentation.ts` 统一固定功能标签、匿名系统标签及 MiB/ms/长任务/帧间隔单位；页面增加系统表、功能筛选和前台/交互列，手机表格内部横向滚动。上传 schemaVersion 1 与事件属性不变，不增加 SQL 迁移。首版线上路由和菜单资源已可观察，本轮扩展仍为未发布的隔离工作区代码，不能据此宣称真实客户数据已验收。
+
 ## 8. 环境变量
 
 | 变量名 | 描述 |
@@ -426,6 +428,7 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 | 2026-09-23 | main | Agent 软件密钥上传 | 有效密钥直接上传，自动显示公司名，未绑定公司按密钥隔离；新增来源迁移与失效/续期回归 |
 | 2026-09-24 | codex/usage-errors-analytics | 客户使用分析与错误接收 | 完成事务批量接收、固定客户归属、超管统计/时间线/错误上下文页和 14 项专项测试；尚未上线 |
 | 2026-09-24 | codex/usage-errors-analytics | 诊断凭据脱敏加固 | 凭据键值支持 JSON、单双引号、空格和转义引号，新增完整值回归，专项 HTTP/权限 10 项通过 |
+| 2026-09-24 | codex/usage-errors-analytics | 使用统计范围扩展 | 功能筛选、匿名系统排行、前台/交互窗口与性能单位；完整 159 项含临时 MySQL、类型检查、临时构建和浏览器验证通过，本轮未发布 |
 
 ## 10. 更新日志
 
@@ -462,6 +465,7 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 | 2026-09-23 | main | 新增功能 | 接入软件密钥鉴权及稳定聊天来源，保留 Bearer 兼容；联动桌面端自动读取、官方接口限制、队列隔离与凭据不回显 |
 | 2026-09-24 | codex/usage-errors-analytics | 新增功能 | 新增 usage 接收、白名单脱敏、不可变事件与归属、0015 迁移和超管使用分析页；完成临时 MySQL 事务验证、类型检查、临时生产构建与合成浏览器检查 |
 | 2026-09-24 | codex/usage-errors-analytics | 修复缺陷 | 诊断错误中的带引号凭据值整体脱敏，补充含空格/转义字符回归；只运行受影响的 10 项 HTTP/权限测试 |
+| 2026-09-24 | codex/usage-errors-analytics | 新增功能 | 沿用版本 1 接收契约扩展功能/系统/交互与性能展示，校验分组与单位，保持客户权限和历史归属；17 文件 159 项通过，无新增迁移或生产操作 |
 
 *变更类型：`新增功能` / `优化重构` / `修复缺陷` / `配置变更` / `文档更新` / `依赖升级` / `初始化`*
 
