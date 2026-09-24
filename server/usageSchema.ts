@@ -71,6 +71,7 @@ export const usageFiltersSchema = z.object({
   from: date, to: date, environment: z.enum(["production", "development", "test", "all"]).default("production"),
   customerKey: z.string().regex(/^(customer|source):[1-9]\d*$/).optional(),
   appVersion: z.string().max(80).optional(), module: identifier.optional(),
+  featureId: identifier.optional(),
 }).strict().refine(value => Date.parse(value.to) >= Date.parse(value.from)
   && Date.parse(value.to) - Date.parse(value.from) < 93 * 86400000, "Select up to 93 days");
 export type UsageFilters = z.infer<typeof usageFiltersSchema>;

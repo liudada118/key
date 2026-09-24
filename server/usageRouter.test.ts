@@ -24,8 +24,8 @@ describe("usage administrator access", () => {
   });
   it("preserves the full customer/install/event scope and validates bounded dates", async () => {
     const client = caller("super_admin");
-    await client.overview({ ...filters, customerKey: "customer:7" });
-    expect(getUsageOverview).toHaveBeenCalledWith({ ...filters, customerKey: "customer:7" });
+    await client.overview({ ...filters, customerKey: "customer:7", featureId: "foreground" });
+    expect(getUsageOverview).toHaveBeenCalledWith({ ...filters, customerKey: "customer:7", featureId: "foreground" });
     await client.context(identity);
     expect(getUsageEventContext).toHaveBeenCalledWith(identity);
     await expect(client.overview({ ...filters, from: "2026-01-01" })).rejects.toMatchObject({ code: "BAD_REQUEST" });

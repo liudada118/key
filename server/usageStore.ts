@@ -80,6 +80,7 @@ function whereFilters(filters: UsageFilters): SQL | undefined {
   if (filters.customerKey) conditions.push(eq(customerKey, filters.customerKey));
   if (filters.appVersion) conditions.push(eq(usageEvents.appVersion, filters.appVersion));
   if (filters.module) conditions.push(eq(usageEvents.module, filters.module));
+  if (filters.featureId) conditions.push(eq(usageEvents.featureId, filters.featureId));
   return and(...conditions);
 }
 
@@ -105,12 +106,21 @@ export async function getUsageOverview(filters: UsageFilters) {
     ...summaryColumns, lastOccurredMs: sql<number>`MAX(${usageEvents.occurredMs})`.mapWith(Number),
     monitoringMs: sql<number>`COALESCE(SUM(IF(${usageEvents.eventName} = 'monitoring_usage_summary', ${usageEvents.durationMs}, 0)), 0)`.mapWith(Number),
     collectionMs: sql<number>`COALESCE(SUM(IF(${usageEvents.eventName} = 'collection_finished', ${usageEvents.durationMs}, 0)), 0)`.mapWith(Number),
+    foregroundMs: sql<number>`COALESCE(SUM(IF(${usageEvents.eventName} = 'usage_session_summary' AND ${usageEvents.featureId} = 'foreground', ${usageEvents.durationMs}, 0)), 0)`.mapWith(Number),
+    interactionMs: sql<number>`COALESCE(SUM(IF(${usageEvents.eventName} = 'usage_session_summary' AND ${usageEvents.featureId} = 'interaction', ${usageEvents.durationMs}, 0)), 0)`.mapWith(Number),
   }).from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(where)
     .groupBy(customerKey).orderBy(desc(count())).limit(100);
   const days = await db.select({ day: sql<number>`FLOOR(${usageEvents.occurredMs} / 86400000)`.mapWith(Number), ...summaryColumns })
     .from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(where)
     .groupBy(sql`FLOOR(${usageEvents.occurredMs} / 86400000)`).orderBy(asc(sql`FLOOR(${usageEvents.occurredMs} / 86400000)`));
-  return { totals: totals[0], features, customers: customerRows, days, listLimit: 100 };
+  const systemType = sql<string>`JSON_UNQUOTE(JSON_EXTRACT(${usageEvents.payloadJson}, '$.properties.systemType'))`;
+  const systems = await db.select({ systemType, ...summaryColumns,
+    entries: sql<number>`SUM(IF(${usageEvents.eventName} = 'system_entered', 1, 0))`.mapWith(Number),
+    monitoringMs: sql<number>`COALESCE(SUM(IF(${usageEvents.eventName} = 'monitoring_usage_summary', ${usageEvents.durationMs}, 0)), 0)`.mapWith(Number),
+  }).from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId))
+    .where(and(where, sql`${systemType} IS NOT NULL AND ${systemType} <> 'unknown'`))
+    .groupBy(systemType).orderBy(desc(count())).limit(100);
+  return { totals: totals[0], features, customers: customerRows, systems, days, listLimit: 100 };
 }
 
 const eventColumns = { sourceId: usageEvents.sourceId, installationId: usageEvents.installationId, eventId: usageEvents.eventId,
