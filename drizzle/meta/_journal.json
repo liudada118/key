@@ -127,6 +127,20 @@
       "when": 1790236406549,
       "tag": "0017_harsh_darkstar",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "5",
+      "when": 1791446485589,
+      "tag": "0018_brief_fixer",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "5",
+      "when": 1791452827745,
+      "tag": "0019_handy_gwen_stacy",
+      "breakpoints": true
     }
   ]
 }

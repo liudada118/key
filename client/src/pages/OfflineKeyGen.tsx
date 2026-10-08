@@ -21,6 +21,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { trpc } from "@/lib/trpc";
+import { systemPackagesApi } from "@/lib/systemPackagesApi";
 import {
   Building2,
   Copy,
@@ -31,7 +32,7 @@ import {
   Plus,
   Shield,
 } from "lucide-react";
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { toast } from "sonner";
 import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -214,6 +215,23 @@ export default function OfflineKeyGen() {
   // 传感器数据
   const { data: sensorGroupsRaw, isLoading: sensorsLoading } = trpc.sensors.groups.useQuery();
   const sensorGroups: SensorGroup[] = useMemo(() => sensorGroupsRaw ?? [], [sensorGroupsRaw]);
+  const [companySystems, setCompanySystems] = useState<{ systemId: string; name: string }[]>([]);
+  const [companySystemsError, setCompanySystemsError] = useState("");
+
+  /** Add published company systems to offline key selection without changing built-in groups. */
+  useEffect(() => {
+    let active = true;
+    systemPackagesApi("/available").then((result) => {
+      if (active) setCompanySystems(result.systems || []);
+    }).catch((error) => { if (active) setCompanySystemsError(error.message); });
+    return () => { active = false; };
+  }, []);
+  const availableGroups = useMemo(() => {
+    const existing = new Set(sensorGroups.flatMap((group) => group.items.map((item) => item.value)));
+    const published = companySystems.filter((item) => !existing.has(item.systemId));
+    return published.length ? [...sensorGroups, { group: "公司发布系统", icon: "📦",
+      items: published.map((item) => ({ label: item.name, value: item.systemId })) }] : sensorGroups;
+  }, [sensorGroups, companySystems]);
 
   // 注册表分类清单（「整个分类」开关用；与桌面端 licenseSensorGroups.json 同源）
   const { data: licenseGroupData } = trpc.sensors.licenseGroups.useQuery();
@@ -272,8 +290,8 @@ export default function OfflineKeyGen() {
 
   // 所有传感器平铺
   const allSensors = useMemo(
-    () => sensorGroups.flatMap((g) => g.items),
-    [sensorGroups]
+    () => availableGroups.flatMap((g) => g.items),
+    [availableGroups]
   );
 
   const sensorLabelMap = useMemo(
@@ -309,6 +327,8 @@ export default function OfflineKeyGen() {
     ? allSensors.length
     : selectedGroupKeys.length + selectedTypes.length;
   const hasSelection = isAll || selectedGroupKeys.length > 0 || selectedTypes.length > 0;
+  const needsCustomer = companySystems.length > 0
+    && (isAll || selectedTypes.some((value) => companySystems.some((item) => item.systemId === value)));
 
   const handleToggleAll = useCallback((checked: boolean) => {
     setIsAll(checked);
@@ -379,6 +399,10 @@ export default function OfflineKeyGen() {
       toast.error("请至少选择一个传感器类型或一个分类");
       return;
     }
+    if (needsCustomer && !customerId) {
+      toast.error("请选择使用公司发布系统的客户");
+      return;
+    }
     generateMutation.mutate({
       sensorTypes: getSensorTypesParam(),
       days,
@@ -409,6 +433,7 @@ export default function OfflineKeyGen() {
         <p className="text-muted-foreground mt-1">
           基于 RSA 签名生成离线激活码，无需联网即可验证（不绑定机器码）
         </p>
+        {companySystemsError && <p className="mt-2 text-sm text-muted-foreground">公司系统列表暂不可用；内置系统密钥仍可正常生成。</p>}
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
@@ -446,7 +471,7 @@ export default function OfflineKeyGen() {
             <CardContent className="pt-0">
               <ScrollArea className="h-[340px] pr-3">
                 <div className="space-y-4">
-                  {sensorGroups.map((group) => {
+                  {availableGroups.map((group) => {
                     const groupValues = group.items.map((i) => i.value);
                     const groupOption = group.groupKey
                       ? licenseGroupByKey.get(group.groupKey)
@@ -580,7 +605,7 @@ export default function OfflineKeyGen() {
               {/* 关联客户 */}
               <div>
                 <Label className="text-sm font-medium flex items-center gap-1">
-                  <Building2 className="h-3.5 w-3.5" /> 关联客户（可选）
+                  <Building2 className="h-3.5 w-3.5" /> 关联客户{needsCustomer ? "（公司系统必选）" : "（可选）"}
                 </Label>
                 {!showNewCustomer ? (
                   <div className="space-y-2 mt-1.5">

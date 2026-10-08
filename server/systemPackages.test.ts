@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { validateSystemPackage, visibleReleases } from "./systemPackages";
+import { activeReleases, checkSystemPackageIdentity, rolloutToken, systemPackageDiff, validateSystemPackage, visibleReleases } from "./systemPackages";
 
 /** Build a small immutable export to exercise the same hash contract as the desktop client. */
 function sample() {
@@ -28,6 +28,9 @@ describe("system package publishing contract", () => {
     const value = { ...payload, sha256: createHash("sha256").update(JSON.stringify(payload)).digest("hex") };
     expect(validateSystemPackage(value).name).toBe("手部副本");
     expect(() => validateSystemPackage({ ...value, template: { ...value.template, sourceType: "other" } })).toThrow("PACKAGE_INTEGRITY");
+    const reserved = { ...payload, systemId: "hand", template: { ...payload.template, id: "hand" } };
+    expect(() => validateSystemPackage({ ...reserved,
+      sha256: createHash("sha256").update(JSON.stringify(reserved)).digest("hex") })).toThrow("SYSTEM_ID_RESERVED");
   });
 
   it("filters by customer and falls back to an older release after revocation", () => {
@@ -40,5 +43,63 @@ describe("system package publishing contract", () => {
     expect(visibleReleases(rows, 7)[0].version).toBe(1);
     expect(visibleReleases(rows, 42, [])).toEqual([]);
     expect(visibleReleases(rows, 42, ["seatpad"])[0].version).toBe(2);
+  });
+
+  it("resolves customer overrides before the global release and never leaks inactive versions", () => {
+    const rows = [
+      { id: 3, systemId: "seatpad", status: "published", audienceJson: "[42]" },
+      { id: 2, systemId: "seatpad", status: "published", audienceJson: '"all"' },
+      { id: 1, systemId: "seatpad", status: "published", audienceJson: '"all"' },
+    ];
+    const pointers = [{ systemId: "seatpad", customerId: 0, versionId: 2 },
+      { systemId: "seatpad", customerId: 42, versionId: 1 }];
+    expect(activeReleases(rows, pointers, 42)[0].id).toBe(1);
+    expect(activeReleases(rows, pointers, 7)[0].id).toBe(2);
+    expect(activeReleases(rows, pointers, 7, [])).toEqual([]);
+    expect(activeReleases(rows, [], 42)[0].id).toBe(3);
+    expect(activeReleases(rows, [{ systemId: "seatpad", customerId: 42, versionId: 99 }], 42)).toEqual([]);
+    expect(activeReleases([{ ...rows[0], status: "revoked" }, ...rows.slice(1)],
+      [{ systemId: "seatpad", customerId: 42, versionId: 3 }], 42)).toEqual([]);
+    expect(rolloutToken(pointers)).toBe(rolloutToken([...pointers].reverse()));
+  });
+
+  it("requires an explicit current version for an update and rejects identity changes", () => {
+    const previous = { id: 7, packageJson: JSON.stringify({ kind: "native-template", template: { sourceType: "hand" } }) };
+    const update = { kind: "native-template", template: { sourceType: "hand" } };
+    expect(checkSystemPackageIdentity(update, undefined, previous)).toEqual({ error: "SYSTEM_ID_ALREADY_PUBLISHED", currentVersion: 7 });
+    expect(checkSystemPackageIdentity(update, 6, previous)).toEqual({ error: "SYSTEM_ID_ALREADY_PUBLISHED", currentVersion: 7 });
+    expect(checkSystemPackageIdentity(update, 7, previous)).toBeNull();
+    expect(checkSystemPackageIdentity({ kind: "manifest" }, 7, previous)).toEqual({ error: "SYSTEM_ID_INCOMPATIBLE", currentVersion: 7 });
+    expect(checkSystemPackageIdentity({ kind: "native-template", template: { sourceType: "jqbed" } }, 7, previous))
+      .toEqual({ error: "SYSTEM_ID_INCOMPATIBLE", currentVersion: 7 });
+    expect(checkSystemPackageIdentity(update, 7)).toEqual({ error: "SYSTEM_UPDATE_TARGET_MISSING" });
+    expect(checkSystemPackageIdentity(update, undefined)).toBeNull();
+  });
+
+  it("blocks frame-identity changes while allowing reviewed protocol and line-order updates", () => {
+    const manifest = { id: "seatpad", name: "坐垫", sensors: [{ id: "s1", type: "seatpad-s1",
+      outputChannel: "s1", matrix: { rows: 23, cols: 23 }, protocol: { decoding: { valueCount: 1024 } },
+      files: { lineOrder: "custom-order.json" } }] };
+    const pack = (value: any, line: number[]) => {
+      const data = Buffer.from(JSON.stringify(value));
+      const order = Buffer.from(JSON.stringify(line));
+      const payload = { schemaVersion: 1, kind: "manifest", systemId: "seatpad", bindings: null, algorithms: [],
+        files: [{ path: "display-system.json", size: data.length, sha256: createHash("sha256").update(data).digest("hex"), contentBase64: data.toString("base64") },
+          { path: "s1/custom-order.json", size: order.length, sha256: createHash("sha256").update(order).digest("hex"), contentBase64: order.toString("base64") }] };
+      return { ...payload, sha256: createHash("sha256").update(JSON.stringify(payload)).digest("hex") };
+    };
+    const first = pack(manifest, [1, 2]);
+    const tuned = pack({ ...manifest, sensors: [{ ...manifest.sensors[0], protocol: { decoding: { valueCount: 2048 } } }] }, [2, 1]);
+    expect(systemPackageDiff(first, tuned)).toMatchObject({ dataContractChanged: false,
+      protocolChanged: true, lineOrderChanged: true });
+    expect(checkSystemPackageIdentity(tuned, 8, { id: 8, packageJson: JSON.stringify(first) })).toBeNull();
+    const resized = pack({ ...manifest, sensors: [{ ...manifest.sensors[0], matrix: { rows: 24, cols: 23 } }] }, [1, 2]);
+    expect(checkSystemPackageIdentity(resized, 8, { id: 8, packageJson: JSON.stringify(first) }))
+      .toEqual({ error: "SYSTEM_ID_DATA_CONTRACT_CHANGED", currentVersion: 8 });
+    const implicitOutput = pack({ ...manifest, sensors: [{ ...manifest.sensors[0], outputChannel: undefined }] }, [1, 2]);
+    expect(systemPackageDiff(first, implicitOutput).dataContractChanged).toBe(false);
+    const legacy = pack({ id: "seatpad", name: "坐垫", sensor: { ports: ["s1"], type: "seatpad-s1",
+      matrix: { rows: 23, cols: 23 }, protocol: manifest.sensors[0].protocol, files: manifest.sensors[0].files } }, [1, 2]);
+    expect(systemPackageDiff(legacy, implicitOutput).dataContractChanged).toBe(false);
   });
 });

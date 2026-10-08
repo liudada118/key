@@ -1,9 +1,21 @@
 # 公司展示系统发布服务
 
-密钥管理网站的“公司系统库”接收桌面 Agent 的系统审核包。员工凭登录会话或 30 天 `sps_` 限权令牌提交；只有超级管理员可以审核、发布与撤回。软件密钥仅能读取该客户已授权的目录和包，不能上传或批准。
+密钥管理网站的“公司系统库”接收桌面 Agent 的系统审核包。员工凭登录会话或 30 天 `sps_` 限权令牌提交，也可只读获取已发布原包创建本机修订草稿；只有超级管理员可以审核、发布、调整客户版本与撤回。软件密钥仅能读取该客户当前获授权的目录和包，不能上传或批准。
 
-部署前运行 `pnpm db:migrate`，应用 `0016_kind_puma.sql` 和 `0017_harsh_darkstar.sql`。通过 `SHROOM_SYSTEM_PACKAGE_SIGNING_KEY_PATH` 指定独立 Ed25519 私钥文件，公钥已固定在桌面软件的 `backend/extension-host/workspace/systemPackagePublicKey.pem`。私钥必须与该公钥配对、限制文件权限且不可放入仓库或安装包；未配置私钥时发布与客户目录接口会拒绝服务。数据库应允许至少 18 MiB 的单次包写入，HTTPS 反向代理也须允许相应请求体。
+部署前运行 `pnpm db:migrate`，应用 `0016_kind_puma.sql`、`0017_harsh_darkstar.sql`、`0018_brief_fixer.sql` 和 `0019_handy_gwen_stacy.sql`。通过 `SHROOM_SYSTEM_PACKAGE_SIGNING_KEY_PATH` 指定独立 Ed25519 私钥文件，公钥已固定在桌面软件的 `backend/extension-host/workspace/systemPackagePublicKey.pem`。私钥必须与该公钥配对、限制文件权限且不可放入仓库或安装包；未配置私钥时发布与客户目录接口会拒绝服务。数据库应允许至少 18 MiB 的单次包写入，HTTPS 反向代理也须允许相应请求体。
 
-接口挂载在 `/api/system-packages`：`POST /submissions` 提交包；`GET/POST/DELETE /staff-tokens` 管理员工令牌；`GET /admin/submissions`、`GET /admin/submissions/:id`、`POST /admin/submissions/:id/{publish,reject,revoke}` 审核；`GET /client/catalog` 与 `GET /client/packages/:id/:version` 使用 `Authorization: License <现有软件密钥>`。目录签名绑定密钥哈希并最多有效 24 小时；包另有内容摘要签名。客户必须关联启用中的客户记录，密钥状态须为已签发、已激活或已续期且未过期。
+接口挂载在 `/api/system-packages`：`POST /submissions` 提交包；`GET/POST/DELETE /staff-tokens` 管理员工令牌；`GET /staff/releases` 和 `GET /staff/releases/:systemId/:version` 使用员工 `Bearer` 令牌只读取得已发布包；`GET /admin/submissions`、`GET /admin/submissions/:id`、`POST /admin/submissions/:id/{publish,reject,revoke}` 审核；`POST /admin/releases/:id/activate` 由超级管理员指定客户当前版本。`GET /client/catalog` 与 `GET /client/packages/:id/:version` 使用 `Authorization: License <现有软件密钥>`。目录签名绑定密钥哈希并最多有效 24 小时；包另有内容摘要签名。客户必须关联启用中的客户记录，密钥状态须为已签发、已激活或已续期且未过期。
+
+客户接口同时接受已登记的在线十六进制密钥和离线 RSA 激活码。离线码须与 `offlineKeys` 记录逐字一致，并使用该记录签发时的 RSA 公钥验签；服务端还会检查状态、到期时间和关联客户。在线和离线密钥生成页都列出已发布的公司系统；离线页选中公司系统或“全部授权”时要求选择客户。密钥的系统范围与发布的客户范围同时生效，旧离线码不会因新增公司系统自动获得该系统。未登记、未关联客户、客户停用、密钥停用或过期分别返回明确的 403 错误码。这里的“离线码”仍需联网拉取系统包；完全断网的文件导入尚未实现。
 
 目前交付 `manifest` 与 `native-template` 两类包。Manifest 仅接收 JSON 配置和已测试的受限 Python 分类器声明；引用外部脚本、模型或 Agent 自定义渲染器的包会在桌面导出时拒绝。原生模板副本在客户端还必须拥有对应内置 `sourceType`，否则需要先发布新的安装包。
+
+系统 ID 冲突按“新系统”和“更新”分开处理。首次提交若撞到已发布 ID，接口返回 `SYSTEM_ID_ALREADY_PUBLISHED` 与当前版本号；员工必须明确以该版本为基线重试，或为新系统换 ID。内置系统 ID/传感器类型不可占用；同一 ID 同时只能有一个待审提交。提交记录保存 `base_version`，超级管理员审核页显示原版本并要求再次确认；发布事务锁定同 ID 全部版本，基线已变化时拒绝旧提案，避免两名审核员并发发布。客户端本机草稿或传感器类型冲突仍由安装器拦截，不覆盖草稿和已有采集数据；要解决时使用新的系统/传感器 ID 再提交，不能直接改客户历史数据的身份。
+
+## 已发布系统的修订、推广与回退
+
+员工可在桌面端公司系统库从已发布的签名包创建独立本机草稿，修改后带原 `systemId` 和 `baseVersion` 重新提交；正式受管系统始终只读。服务端拒绝同 ID 更新中传感器 ID、类型、输出通道或矩阵尺寸的破坏性变化，审核详情展示串口协议、线序文件及其他文件差异。需要改变这些输入身份时应新建系统 ID，不在已有客户采集记录上重新解释点位。
+
+超级管理员审核发布后，`system_package_rollouts` 记录该系统的当前版本：`customer_id=0` 是全体默认版本，客户专属指针优先。管理页可选择任一仍已发布的版本，向指定客户推广，或把指定客户指回旧版；“全部客户”操作会清除客户专属覆盖并要求二次确认。客户端目录和包下载只返回该客户当前版本，仍与软件密钥中明确勾选的系统 ID 求交。首次迁移前已有发布若尚无指针，继续沿用原发布范围，直到该系统被明确推广。
+
+“按客户回退”与“紧急撤回”是不同操作：回退让指定客户在下次同步时安装已签名旧版；撤回将目标版本停用，仍指向它的客户在下次同步后暂时看不到该系统，不会自动选择别的版本。目录缓存最长 24 小时，桌面通常每 6 小时复查，也可在系统列表手动刷新；管理页操作不能保证立即断开离线客户。生产上线须先完成 `0019` 迁移与签名服务部署，再用真实 MySQL 和客户密钥验收推广、回退及撤回事务。

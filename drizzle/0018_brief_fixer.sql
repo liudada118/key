@@ -1,0 +1,1 @@
+ALTER TABLE `system_package_submissions` ADD `base_version` int;

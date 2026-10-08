@@ -15,4 +15,11 @@ describe("company system API response", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ systems: [{ systemId: "seatpad", name: "坐垫" }] })));
     await expect(systemPackagesApi("/available")).resolves.toEqual({ systems: [{ systemId: "seatpad", name: "坐垫" }] });
   });
+
+  it("preserves an occupied ID and its version for explicit update confirmation", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: "SYSTEM_ID_ALREADY_PUBLISHED", currentVersion: 7 }, { status: 409 })));
+    const failure = await systemPackagesApi("/submissions", { method: "POST", body: "{}" }).catch((error) => error);
+    expect(failure).toMatchObject({ code: "SYSTEM_ID_ALREADY_PUBLISHED", currentVersion: 7 });
+    expect(failure.message).toContain("发布版本 #7");
+  });
 });

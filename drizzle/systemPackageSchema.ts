@@ -1,4 +1,4 @@
-import { index, int, longtext, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { index, int, longtext, mysqlEnum, mysqlTable, primaryKey, text, timestamp, varchar } from "drizzle-orm/mysql-core";
 
 /** Immutable submitted package; publication changes metadata only, never packageJson. */
 export const systemPackageSubmissions = mysqlTable("system_package_submissions", {
@@ -7,6 +7,7 @@ export const systemPackageSubmissions = mysqlTable("system_package_submissions",
   name: varchar("name", { length: 160 }).notNull(),
   sha256: varchar("sha256", { length: 64 }).notNull(),
   packageJson: longtext("package_json").notNull(),
+  baseVersion: int("base_version"),
   status: mysqlEnum("status", ["pending", "rejected", "published", "revoked"]).default("pending").notNull(),
   submittedById: int("submitted_by_id").notNull(),
   reviewedById: int("reviewed_by_id"),
@@ -26,6 +27,16 @@ export const systemPackageEvents = mysqlTable("system_package_events", {
   detailsJson: text("details_json").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, table => [index("system_package_event_lookup").on(table.submissionId, table.id)]);
+
+/** Active release pointer per system and customer; customer 0 is the global default. */
+export const systemPackageRollouts = mysqlTable("system_package_rollouts", {
+  systemId: varchar("system_id", { length: 80 }).notNull(),
+  customerId: int("customer_id").notNull(),
+  versionId: int("version_id").notNull(),
+  updatedById: int("updated_by_id").notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
+}, table => [primaryKey({ columns: [table.systemId, table.customerId] }),
+  index("system_package_rollout_version").on(table.versionId)]);
 
 /** Short-lived employee credentials grant submission only, never review or customer download. */
 export const systemPackageSubmitTokens = mysqlTable("system_package_submit_tokens", {
