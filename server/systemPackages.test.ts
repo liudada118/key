@@ -38,5 +38,7 @@ describe("system package publishing contract", () => {
     ];
     expect(visibleReleases(rows, 42)[0].version).toBe(2);
     expect(visibleReleases(rows, 7)[0].version).toBe(1);
+    expect(visibleReleases(rows, 42, [])).toEqual([]);
+    expect(visibleReleases(rows, 42, ["seatpad"])[0].version).toBe(2);
   });
 });

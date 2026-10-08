@@ -2,22 +2,13 @@ import { useEffect, useState } from "react";
 import { PackagePlus, RefreshCw, ShieldCheck } from "lucide-react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
+import { systemPackagesApi as api } from "@/lib/systemPackagesApi";
+import { Link } from "wouter";
 
 type Submission = { id: number; systemId: string; name: string; sha256: string; status: string;
   reviewNote: string | null; audienceJson: string | null; createdAt: string };
 type Detail = { id: number; systemId: string; status: string; manifest: Record<string, unknown>;
   files: { path: string; size: number; sha256: string }[]; algorithms: { id: string; name: string }[] };
-
-/** Send an authenticated review request and surface the server's stable error. */
-async function api(path: string, options?: RequestInit) {
-  const response = await fetch(`/api/system-packages${path}`, {
-    credentials: "same-origin", ...options,
-    headers: { ...(options?.body ? { "Content-Type": "application/json" } : {}), ...options?.headers },
-  });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
-  return result;
-}
 
 /** Staff upload an Agent export; super admins review its dependencies and publish to customers. */
 export default function SystemPackages() {
@@ -35,10 +26,10 @@ export default function SystemPackages() {
   const [staffTokens, setStaffTokens] = useState<{ id: number; expiresAt: string; revokedAt: string | null }[]>([]);
 
   /** Refresh only metadata; full package bytes stay on the server until a reviewer opens one item. */
-  const refresh = async () => {
+  const refresh = async (silent = false) => {
     if (!admin) return;
     try { setItems((await api("/admin/submissions")).items); }
-    catch (error) { setMessage((error as Error).message); }
+    catch (error) { if (!silent) setMessage((error as Error).message); }
   };
   useEffect(() => { void refresh(); }, [admin]);
   useEffect(() => { void api("/staff-tokens").then((value) => setStaffTokens(value.tokens)).catch(() => {}); }, []);
@@ -61,10 +52,19 @@ export default function SystemPackages() {
     setBusy(true); setMessage("");
     try {
       if (file.size > 16 * 1024 * 1024) throw new Error("审核包超过 16 MiB");
-      const value = JSON.parse(await file.text());
+      let value;
+      try { value = JSON.parse(await file.text()); }
+      catch { throw new Error("所选文件不是有效的系统审核包，请从软件 Agent 成果中重新导出"); }
       const result = await api("/submissions", { method: "POST", body: JSON.stringify({ package: value }) });
-      setMessage(`已提交审核 #${result.id}；管理员批准后才会提供给客户。`);
-      await refresh();
+      const uploaded = `系统“${result.name}”已上传${result.status === "published" ? '且已发布' : '，等待审核'}。`;
+      setMessage(uploaded);
+      await refresh(true);
+      if (admin) {
+        try {
+          setDetail(await api(`/admin/submissions/${result.id}`));
+          requestAnimationFrame(() => document.getElementById("system-package-review")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+        } catch { setMessage(`${uploaded} 审核详情暂时无法打开，请刷新列表重试。`); }
+      }
     } catch (error) { setMessage(`提交失败：${(error as Error).message}`); }
     finally { setBusy(false); }
   };
@@ -79,7 +79,7 @@ export default function SystemPackages() {
       await api(`/admin/submissions/${detail.id}/${action}`, { method: "POST", body: JSON.stringify(body) });
       setMessage(action === "publish" ? `系统 ${detail.systemId} 已发布，客户下次同步后可用。`
         : action === "reject" ? "已退回，原包保留供审计。" : "已撤回，客户下次同步后停止授权。");
-      setDetail(null); await refresh();
+      setDetail(action === "publish" ? { ...detail, status: "published" } : null); await refresh();
     } catch (error) { setMessage(`操作失败：${(error as Error).message}`); }
     finally { setBusy(false); }
   };
@@ -118,7 +118,7 @@ export default function SystemPackages() {
         <span className="text-sm">{item.status === "pending" ? "待审核" : item.status === "published" ? "已发布" : item.status === "revoked" ? "已撤回" : "已退回"}</span>
       </button>)}{!items.length && <p className="text-sm text-muted-foreground">暂无提交</p>}</div>
     </section>}
-    {admin && detail && <section className="space-y-4 rounded-xl border bg-card p-5" aria-label="系统包审核详情">
+    {admin && detail && <section id="system-package-review" className="space-y-4 rounded-xl border bg-card p-5" aria-label="系统包审核详情">
       <div className="flex items-center justify-between"><h2 className="text-lg font-medium">{detail.systemId} · #{detail.id}</h2>
         <button type="button" onClick={() => setDetail(null)} className="rounded-md border px-3 py-1">关闭</button></div>
       <p className="text-sm">{detail.files.length} 个配置文件；{detail.algorithms.length} 个分类算法。请核对矩阵、协议和线序后发布。</p>
@@ -140,7 +140,8 @@ export default function SystemPackages() {
           <input className="rounded-md border px-3 py-2" value={note} onChange={(event) => setNote(event.target.value)} placeholder="退回原因（可选）" />
           <button type="button" disabled={busy} className="rounded-md border px-4 py-2" onClick={() => void act("reject")}>退回</button></div>
       </>}
-      {detail.status === "published" && <button type="button" disabled={busy} className="rounded-md border px-4 py-2" onClick={() => void act("revoke")}>撤回此版本</button>}
+      {detail.status === "published" && <div className="flex flex-wrap items-center gap-3"><Link href={`/generate?system=${encodeURIComponent(detail.systemId)}`} className="rounded-md bg-primary px-4 py-2 text-primary-foreground">开密钥时选择此系统</Link>
+        <button type="button" disabled={busy} className="rounded-md border px-4 py-2" onClick={() => void act("revoke")}>撤回此版本</button></div>}
     </section>}
   </main>;
 }

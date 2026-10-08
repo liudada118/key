@@ -194,6 +194,15 @@ async function getAccessibleFeishuContract(
   return contract;
 }
 
+/** Resolve a key's customer from the issuer's visible active customers before persisting it. */
+async function getAccessibleKeyCustomer(user: { id: number; role: string }, customerId?: number) {
+  if (customerId === undefined) return null;
+  const userIds = await getUserAndSubordinateIds(user.id, user.role);
+  const customer = (await getAllCustomers(userIds)).find((item) => item.id === customerId);
+  if (!customer) throw new TRPCError({ code: "FORBIDDEN", message: "客户不存在或不在当前账号的可用范围" });
+  return customer;
+}
+
 export const appRouter = router({
   agentSync: agentSyncRouter,
   usage: usageRouter,
@@ -734,6 +743,7 @@ export const appRouter = router({
           input.contractId,
           input.contractNo
         );
+        const customer = await getAccessibleKeyCustomer(ctx.user, input.customerId);
         const prepared = prepareOnlineKeyGeneration({
           mode: "single",
           sensorTypes: input.sensorTypes,
@@ -742,7 +752,8 @@ export const appRouter = router({
           count: 1,
           createdById: ctx.user.id,
           createdByName: ctx.user.name || "未知",
-          customerName: contract?.customerName,
+          customerId: customer?.id,
+          customerName: customer?.name || contract?.customerName,
           contractId: contract?.id,
           contractNo: contract?.contractNo,
           remark: input.remark,
@@ -789,6 +800,7 @@ export const appRouter = router({
           input.contractId,
           input.contractNo
         );
+        const customer = await getAccessibleKeyCustomer(ctx.user, input.customerId);
         const prepared = prepareOnlineKeyGeneration({
           mode: "batch",
           sensorTypes: input.sensorTypes,
@@ -797,7 +809,8 @@ export const appRouter = router({
           count: input.count,
           createdById: ctx.user.id,
           createdByName: ctx.user.name || "未知",
-          customerName: contract?.customerName,
+          customerId: customer?.id,
+          customerName: customer?.name || contract?.customerName,
           contractId: contract?.id,
           contractNo: contract?.contractNo,
           remark: input.remark,

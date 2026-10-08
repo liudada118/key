@@ -58,7 +58,8 @@ export function validateSystemPackage(input: any) {
 /** Authenticate the actual customer-linked software key for catalog and package download. */
 async function clientCustomer(req: Request) {
   const key = /^License ([a-fA-F0-9]{32,8192})$/.exec(req.get("authorization") || "")?.[1];
-  if (!key || !decodeLicenseKey(key, Date.now()).valid) return null;
+  const decoded = key ? decodeLicenseKey(key, Date.now()) : null;
+  if (!key || !decoded?.valid) return null;
   const db = await getDb();
   if (!db) return null;
   const [row] = await db.select({ status: licenseKeys.status, expiresAt: licenseKeys.expireTimestamp,
@@ -66,14 +67,18 @@ async function clientCustomer(req: Request) {
     .from(licenseKeys).leftJoin(customers, eq(customers.id, licenseKeys.customerId))
     .where(eq(licenseKeys.keyString, key)).limit(1);
   return row && !row.deleted && row.active && row.customerId && row.expiresAt > Date.now()
-    && ["ISSUED", "ACTIVATED", "RENEWED"].includes(row.status) ? row.customerId : null;
+    && ["ISSUED", "ACTIVATED", "RENEWED"].includes(row.status)
+    ? { customerId: row.customerId, scope: decoded.isAllTypes ? "all" as const : decoded.sensorTypes || [] } : null;
 }
 
-/** Select the latest release visible to this customer, falling back after a revocation. */
-export function visibleReleases<T extends { systemId: string; audienceJson: string | null; status: string }>(rows: T[], customerId: number): T[] {
+/** Select the latest published release granted to both this customer and this software key. */
+export function visibleReleases<T extends { systemId: string; audienceJson: string | null; status: string }>(
+  rows: T[], customerId: number, scope: "all" | string[] = "all"
+): T[] {
   const found = new Map<string, T>();
   for (const row of rows) {
-    if (row.status !== "published" || found.has(row.systemId)) continue;
+    if (row.status !== "published" || found.has(row.systemId)
+      || (scope !== "all" && !scope.includes(row.systemId))) continue;
     const audience: Audience = JSON.parse(row.audienceJson || "[]");
     if (audience === "all" || (Array.isArray(audience) && audience.includes(customerId))) found.set(row.systemId, row);
   }
@@ -120,6 +125,16 @@ export function registerSystemPackages(app: Express) {
     } catch { res.status(503).json({ error: "AUTH_UNAVAILABLE" }); }
   });
   router.use(express.json({ limit: MAX_BODY, inflate: false }));
+
+  router.get("/available", async (req, res) => {
+    const user = await staff(req, res); if (!user) return;
+    const db = await getDb(); if (!db) { res.status(503).json({ error: "STORAGE_UNAVAILABLE" }); return; }
+    const rows = await db.select({ systemId: systemPackageSubmissions.systemId, name: systemPackageSubmissions.name })
+      .from(systemPackageSubmissions).where(eq(systemPackageSubmissions.status, "published"))
+      .orderBy(desc(systemPackageSubmissions.id));
+    const seen = new Set<string>();
+    res.json({ systems: rows.filter((row) => !seen.has(row.systemId) && Boolean(seen.add(row.systemId))) });
+  });
 
   router.post("/submissions", async (req, res) => {
     try {
@@ -244,7 +259,7 @@ export function registerSystemPackages(app: Express) {
 
   router.get("/client/catalog", async (req, res) => {
     try {
-      const customerId = await clientCustomer(req); if (!customerId) { res.status(403).json({ error: "LICENSE_UNAVAILABLE" }); return; }
+      const client = await clientCustomer(req); if (!client) { res.status(403).json({ error: "LICENSE_UNAVAILABLE" }); return; }
       const db = await getDb(); if (!db) throw new Error("STORAGE_UNAVAILABLE");
       const rows = await db.select({ id: systemPackageSubmissions.id, systemId: systemPackageSubmissions.systemId,
         name: systemPackageSubmissions.name, sha256: systemPackageSubmissions.sha256,
@@ -254,7 +269,7 @@ export function registerSystemPackages(app: Express) {
       const key = /^License ([a-fA-F0-9]{32,8192})$/.exec(req.get("authorization") || "")![1];
       const catalog = { issuedAt: Date.now(), expiresAt: Date.now() + 24 * 60 * 60 * 1000,
         keyHash: createHash("sha256").update(key).digest("hex"),
-        systems: visibleReleases(rows, customerId).map((row) => ({ systemId: row.systemId, name: row.name,
+        systems: visibleReleases(rows, client.customerId, client.scope).map((row) => ({ systemId: row.systemId, name: row.name,
           version: row.id, sha256: row.sha256, signature: row.signature })) };
       res.setHeader("Cache-Control", "no-store");
       res.json({ catalog, signature: signEnvelope(catalog) });
@@ -263,12 +278,12 @@ export function registerSystemPackages(app: Express) {
 
   router.get("/client/packages/:id/:version", async (req, res) => {
     try {
-      const customerId = await clientCustomer(req); if (!customerId) { res.status(403).json({ error: "LICENSE_UNAVAILABLE" }); return; }
+      const client = await clientCustomer(req); if (!client) { res.status(403).json({ error: "LICENSE_UNAVAILABLE" }); return; }
       const db = await getDb(); if (!db) { res.status(503).json({ error: "STORAGE_UNAVAILABLE" }); return; }
       const [row] = await db.select().from(systemPackageSubmissions)
         .where(and(eq(systemPackageSubmissions.id, Number(req.params.version)), eq(systemPackageSubmissions.systemId, req.params.id),
           eq(systemPackageSubmissions.status, "published"))).limit(1);
-      if (!row || !visibleReleases([row], customerId).length) { res.status(404).json({ error: "NOT_AVAILABLE" }); return; }
+      if (!row || !visibleReleases([row], client.customerId, client.scope).length) { res.status(404).json({ error: "NOT_AVAILABLE" }); return; }
       res.setHeader("Cache-Control", "no-store");
       res.json({ package: JSON.parse(row.packageJson), version: row.id, signature: row.signature });
     } catch { res.status(503).json({ error: "PACKAGE_UNAVAILABLE" }); }
