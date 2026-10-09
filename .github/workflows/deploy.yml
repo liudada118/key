@@ -178,6 +178,12 @@ jobs:
             done
             [ "$ok" = 1 ] || { echo "拉取代码多次失败,放弃"; exit 1; }
             git reset --hard origin/main
+            echo "==> 检查公司系统包签名密钥"
+            SIGNING_KEY_PATH=/opt/key-manager-secrets/system-package-private.pem
+            if [ ! -r "$SIGNING_KEY_PATH" ]; then
+              echo "公司系统包签名密钥不可读取：$SIGNING_KEY_PATH。请先在服务器安全部署与桌面端公钥配对的私钥。"
+              exit 1
+            fi
             echo "==> 写入 .env 配置(从 GitHub Secrets)"
             cat > .env <<EOF
             DATABASE_URL=${{ secrets.DATABASE_URL }}
@@ -195,6 +201,7 @@ jobs:
             FEISHU_VERIFICATION_TOKEN=${{ secrets.FEISHU_VERIFICATION_TOKEN }}
             FEISHU_CALLBACK_ENCRYPT_KEY=${{ secrets.FEISHU_CALLBACK_ENCRYPT_KEY }}
             FEISHU_APPROVAL_REVIEWER_USERNAME=${{ secrets.FEISHU_APPROVAL_REVIEWER_USERNAME }}
+            SHROOM_SYSTEM_PACKAGE_SIGNING_KEY_PATH=$SIGNING_KEY_PATH
             EOF
             echo "==> 安装依赖"
             pnpm install --frozen-lockfile
@@ -204,6 +211,6 @@ jobs:
             echo "==> 构建项目"
             pnpm build
             echo "==> 重启服务"
-            pm2 restart key-manager --update-env
+            SHROOM_SYSTEM_PACKAGE_SIGNING_KEY_PATH="$SIGNING_KEY_PATH" pm2 restart key-manager --update-env
             pm2 save
             echo "==> 部署完成"

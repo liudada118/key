@@ -32,6 +32,7 @@ export default function SystemPackages() {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [publishFailure, setPublishFailure] = useState("");
   const [issuedToken, setIssuedToken] = useState("");
   const [updateConflict, setUpdateConflict] = useState<{ package: any; currentVersion: number } | null>(null);
   const [staffTokens, setStaffTokens] = useState<{ id: number; expiresAt: string; revokedAt: string | null }[]>([]);
@@ -75,7 +76,7 @@ export default function SystemPackages() {
       if (admin) {
         try {
           const opened = await api(`/admin/submissions/${result.id}`) as Detail;
-          setDetail(opened); setReleaseVersion(opened.id); setReleaseAudience("selected"); setReleaseCustomers([]);
+          setDetail(opened); setPublishFailure(""); setReleaseVersion(opened.id); setReleaseAudience("selected"); setReleaseCustomers([]);
           requestAnimationFrame(() => document.getElementById("system-package-review")?.scrollIntoView({ behavior: "smooth", block: "start" }));
         } catch { setMessage(`${uploaded} 审核详情暂时无法打开，请刷新列表重试。`); }
       }
@@ -97,19 +98,29 @@ export default function SystemPackages() {
     if (!detail) return;
     if (action === "publish" && audience === "all" && !window.confirm(`将“${detail.systemId}”版本 #${detail.id} 发布给全部客户，并清除已有客户级版本覆盖。确认继续？`)) return;
     if (action === "revoke" && !window.confirm(`撤回版本 #${detail.id}？指向该版本的客户会在下次同步后看不到此系统；已打开的会话不会即时断开。请优先考虑按客户回退。`)) return;
-    setBusy(true); setMessage("");
+    setBusy(true); setMessage(""); setPublishFailure("");
+    let actionCompleted = false;
     try {
       const body = action === "publish" ? { audience: audience === "all" ? "all" : selectedCustomers,
         ...(detail.baseVersion ? { confirmBaseVersion: detail.baseVersion } : {}) }
         : action === "reject" ? { note } : {};
       await api(`/admin/submissions/${detail.id}/${action}`, { method: "POST", body: JSON.stringify(body) });
+      actionCompleted = true;
       setMessage(action === "publish" ? `系统 ${detail.systemId} 已发布，客户下次同步后可用。`
         : action === "reject" ? "已退回，原包保留供审计。" : "版本已撤回，受影响客户下次同步后不再看到该版本；已打开的会话不会即时断开。");
       if (action === "publish") {
         setDetail(await api(`/admin/submissions/${detail.id}`)); setReleaseVersion(detail.id);
       } else setDetail(null);
       await refresh();
-    } catch (error) { setMessage(`操作失败：${(error as Error).message}`); }
+    } catch (error) {
+      const explanation = (error as Error).message;
+      if (actionCompleted) {
+        setMessage(`操作已完成，但页面未能刷新：${explanation}。请手动刷新列表核对状态。`);
+        return;
+      }
+      if (action === "publish") setPublishFailure(explanation);
+      setMessage(action === "publish" ? `发布未完成，系统仍待审核：${explanation}` : `操作失败：${explanation}`);
+    }
     finally { setBusy(false); }
   };
 
@@ -163,7 +174,7 @@ export default function SystemPackages() {
       <div className="space-y-2">{items.map((item) => <button type="button" key={item.id}
         className="flex w-full items-center justify-between gap-3 rounded-lg border p-3 text-left hover:bg-muted"
         onClick={async () => { try { const opened = await api(`/admin/submissions/${item.id}`) as Detail;
-          setDetail(opened); setReleaseVersion(opened.status === "published" ? opened.id : opened.currentPublished?.id || null);
+          setDetail(opened); setPublishFailure(""); setReleaseVersion(opened.status === "published" ? opened.id : opened.currentPublished?.id || null);
           setReleaseAudience("selected"); setReleaseCustomers([]); setAudience("selected"); setSelectedCustomers([]);
           setNote(""); } catch (error) { setMessage((error as Error).message); } }}>
         <span><strong>{item.name}</strong><small className="ml-2 text-muted-foreground">#{item.id} · {item.systemId}{item.baseVersion ? ` · 更新 #${item.baseVersion}` : " · 新系统"}</small></span>
@@ -173,7 +184,7 @@ export default function SystemPackages() {
     {admin && detail && <section id="system-package-review" className="space-y-4 rounded-xl border bg-card p-5" aria-label="系统包审核详情">
       <div className="flex items-center justify-between"><h2 className="text-lg font-medium">{detail.systemId} · #{detail.id}</h2>
         <div className="flex gap-2"><button type="button" disabled={busy} onClick={async () => {
-          try { setDetail(await api(`/admin/submissions/${detail.id}`)); } catch (error) { setMessage((error as Error).message); }
+          try { setDetail(await api(`/admin/submissions/${detail.id}`)); setPublishFailure(""); } catch (error) { setMessage((error as Error).message); }
         }} className="rounded-md border px-3 py-1">刷新详情</button>
           <button type="button" onClick={() => setDetail(null)} className="rounded-md border px-3 py-1">关闭</button></div></div>
       <p className="text-sm">{detail.files.length} 个配置文件；{detail.algorithms.length} 个分类算法。请核对矩阵、协议和线序后发布。</p>
@@ -207,6 +218,10 @@ export default function SystemPackages() {
           className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50" onClick={() => void act("publish")}>{detail.baseVersion ? `确认作为 #${detail.baseVersion} 的更新发布` : "确认发布新系统"}</button>
           <input className="rounded-md border px-3 py-2" value={note} onChange={(event) => setNote(event.target.value)} placeholder="退回原因（可选）" />
           <button type="button" disabled={busy} className="rounded-md border px-4 py-2" onClick={() => void act("reject")}>退回</button></div>
+        {publishFailure && <div role="alert" className="rounded-lg border border-destructive bg-destructive/10 p-3 text-sm text-destructive">
+          <strong className="block">发布未完成，系统仍待审核</strong>
+          <p className="mt-1">{publishFailure}</p>
+        </div>}
       </>}
       {detail.status === "published" && <>
         <div className="flex flex-wrap items-center gap-3"><Link href={`/generate?system=${encodeURIComponent(detail.systemId)}`} className="rounded-md bg-primary px-4 py-2 text-primary-foreground">开密钥时选择此系统</Link>

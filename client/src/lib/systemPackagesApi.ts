@@ -21,6 +21,7 @@ export async function systemPackagesApi(path: string, options?: RequestInit) {
     SYSTEM_UPDATE_TARGET_MISSING: "原发布版本已不存在，请重新提交",
     SYSTEM_UPDATE_CONFIRMATION_REQUIRED: "请明确确认要更新的当前版本",
     STATUS_CHANGED: "系统审核状态已变化，请刷新后重试",
+    SIGNING_KEY_UNCONFIGURED: "服务器尚未配置公司系统包签名密钥。发布没有完成，请部署管理员配置签名私钥并重启网站服务后重试；无需重新提交系统包",
   };
   if (!response.ok) throw Object.assign(new Error(messages[result?.error] || result?.error || `系统服务返回 HTTP ${response.status}`), {
     code: result?.error, currentVersion: result?.currentVersion, pendingId: result?.pendingId,

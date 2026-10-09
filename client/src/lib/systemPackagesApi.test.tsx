@@ -22,4 +22,13 @@ describe("company system API response", () => {
     expect(failure).toMatchObject({ code: "SYSTEM_ID_ALREADY_PUBLISHED", currentVersion: 7 });
     expect(failure.message).toContain("发布版本 #7");
   });
+
+  it("explains a missing signing key without exposing a raw server code", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: "SIGNING_KEY_UNCONFIGURED" }, { status: 503 })));
+    const failure = await systemPackagesApi("/admin/submissions/7/publish", { method: "POST", body: "{}" }).catch((error) => error);
+    expect(failure).toMatchObject({ code: "SIGNING_KEY_UNCONFIGURED" });
+    expect(failure.message).toContain("发布没有完成");
+    expect(failure.message).toContain("无需重新提交系统包");
+    expect(failure.message).not.toContain("SIGNING_KEY_UNCONFIGURED");
+  });
 });
