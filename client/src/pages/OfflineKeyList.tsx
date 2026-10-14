@@ -31,6 +31,8 @@ import {
   Trash2,
 } from "lucide-react";
 import { useState, useMemo } from "react";
+import { useAuth } from "@/_core/hooks/useAuth";
+import LicenseDevicesDialog from "@/components/LicenseDevicesDialog";
 import { toast } from "sonner";
 import { copyText } from "@/lib/clipboard";
 import { formatScopeEntry, isGroupScopeToken } from "@shared/licenseScopes";
@@ -47,6 +49,8 @@ function getStatusBadge(item: { status?: string; expireDate: number }) {
 
 /* ============ 离线密钥管理页 ============ */
 export default function OfflineKeyList() {
+  const { user } = useAuth();
+  const [deviceKeyId, setDeviceKeyId] = useState<number | null>(null);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
 
@@ -125,6 +129,7 @@ export default function OfflineKeyList() {
 
   return (
     <div className="space-y-6">
+      <LicenseDevicesDialog keyId={deviceKeyId} keyType="offline" onClose={() => setDeviceKeyId(null)} />
       {/* 标题 */}
       <div>
         <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
@@ -271,6 +276,7 @@ export default function OfflineKeyList() {
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-1">
+                              {user?.role === "super_admin" && <Button variant="outline" size="sm" onClick={() => setDeviceKeyId(item.id)}>电脑授权</Button>}
                               <Button
                                 variant="ghost" size="sm" className="h-7 w-7 p-0"
                                 onClick={() => copyToClipboard(item.activationCode)}

@@ -122,6 +122,7 @@ import {
 import { getLicenseRegistryInfo } from "./licenseRegistry";
 import { agentSyncRouter } from "./agentSyncRouter";
 import { usageRouter } from "./usageRouter";
+import { changeLicenseDevice, listLicenseDevices, setLicenseDeviceLimit } from "./licenseDevices";
 
 /**
  * 授权范围入参的公共校验：`"all"` / 单系统 key / 数组（元素可为 `@group:<groupKey>` 分类令牌）。
@@ -618,6 +619,7 @@ export const appRouter = router({
             z.union([z.literal("all"), z.array(z.string().min(1)).min(1)])
           ),
           days: z.number().int().min(1).max(36500),
+          deviceLimit: z.number().int().min(0).max(10000).default(0),
           customerId: z.number().optional(),
           customerName: z.string().optional(),
           contractId: z.number().optional(),
@@ -634,6 +636,7 @@ export const appRouter = router({
         return generateOfflineActivationCode({
           sensorTypes: input.sensorTypes,
           days: input.days,
+          deviceLimit: input.deviceLimit,
           customerId: input.customerId || null,
           customerName,
           contractId: input.contractId || null,
@@ -720,6 +723,21 @@ export const appRouter = router({
 
   // ===== 密钥管理 =====
   keys: router({
+    devices: superAdminProcedure.input(z.object({ keyId: z.number().int().positive(), keyType: z.enum(["online", "offline"]).default("online") })).query(({ input }) => listLicenseDevices(input.keyId, input.keyType)),
+    setDeviceLimit: superAdminProcedure.input(z.object({ keyId: z.number().int().positive(), keyType: z.enum(["online", "offline"]).default("online"), maxDevices: z.number().int().min(0).max(10000) }))
+      .mutation(async ({ ctx, input }) => {
+        const result = await setLicenseDeviceLimit(input.keyId, input.maxDevices, input.keyType);
+        await createAuditLog({ userId: ctx.user.id, userName: ctx.user.name || ctx.user.username, action: "UPDATE", resourceType: "licenseKey",
+          resourceId: input.keyId, description: `设置电脑数量上限：${input.maxDevices || "不限量"}` });
+        return result;
+      }),
+    changeDevice: superAdminProcedure.input(z.object({ keyId: z.number().int().positive(), keyType: z.enum(["online", "offline"]).default("online"), deviceId: z.string().regex(/^[a-f0-9]{64}$/), status: z.enum(["active", "revoked"]) }))
+      .mutation(async ({ ctx, input }) => {
+        const result = await changeLicenseDevice(input.keyId, input.deviceId, input.status, input.keyType);
+        await createAuditLog({ userId: ctx.user.id, userName: ctx.user.name || ctx.user.username, action: "UPDATE", resourceType: "licenseKey",
+          resourceId: input.keyId, description: `${input.status === "active" ? "恢复" : "解绑"}电脑：${input.deviceId.slice(-8)}` });
+        return result;
+      }),
     categories: publicProcedure.query(() => KEY_CATEGORIES),
 
     generate: protectedProcedure

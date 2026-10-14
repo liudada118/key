@@ -39,6 +39,8 @@ import { toast } from "sonner";
 import { copyText } from "@/lib/clipboard";
 import { Textarea } from "@/components/ui/textarea";
 import { formatScopeEntry, isGroupScopeToken } from "@shared/licenseScopes";
+import { useAuth } from "@/_core/hooks/useAuth";
+import LicenseDevicesDialog from "@/components/LicenseDevicesDialog";
 
 /** 状态 Badge 配置 */
 const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
@@ -52,6 +54,8 @@ const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
 };
 
 export default function KeyList() {
+  const { user } = useAuth();
+  const [deviceKeyId, setDeviceKeyId] = useState<number | null>(null);
 
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
@@ -309,6 +313,7 @@ export default function KeyList() {
     const status = key.status || "ISSUED";
     return (
       <div className="flex items-center gap-0.5">
+        {user?.role === "super_admin" && <Button size="sm" variant="outline" onClick={() => setDeviceKeyId(key.id)}>电脑授权</Button>}
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
@@ -791,6 +796,7 @@ export default function KeyList() {
       </Dialog>
 
       {/* 状态历史弹窗 */}
+      <LicenseDevicesDialog keyId={deviceKeyId} onClose={() => setDeviceKeyId(null)} />
       <Dialog open={historyDialogOpen} onOpenChange={setHistoryDialogOpen}>
         <DialogContent className="sm:max-w-[550px]">
           <DialogHeader>

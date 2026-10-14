@@ -577,7 +577,7 @@ function verifyOfflineLicense(activationCode, options) {
     const remainingDays = Math.ceil((expireTimestamp - now) / (24 * 60 * 60 * 1000));
 
     // 解析传感器类型：与在线密钥同一套展开逻辑，未知分类判无效
-    const f = payload.sensorTypes;
+    const f = payload.version === 4 && payload.deviceLimit > 0 ? payload.boundSensorTypes : payload.sensorTypes;
     var expanded;
     try {
       expanded = expandLicenseFile(f);

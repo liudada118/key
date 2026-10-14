@@ -35,7 +35,7 @@ export function verifyOfflineClientKey(
     if (!verifier.verify(record.publicKey, envelope.signature, "base64")) return { error: "LICENSE_INVALID" };
     const payload = JSON.parse(Buffer.from(envelope.payload, "base64").toString("utf8"));
     if (payload.expireDate !== record.expireDate) return { error: "LICENSE_INVALID" };
-    const expanded = expandLicenseFile(payload.sensorTypes);
+    const expanded = expandLicenseFile(payload.version === 4 && payload.deviceLimit > 0 ? payload.boundSensorTypes : payload.sensorTypes);
     return { grant: { customerId: record.customerId,
       scope: expanded.isAllTypes ? "all" : expanded.sensorTypes } };
   } catch { return { error: "LICENSE_INVALID" }; }

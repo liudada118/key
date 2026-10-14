@@ -60,6 +60,14 @@ describe("Agent conversation receiver", () => {
     expect((await send(sampleEvent(), { scheme: 'License', token: 'ab'.repeat(64), body: '{bad' })).status).toBe(403);
     expect(persist).not.toHaveBeenCalled();
   });
+  it("accepts an offline license header through the same server-owned license authentication", async () => {
+    const { send, authenticateLicense, authenticate, persist } = await harness();
+    const code = Buffer.from(JSON.stringify({ payload: 'synthetic-payload', signature: 'synthetic-signature' })).toString('base64');
+    const event = sampleEvent();
+    expect((await send(event, { scheme: 'License', token: code })).status).toBe(200);
+    expect(authenticateLicense).toHaveBeenCalledWith(code); expect(authenticate).not.toHaveBeenCalled();
+    expect(persist).toHaveBeenCalledWith(43, agentSyncEventSchema.parse(event));
+  });
   it("persists using authenticated tenant and confirms the exact event", async () => {
     const { send, persist } = await harness();
     const event = sampleEvent();

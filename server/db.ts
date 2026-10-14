@@ -1544,6 +1544,7 @@ const LICENSE_VERSION_WITH_GROUPS = 3;
 export async function generateOfflineActivationCode(params: {
   sensorTypes: string[] | "all";
   days: number;
+  deviceLimit?: number;
   expireDate?: number;
   customerId?: number | null;
   customerName?: string | null;
@@ -1565,11 +1566,11 @@ export async function generateOfflineActivationCode(params: {
 
   // 授权范围归一化 + 校验（未知分类 / 空范围直接 throw）；分类令牌原样保存，不在此展开
   const scope = normalizeLicenseFile(params.sensorTypes);
-  const licenseVersion = containsGroupScopeToken(scope) ? LICENSE_VERSION_WITH_GROUPS : LICENSE_VERSION;
+  const licenseVersion = params.deviceLimit ? 4 : containsGroupScopeToken(scope) ? LICENSE_VERSION_WITH_GROUPS : LICENSE_VERSION;
 
   // 构造 payload（已去掉机器码绑定：离线版不再绑定具体机器）
   const payload = {
-    sensorTypes: scope,
+    ...(params.deviceLimit ? { boundSensorTypes: scope, deviceLimit: params.deviceLimit } : { sensorTypes: scope }),
     expireDate,
     issuedAt: Date.now(),
     version: licenseVersion,

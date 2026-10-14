@@ -141,6 +141,20 @@
       "when": 1791452827745,
       "tag": "0019_handy_gwen_stacy",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "5",
+      "when": 1791945618067,
+      "tag": "0020_license_device_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "5",
+      "when": 1791965694499,
+      "tag": "0021_agent_chat_offline_sources",
+      "breakpoints": true
     }
   ]
 }

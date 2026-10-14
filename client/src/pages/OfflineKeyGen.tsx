@@ -249,6 +249,7 @@ export default function OfflineKeyGen() {
   const [selectedGroupKeys, setSelectedGroupKeys] = useState<string[]>([]);
   const [isAll, setIsAll] = useState(false);
   const [days, setDays] = useState(30);
+  const [deviceLimit, setDeviceLimit] = useState(0);
   const [customerId, setCustomerId] = useState<number | undefined>();
   const [customerName, setCustomerName] = useState("");
   const [showNewCustomer, setShowNewCustomer] = useState(false);
@@ -406,6 +407,7 @@ export default function OfflineKeyGen() {
     generateMutation.mutate({
       sensorTypes: getSensorTypesParam(),
       days,
+      deviceLimit,
       customerId,
       customerName: customerName || undefined,
       contractId,
@@ -431,7 +433,7 @@ export default function OfflineKeyGen() {
           离线密钥
         </h1>
         <p className="text-muted-foreground mt-1">
-          基于 RSA 签名生成离线激活码，无需联网即可验证（不绑定机器码）
+          默认不限电脑数量；限定数量的离线码须先联网登记，之后可凭本机授权离线使用。
         </p>
         {companySystemsError && <p className="mt-2 text-sm text-muted-foreground">公司系统列表暂不可用；内置系统密钥仍可正常生成。</p>}
       </div>
@@ -686,6 +688,11 @@ export default function OfflineKeyGen() {
                 </Select>
               </div>
 
+              <div className="space-y-2">
+                <Label htmlFor="offline-device-limit">电脑数量上限（0 表示不限量）</Label>
+                <Input id="offline-device-limit" type="number" min="0" max="10000" value={deviceLimit} onChange={event => setDeviceLimit(Number(event.target.value))} />
+                <p className="text-xs text-muted-foreground">限定数量时，客户需使用支持电脑授权的新版软件；联网验证后可离线使用 7 天。</p>
+              </div>
               {/* 备注 */}
               <div>
                 <Label className="text-sm font-medium">备注（可选）</Label>

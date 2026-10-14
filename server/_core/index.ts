@@ -20,6 +20,8 @@ import { registerFeishuKeyRequestCardCallback } from "../feishuKeyRequestCardCal
 import { registerAgentSync } from "../agentSync";
 import { registerSystemPackages } from "../systemPackages";
 import { registerUsage } from "../usage";
+import { authorizeLicenseDevice, registerOfflineDeviceChecks } from "../licenseDevices";
+import { registerFrontendUpdates } from "../frontendUpdates";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -53,6 +55,8 @@ async function startServer() {
   registerAgentSync(app);
   registerSystemPackages(app);
   registerUsage(app);
+  registerFrontendUpdates(app);
+  registerOfflineDeviceChecks(app);
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
@@ -110,6 +114,8 @@ async function startServer() {
     // 在线密钥到期以数据库 expireTimestamp 为权威（支持后台续期延长当前密钥）；
     // 无数据库记录或数据库异常时，退回密钥串里编码的日期（离线兜底）
     let effectiveExpire: number | null = decoded.expireTimestamp ?? null;
+    let deviceLimit = 0;
+    let deviceLease: Awaited<ReturnType<typeof authorizeLicenseDevice>>["deviceLease"];
 
     try {
       const rec = await getLicenseKeyByString(key);
@@ -149,10 +155,24 @@ async function startServer() {
           await markLicenseKeyActivated(key);
           status = "ACTIVATED";
         }
+        if (valid) {
+          const device = await authorizeLicenseDevice(rec, req.body?.deviceId, now);
+          deviceLimit = device.deviceLimit;
+          deviceLease = device.deviceLease;
+          if (!device.allowed) {
+            valid = false;
+            status = device.code;
+            reason = device.code === "DEVICE_LIMIT_REACHED" ? "此密钥的电脑数量已达上限，请联系管理员解绑旧电脑或增加名额。"
+              : device.code === "DEVICE_REVOKED" ? "这台电脑已被解绑，请联系管理员恢复授权。"
+                : "此密钥已限定电脑数量，请更新客户端后重新激活。";
+            // Old clients ignore cached valid=false; an expired result prevents their cache from granting access.
+            effectiveExpire = now - 1;
+          }
+        }
       }
     } catch (e) {
-      // DB 不可用时退化为只按过期判断，避免数据库抖动误锁所有在线设备
-      status = "DB_ERROR";
+      // Missing policy storage or signing keys cannot silently turn a limited key into an unlimited key.
+      return res.status(503).json({ error: "LICENSE_SERVICE_UNAVAILABLE" });
     }
 
     const effectiveRemainingDays = effectiveExpire != null
@@ -166,6 +186,8 @@ async function startServer() {
       reason,
       expireTimestamp: effectiveExpire,
       remainingDays: effectiveRemainingDays,
+      deviceLimit,
+      ...(deviceLease ? { deviceLease } : {}),
       // sensorTypes 已按当前注册表展开：分类密钥在这里自动拿到新增系统
       sensorTypes: decoded.sensorTypes ?? null,
       isAllTypes: decoded.isAllTypes ?? false,

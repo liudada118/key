@@ -1,8 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, asc, count, desc, eq, sql } from "drizzle-orm";
-import { agentChatSources, agentConversations, agentSyncEvents, agentUploadCredentials, customers, licenseKeys } from "../drizzle/schema";
+import { agentChatSources, agentConversations, agentSyncEvents, agentUploadCredentials, customers, licenseKeys, offlineKeys, rsaKeyPairs } from "../drizzle/schema";
 import { getDb } from "./db";
 import { decodeLicenseKey } from "../shared/crypto";
+import { verifyOfflineClientKey } from "./systemPackageClientLicense";
 import type { AgentSyncEvent } from "./agentSyncSchema";
 
 export class AgentSyncError extends Error {
@@ -53,11 +54,12 @@ export async function listAgentChatCustomers() {
     .from(agentConversations)
     .leftJoin(agentChatSources, eq(agentChatSources.id, agentConversations.tenantId))
     .leftJoin(licenseKeys, eq(licenseKeys.id, agentChatSources.licenseKeyId))
-    .leftJoin(customers, eq(customers.id, sql`COALESCE(${agentChatSources.customerId}, ${licenseKeys.customerId})`))
+    .leftJoin(offlineKeys, eq(offlineKeys.id, agentChatSources.offlineKeyId))
+    .leftJoin(customers, eq(customers.id, sql`COALESCE(${agentChatSources.customerId}, ${licenseKeys.customerId}, ${offlineKeys.customerId})`))
     .groupBy(agentConversations.tenantId, sourceName).orderBy(asc(agentConversations.tenantId));
 }
 
-const sourceName = sql<string>`COALESCE(NULLIF(${customers.name}, ''), NULLIF(${licenseKeys.customerName}, ''), IF(${agentChatSources.licenseKeyId} IS NOT NULL, CONCAT('未绑定公司 · 密钥 #', ${agentChatSources.licenseKeyId}), CONCAT('客户 #', ${agentChatSources.customerId}, '（已删除）')))`;
+const sourceName = sql<string>`COALESCE(NULLIF(${customers.name}, ''), NULLIF(${licenseKeys.customerName}, ''), NULLIF(${offlineKeys.customerName}, ''), IF(${agentChatSources.licenseKeyId} IS NOT NULL, CONCAT('未绑定公司 · 密钥 #', ${agentChatSources.licenseKeyId}), IF(${agentChatSources.offlineKeyId} IS NOT NULL, CONCAT('未绑定公司 · 离线密钥 #', ${agentChatSources.offlineKeyId}), CONCAT('客户 #', ${agentChatSources.customerId}, '（已删除）'))))`;
 
 // Read database-generated timestamps as epoch seconds, independent of the MySQL session timezone.
 const receivedAt = sql`UNIX_TIMESTAMP(${agentConversations.receivedAt})`.mapWith(value => new Date(Number(value) * 1000));
@@ -77,7 +79,8 @@ export async function listAgentConversations(input: { customerId?: number; page:
   }).from(agentConversations)
     .leftJoin(agentChatSources, eq(agentChatSources.id, agentConversations.tenantId))
     .leftJoin(licenseKeys, eq(licenseKeys.id, agentChatSources.licenseKeyId))
-    .leftJoin(customers, eq(customers.id, sql`COALESCE(${agentChatSources.customerId}, ${licenseKeys.customerId})`))
+    .leftJoin(offlineKeys, eq(offlineKeys.id, agentChatSources.offlineKeyId))
+    .leftJoin(customers, eq(customers.id, sql`COALESCE(${agentChatSources.customerId}, ${licenseKeys.customerId}, ${offlineKeys.customerId})`))
     .where(where).orderBy(desc(agentConversations.receivedAt), asc(agentConversations.tenantId),
       asc(agentConversations.installationId), asc(agentConversations.conversationId))
     .limit(input.pageSize).offset((page - 1) * input.pageSize);
@@ -93,7 +96,8 @@ export async function getAgentConversation(input: {
   }).from(agentConversations)
     .leftJoin(agentChatSources, eq(agentChatSources.id, agentConversations.tenantId))
     .leftJoin(licenseKeys, eq(licenseKeys.id, agentChatSources.licenseKeyId))
-    .leftJoin(customers, eq(customers.id, sql`COALESCE(${agentChatSources.customerId}, ${licenseKeys.customerId})`))
+    .leftJoin(offlineKeys, eq(offlineKeys.id, agentChatSources.offlineKeyId))
+    .leftJoin(customers, eq(customers.id, sql`COALESCE(${agentChatSources.customerId}, ${licenseKeys.customerId}, ${offlineKeys.customerId})`))
     .where(and(eq(agentConversations.tenantId, input.customerId),
       eq(agentConversations.installationId, input.installationId.toLowerCase()),
       eq(agentConversations.conversationId, input.conversationId))).limit(1);
@@ -116,16 +120,34 @@ export async function getAgentConversation(input: {
   };
 }
 
-async function resolveSource(db: Awaited<ReturnType<typeof database>>, identity: { customerId: number } | { licenseKeyId: number }) {
+async function resolveSource(db: Awaited<ReturnType<typeof database>>, identity: { customerId: number } | { licenseKeyId: number } | { offlineKeyId: number }) {
   await db.insert(agentChatSources).values(identity).onDuplicateKeyUpdate({ set: { id: sql`id` } });
   const [source] = await db.select({ id: agentChatSources.id }).from(agentChatSources)
-    .where('customerId' in identity ? eq(agentChatSources.customerId, identity.customerId) : eq(agentChatSources.licenseKeyId, identity.licenseKeyId)).limit(1);
+    .where('customerId' in identity ? eq(agentChatSources.customerId, identity.customerId)
+      : 'licenseKeyId' in identity ? eq(agentChatSources.licenseKeyId, identity.licenseKeyId)
+        : eq(agentChatSources.offlineKeyId, identity.offlineKeyId)).limit(1);
   return source.id;
 }
 
 export async function authenticateLicenseUpload(key: string) {
   const db = await database();
   const now = Date.now();
+  if (!/^[a-f0-9]+$/i.test(key)) {
+    try {
+      if (key.length > 8192) throw new Error('invalid');
+      const envelope = JSON.parse(Buffer.from(key, 'base64').toString('utf8'));
+      if (typeof envelope.payload !== 'string' || typeof envelope.signature !== 'string') throw new Error('invalid');
+    } catch { throw new AgentSyncError(401, "INVALID_LICENSE"); }
+    const [row] = await db.select({ id: offlineKeys.id, activationCode: offlineKeys.activationCode, status: offlineKeys.status, isDeleted: offlineKeys.isDeleted,
+      customerId: offlineKeys.customerId, customerActive: customers.isActive, expireDate: offlineKeys.expireDate, publicKey: rsaKeyPairs.publicKey,
+    }).from(offlineKeys).innerJoin(rsaKeyPairs, eq(offlineKeys.rsaKeyPairId, rsaKeyPairs.id))
+      .leftJoin(customers, eq(offlineKeys.customerId, customers.id)).where(eq(offlineKeys.activationCode, key)).limit(1);
+    if (!row) throw new AgentSyncError(401, "INVALID_LICENSE");
+    const verified = verifyOfflineClientKey(key, row, now);
+    if (!verified.grant) throw new AgentSyncError(verified.error === "LICENSE_INVALID" ? 401 : 403, verified.error);
+    return { tenantId: await resolveSource(db, { offlineKeyId: row.id }), credentialId: 0 };
+  }
+  key = key.toLowerCase();
   const decoded = decodeLicenseKey(key, now);
   if (!decoded.expireTimestamp || !decoded.sensorTypes?.length) throw new AgentSyncError(401, "INVALID_LICENSE");
   const [row] = await db.select({ id: licenseKeys.id, status: licenseKeys.status, expiresAt: licenseKeys.expireTimestamp,

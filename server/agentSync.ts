@@ -26,7 +26,7 @@ export function registerAgentSync(app: Express, dependencies = {
   });
   route.use(async (req, res, next) => {
     const match = /^Bearer (ags_[A-Za-z0-9_-]{43})$/i.exec(req.headers.authorization ?? "");
-    const license = /^License ([a-fA-F0-9]{32,8192})$/.exec(req.headers.authorization ?? "");
+    const license = /^License ([A-Za-z0-9+/=]{32,8192})$/.exec(req.headers.authorization ?? "");
     if (!match && !license) { next(new AgentSyncError(401, "INVALID_CREDENTIAL")); return; }
     try {
       const principal = license ? await dependencies.authenticateLicense(license[1]) : await dependencies.authenticate(match![1]);

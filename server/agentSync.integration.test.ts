@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createSign, generateKeyPairSync, randomUUID } from "node:crypto";
 import mysql, { type Pool, type Connection, type RowDataPacket } from "mysql2/promise";
 import { drizzle } from "drizzle-orm/mysql2";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -40,6 +40,10 @@ describe.skipIf(!adminUrl)("Agent sync MySQL transactions", () => {
     await pool.query("CREATE TABLE licenseKeys (id int AUTO_INCREMENT PRIMARY KEY, keyString text, status varchar(32), expireTimestamp bigint, isDeleted boolean DEFAULT 0, customerId int, customerName varchar(256))");
     const sourceMigration = await readFile(new URL("../drizzle/0014_agent_chat_license_auth.sql", import.meta.url), "utf8");
     for (const statement of sourceMigration.split("--> statement-breakpoint")) await pool.query(statement);
+    const offlineSourceMigration = await readFile(new URL("../drizzle/0021_agent_chat_offline_sources.sql", import.meta.url), "utf8");
+    for (const statement of offlineSourceMigration.split("--> statement-breakpoint")) await pool.query(statement);
+    await pool.query("CREATE TABLE rsaKeyPairs (id int PRIMARY KEY, publicKey text)");
+    await pool.query("CREATE TABLE offlineKeys (id int PRIMARY KEY, activationCode text, status varchar(32), isDeleted boolean DEFAULT 0, customerId int, customerName varchar(256), expireDate bigint, rsaKeyPairId int)");
   });
   afterAll(async () => {
     await pool?.end();
@@ -186,5 +190,23 @@ describe.skipIf(!adminUrl)("Agent sync MySQL transactions", () => {
     await persistAgentEvent(b.tenantId, payload);
     expect((await rows('SELECT * FROM agent_conversations WHERE conversation_id=?', [payload.conversationId])).length).toBe(2);
     expect((await authenticateUpload((await issueUploadCredential({ tenantId: 2, name: 'Legacy', days: 1, createdById: 1 })).token)).tenantId).toBe(2);
+  });
+
+  it("keeps offline license sources stable and labels them through the linked customer", async () => {
+    const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 }), expireDate = Date.now() + 86400000;
+    const payload = Buffer.from(JSON.stringify({ version: 4, boundSensorTypes: ['seatpad'], deviceLimit: 1, expireDate })).toString('base64');
+    const signer = createSign('RSA-SHA256'); signer.update(payload); signer.end();
+    const code = Buffer.from(JSON.stringify({ payload, signature: signer.sign(privateKey, 'base64') })).toString('base64');
+    await pool.query('INSERT INTO rsaKeyPairs VALUES (7,?)', [publicKey.export({ type: 'spki', format: 'pem' }).toString()]);
+    await pool.query("INSERT INTO offlineKeys (id,activationCode,status,customerId,expireDate,rsaKeyPairId) VALUES (7,?,'ISSUED',1,?,7)", [code, expireDate]);
+    const first = await authenticateLicenseUpload(code), second = await authenticateLicenseUpload(code);
+    expect(first.tenantId).toBe(second.tenantId);
+    expect((await rows('SELECT * FROM agent_chat_sources WHERE id=?', [first.tenantId]))[0].offline_key_id).toBe(7);
+    await persistAgentEvent(first.tenantId, event(1, 'offline-company'));
+    expect((await listAgentConversations({ customerId: first.tenantId, page: 1, pageSize: 20 })).items[0].customerName).toBe('Customer A');
+    await pool.query('UPDATE offlineKeys SET customerId=2 WHERE id=7');
+    expect((await authenticateLicenseUpload(code)).tenantId).toBe(first.tenantId);
+    await pool.query("UPDATE offlineKeys SET status='REVOKED' WHERE id=7");
+    await expect(authenticateLicenseUpload(code)).rejects.toMatchObject({ status: 403 });
   });
 });

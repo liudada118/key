@@ -1,14 +1,15 @@
 # Agent 聊天同步服务
 
-更新：2026-09-23。对应客户端契约 `E:/shroom1/docs/agent-chat-sync-api.md`。
+更新：2026-10-14。对应客户端契约 `E:/shroom1/docs/agent-chat-sync-api.md`。
 
 ## 接入
 
 - 本地完整地址：`http://localhost:3005/api/agent/conversations`。
 - 生产完整地址：`https://你的服务域名/api/agent/conversations`。使用实际部署域名，客户端不自动追加路径。
-- 新版客户端在 Agent → 模型设置 → 聊天同步保留官方地址，上传凭证留空，开启并保存；主进程自动读取现有软件密钥。已有独立凭证可清除后改用软件密钥。
+- 新版客户端首次使用默认自动同步，主进程自动读取软件密钥，无需客户额外填写地址、上传凭证或保存同步设置。高级配置折叠，保留原有手动关闭和自定义服务器；已有独立凭证可清除后改用软件密钥。
 - 软件密钥鉴权请求头：`Authorization: License <软件密钥>`、`Idempotency-Key: <eventId>`、`Content-Type: application/json`。
-- 兼容旧方式 `Authorization: Bearer <ags_上传凭证>`；自定义地址仍需独立凭证，不会自动接收本机软件密钥。默认同步关闭，不使用模型 API Key。
+- 兼容旧方式 `Authorization: Bearer <ags_上传凭证>`；自定义地址仍需独立凭证，不会自动接收本机软件密钥，不使用模型 API Key。
+- 在线密钥按现有 `license_key_id` 来源隔离。离线 RSA 码查服务器登记记录、签发公钥、签名和期限，要求关联有效客户；使用唯一 `offline_key_id` 隔离来源，客户关联变化不修改已有会话主键。
 - 本服务与密钥管理后端一起启动，不需要独立进程。
 
 ## 部署
@@ -19,7 +20,7 @@ pnpm build
 pnpm start
 ```
 
-发布时执行已提交的 `0013_agent_chat_sync.sql` 和 `0014_agent_chat_license_auth.sql`，然后重启应用。不运行 `db:push` 来代替迁移。
+发布时按迁移日志顺序执行迁移；聊天同步所需包含 `0013_agent_chat_sync.sql`、`0014_agent_chat_license_auth.sql` 和新增的 `0021_agent_chat_offline_sources.sql`，然后重启应用。不运行 `db:push` 来代替迁移。0021 只追加一个可空唯一离线密钥来源字段，不改已有会话、回执或在线来源。新功能尚未部署。
 MySQL 必须使用 InnoDB，`max_allowed_packet` 建议至少 32 MiB。新增四张表；归属迁移保留旧聊天和回执的原主键，不修改授权记录。
 HTTP 接收器先鉴权，再运行独立的 8 MiB JSON 解析器，注册在项目全局 50 MB 解析器之前。
 仅接收非压缩 UTF-8 JSON。每客户、每服务进程最多 60 次/分钟，超限返回 429；多实例部署应在网关增加共享限流。

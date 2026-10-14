@@ -14,6 +14,7 @@ import {
 export * from "./agentSyncSchema";
 export * from "./usageSchema";
 export * from "./systemPackageSchema";
+export * from "./licenseDeviceSchema";
 
 /**
  * 用户表 - 三级权限体系

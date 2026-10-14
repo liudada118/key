@@ -3,10 +3,10 @@ import { describe, expect, it } from "vitest";
 import { verifyOfflineClientKey } from "./systemPackageClientLicense";
 
 /** Issue a test-only offline code with the same RSA-SHA256 envelope as production. */
-function fixture(scope: string[] | "all" = ["seatpad"]) {
+function fixture(scope: string[] | "all" = ["seatpad"], deviceLimit = 0) {
   const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const expireDate = Date.now() + 3600000;
-  const payload = Buffer.from(JSON.stringify({ sensorTypes: scope, expireDate, issuedAt: Date.now(), version: 2 })).toString("base64");
+  const payload = Buffer.from(JSON.stringify({ ...(deviceLimit ? { boundSensorTypes: scope, deviceLimit } : { sensorTypes: scope }), expireDate, issuedAt: Date.now(), version: deviceLimit ? 4 : 2 })).toString("base64");
   const signer = createSign("RSA-SHA256");
   signer.update(payload);
   signer.end();
@@ -24,6 +24,11 @@ describe("offline key access to company system packages", () => {
   it("allows all systems only for an all-scope key", () => {
     const { activationCode, record } = fixture("all");
     expect(verifyOfflineClientKey(activationCode, record).grant?.scope).toBe("all");
+  });
+
+  it("accepts the RSA-signed scope of a device-limited version 4 key", () => {
+    const { activationCode, record } = fixture(["seatpad"], 2);
+    expect(verifyOfflineClientKey(activationCode, record)).toEqual({ grant: { customerId: 42, scope: ["seatpad"] } });
   });
 
   it("rejects missing customer, inactive status, expiry, and mismatched records", () => {
