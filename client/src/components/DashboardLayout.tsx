@@ -1,6 +1,7 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -27,6 +28,7 @@ import {
   AlertTriangle,
   BarChart3,
   Building2,
+  ChevronRight,
   ClipboardCheck,
   ClipboardList,
   Cpu,
@@ -77,6 +79,7 @@ type MenuSection = {
   title: string;
   icon: React.ElementType;
   items: MenuItem[];
+  collapsible?: boolean;
 };
 
 const menuSections: MenuSection[] = [
@@ -120,8 +123,20 @@ const menuSections: MenuSection[] = [
     ],
   },
   {
+    title: "设备工具",
+    icon: Cpu,
+    collapsible: true,
+    items: [
+      { icon: Cpu, label: "MAC 读取", path: "/mac-reader" },
+      { icon: Footprints, label: "脚垫设备码", path: "/foot-device-code" },
+      { icon: Cpu, label: "坐垫设备码", path: "/seat-device-code" },
+      { icon: Cpu, label: "假人设备码", path: "/dummy-device-code" },
+    ],
+  },
+  {
     title: "监控与安全",
     icon: Shield,
+    collapsible: true,
     items: [
       { icon: AlertTriangle, label: "异常密钥", path: "/tampered", roles: ["super_admin", "admin"] },
       { icon: MessageSquare, label: "反馈管理", path: "/feedback" },
@@ -136,14 +151,11 @@ const menuSections: MenuSection[] = [
   {
     title: "系统管理",
     icon: Settings2,
+    collapsible: true,
     items: [
       { icon: Users, label: "账号管理", path: "/accounts" },
       { icon: Building2, label: "部门管理", path: "/departments", roles: ["super_admin"] },
       { icon: Settings2, label: "传感器管理", path: "/sensor-types", roles: ["super_admin"] },
-      { icon: Cpu, label: "MAC 读取", path: "/mac-reader" },
-      { icon: Footprints, label: "脚垫设备码", path: "/foot-device-code" },
-      { icon: Cpu, label: "坐垫设备码", path: "/seat-device-code" },
-      { icon: Cpu, label: "假人设备码", path: "/dummy-device-code" },
       { icon: ClipboardList, label: "设备码管理", path: "/device-records" },
       { icon: FileText, label: "审计日志", path: "/audit", roles: ["super_admin"] },
       { icon: FileText, label: "API 文档", path: "/api-docs", roles: ["super_admin"] },
@@ -233,12 +245,21 @@ function DashboardLayoutContent({
 }: DashboardLayoutContentProps) {
   const { user, logout } = useAuth();
   const [location, setLocation] = useLocation();
-  const { state, toggleSidebar } = useSidebar();
-  const isCollapsed = state === "collapsed";
+  const { state, toggleSidebar, setOpenMobile } = useSidebar();
+  const isMobile = useIsMobile();
+  const isCollapsed = state === "collapsed" && !isMobile;
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>(() => {
+    const active = menuSections.find(section => section.items.some(item => item.path === location));
+    return active?.collapsible ? { [active.title]: true } : {};
+  });
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const activeMenuItem = allMenuItems.find((item) => item.path === location);
-  const isMobile = useIsMobile();
+
+  useEffect(() => {
+    const active = menuSections.find(section => section.items.some(item => item.path === location));
+    if (active?.collapsible) setOpenSections(current => ({ ...current, [active.title]: true }));
+  }, [location]);
 
   useEffect(() => {
     if (isCollapsed) setIsResizing(false);
@@ -281,8 +302,11 @@ function DashboardLayoutContent({
           <SidebarHeader className="h-16 justify-center">
             <div className="flex items-center gap-3 px-2 transition-all w-full">
               <button
+                type="button"
                 onClick={toggleSidebar}
-                className="h-8 w-8 flex items-center justify-center hover:bg-accent rounded-lg transition-colors focus:outline-none shrink-0"
+                aria-label={isMobile ? "关闭导航" : isCollapsed ? "展开导航" : "收起导航"}
+                title={isMobile ? "关闭导航" : isCollapsed ? "展开导航" : "收起导航"}
+                className="h-8 w-8 flex items-center justify-center hover:bg-accent rounded-lg transition-colors focus-visible:outline-2 focus-visible:outline-ring shrink-0"
               >
                 <PanelLeft className="h-4 w-4 text-muted-foreground" />
               </button>
@@ -298,37 +322,58 @@ function DashboardLayoutContent({
           </SidebarHeader>
 
           <SidebarContent className="gap-0">
-            {menuSections.map((section, sIdx) => {
+            {menuSections.map((section) => {
               // 过滤掉没有权限的菜单项
               const visibleItems = section.items.filter(
                 (item) => !item.roles || (user?.role && item.roles.includes(user.role))
               );
               if (visibleItems.length === 0) return null;
+              const isSectionActive = visibleItems.some(item => item.path === location);
+              const isOpen = !section.collapsible || isCollapsed || !!openSections[section.title];
 
               return (
-                <div key={sIdx} className={section.title ? "mt-2" : ""}>
+                <Collapsible
+                  key={section.title || "home"}
+                  open={isOpen}
+                  onOpenChange={open => setOpenSections(current => ({ ...current, [section.title]: open }))}
+                  className={section.title ? "mt-1" : ""}
+                >
                   {/* 分组标题 */}
-                  {section.title && !isCollapsed && (
-                    <div className="px-4 py-2">
-                      <div className="flex items-center gap-1.5">
-                        <section.icon className="h-3 w-3 text-muted-foreground/60" />
-                        <span className="text-[11px] font-medium text-muted-foreground/60 uppercase tracking-wider">
+                  {section.title && section.collapsible && !isCollapsed && (
+                    <div className="px-2">
+                      <CollapsibleTrigger
+                        className={`flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-sm font-medium transition-colors hover:bg-sidebar-accent focus-visible:outline-2 focus-visible:outline-ring ${isSectionActive ? "text-primary" : "text-sidebar-foreground"}`}
+                      >
+                        <section.icon aria-hidden="true" className="h-4 w-4 shrink-0" />
+                        <span className="min-w-0 flex-1 text-left break-words">
                           {section.title}
                         </span>
-                      </div>
+                        <ChevronRight aria-hidden="true" className={`h-4 w-4 shrink-0 transition-transform motion-reduce:transition-none ${isOpen ? "rotate-90" : ""}`} />
+                      </CollapsibleTrigger>
+                    </div>
+                  )}
+                  {section.title && !section.collapsible && !isCollapsed && (
+                    <div className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-muted-foreground">
+                      <section.icon aria-hidden="true" className="h-3 w-3 shrink-0" />
+                      <span>{section.title}</span>
                     </div>
                   )}
                   {section.title && isCollapsed && (
                     <div className="mx-auto my-2 w-6 border-t border-border/50" />
                   )}
-                  <SidebarMenu className="px-2 py-0">
+                  <CollapsibleContent>
+                  <SidebarMenu className={`px-2 py-0 ${section.collapsible && !isCollapsed ? "pl-5" : ""}`}>
                     {visibleItems.map((item) => {
                       const isActive = location === item.path;
                       return (
                         <SidebarMenuItem key={item.path}>
                           <SidebarMenuButton
                             isActive={isActive}
-                            onClick={() => setLocation(item.path)}
+                            onClick={() => {
+                              setLocation(item.path);
+                              if (isMobile) setOpenMobile(false);
+                            }}
+                            aria-current={isActive ? "page" : undefined}
                             tooltip={item.label}
                             className="h-10 transition-all font-normal"
                           >
@@ -341,7 +386,8 @@ function DashboardLayoutContent({
                       );
                     })}
                   </SidebarMenu>
-                </div>
+                  </CollapsibleContent>
+                </Collapsible>
               );
             })}
           </SidebarContent>
