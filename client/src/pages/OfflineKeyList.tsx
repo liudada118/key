@@ -36,6 +36,7 @@ import LicenseDevicesDialog from "@/components/LicenseDevicesDialog";
 import { toast } from "sonner";
 import { copyText } from "@/lib/clipboard";
 import { formatScopeEntry, isGroupScopeToken } from "@shared/licenseScopes";
+import { deviceLimitLabel, type LicenseDeviceMode } from "@/lib/licenseDeviceMode";
 
 /* ============ 离线密钥状态判定 ============ */
 function getStatusBadge(item: { status?: string; expireDate: number }) {
@@ -48,7 +49,8 @@ function getStatusBadge(item: { status?: string; expireDate: number }) {
 }
 
 /* ============ 离线密钥管理页 ============ */
-export default function OfflineKeyList() {
+/** List offline licenses without mixing ordinary codes and codes requiring device authorization. */
+export default function OfflineKeyList({ deviceMode = "unlimited", embedded = false }: { deviceMode?: LicenseDeviceMode; embedded?: boolean }) {
   const { user } = useAuth();
   const [deviceKeyId, setDeviceKeyId] = useState<number | null>(null);
   const [page, setPage] = useState(1);
@@ -65,10 +67,11 @@ export default function OfflineKeyList() {
   }, [sensorGroups]);
 
   const utils = trpc.useUtils();
-  const { data: stats } = trpc.offlineKeys.stats.useQuery();
+  const { data: stats } = trpc.offlineKeys.stats.useQuery({ deviceMode });
   const { data, isLoading } = trpc.offlineKeys.list.useQuery({
     page,
     pageSize: 10,
+    deviceMode,
     search: search || undefined,
   });
 
@@ -128,18 +131,18 @@ export default function OfflineKeyList() {
   const totalPages = data ? Math.ceil(data.total / data.pageSize) : 0;
 
   return (
-    <div className="space-y-6">
+    <div className="min-w-0 space-y-6">
       <LicenseDevicesDialog keyId={deviceKeyId} keyType="offline" onClose={() => setDeviceKeyId(null)} />
       {/* 标题 */}
-      <div>
+      {!embedded && <div>
         <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
           <Shield className="h-6 w-6 text-primary" />
           离线密钥管理
         </h1>
         <p className="text-muted-foreground mt-1">
-          查看、搜索已生成的离线激活码（RSA 签名、无机器码、不联网验证）
+          查看、搜索不限电脑数量的 RSA 离线激活码
         </p>
-      </div>
+      </div>}
 
       {/* 统计 */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -156,9 +159,9 @@ export default function OfflineKeyList() {
       {/* 列表 */}
       <Card>
         <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <CardTitle className="text-base">离线密钥列表</CardTitle>
-            <div className="flex items-center gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
               {selectedIds.length > 0 && (
                 <Button
                   variant="destructive"
@@ -177,7 +180,7 @@ export default function OfflineKeyList() {
                   placeholder="搜索客户/备注..."
                   value={search}
                   onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-                  className="pl-8 h-8 w-56 text-sm"
+                  className="pl-8 h-8 w-56 max-w-full text-sm"
                 />
               </div>
             </div>
@@ -202,6 +205,7 @@ export default function OfflineKeyList() {
                       <TableHead>传感器类型</TableHead>
                       <TableHead className="w-28">状态</TableHead>
                       <TableHead className="w-20">有效天数</TableHead>
+                      <TableHead>电脑数量</TableHead>
                       <TableHead className="w-32">到期时间</TableHead>
                       <TableHead className="w-24">客户</TableHead>
                       <TableHead className="w-24">合同</TableHead>
@@ -253,6 +257,7 @@ export default function OfflineKeyList() {
                             <Badge variant={st.variant} className="text-[10px] whitespace-nowrap">{st.text}</Badge>
                           </TableCell>
                           <TableCell>{item.days}天</TableCell>
+                          <TableCell className="whitespace-nowrap">{deviceLimitLabel(item.deviceLimit, item.deviceRestricted)}</TableCell>
                           <TableCell className="text-xs">
                             {new Date(item.expireDate).toLocaleDateString("zh-CN")}
                           </TableCell>

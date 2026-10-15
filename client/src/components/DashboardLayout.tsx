@@ -115,6 +115,14 @@ const menuSections: MenuSection[] = [
     ],
   },
   {
+    title: "限制密钥",
+    icon: ShieldCheck,
+    items: [
+      { icon: KeyRound, label: "生成限制密钥", path: "/limited-generate", roles: ["super_admin"] },
+      { icon: BarChart3, label: "限制密钥管理", path: "/limited-keys", roles: ["super_admin"] },
+    ],
+  },
+  {
     title: "合同与客户",
     icon: ScrollText,
     items: [

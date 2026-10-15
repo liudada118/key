@@ -49,6 +49,7 @@ key-manager/
 │   │   │   ├── GenerateKey.tsx # 在线密钥生成（单个 + 批量）
 │   │   │   ├── KeyGenerationRequests.tsx # 无合同申请列表与超管审批
 │   │   │   ├── KeyList.tsx     # 在线密钥管理列表（筛选 + 分页 + 导出）
+│   │   │   ├── LimitedKeys.tsx # 限制密钥生成/管理入口（在线/离线模式）
 │   │   │   ├── VerifyKey.tsx   # 密钥验证（在线 + 离线 Tab）
 │   │   │   ├── OfflineKeyGenerate.tsx # 离线密钥生成
 │   │   │   ├── OfflineKeyList.tsx     # 离线密钥管理
@@ -68,6 +69,7 @@ key-manager/
 │   │   ├── trpc.ts             # tRPC 初始化 + 三级权限中间件
 │   │   └── ...                 # 其他核心模块
 │   ├── db.ts                   # 数据库查询 helpers（账号 + 密钥 CRUD）
+│   ├── licenseDeviceMode.ts    # 电脑授权分类 SQL、当前上限与离线签名格式判断
 │   ├── routers.ts              # tRPC 路由定义（keys + accounts + auth + sensors + customers + offline）
 │   ├── usage.ts                # 业务埋点/错误批量接收（鉴权、限额、提交后确认）
 │   ├── usageSchema.ts          # 版本 1 白名单与错误脱敏
@@ -647,3 +649,24 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 | 日期 | 工作 | 状态 |
 | --- | --- | --- |
 | 2026-10-15 | 部署稳定性优化 | 工作流、维护脚本和回归验证已实现；提交推送后的首次实际部署仍待执行。 |
+
+## 2026-10-15 限制电脑数量密钥独立分类
+
+- `DashboardLayout` 新增超管专用“限制密钥”分类，`LimitedKeys.tsx` 提供 `/limited-generate`、`/limited-keys` 两条路由，复用原在线/离线表单和列表，通过页签及 `?type=offline` 切换；直接访问无权限 URL 不挂载签发或管理组件。普通入口默认不限量，限制入口要求 1–10000 台、默认 1 台，并提示需要新版客户端。
+- `keys.generate`、`keys.batchGenerate` 支持可选 `deviceLimit`，缺省 0 沿用普通权限与 AES 格式；在线/离线正数签发和受限在线码重签要求 `super_admin`。有限额的密钥记录与初始策略使用同一事务，策略插入失败回滚整次生成；重签在源策略锁内复核角色，并事务复制当前上限。普通 RSA 离线码保留原字段，正数离线码沿用既有 v4 `boundSensorTypes` 格式，无新密钥类型枚举或数据库迁移。
+- `licenseDeviceMode.ts` 统一 SQL 分类与字段：`deviceLimit` 为当前有效上限，`deviceRestricted` 标识需要电脑授权能力。在线根据策略分类，离线 v4 签入正数后即使策略改为 0 也仍属于限制分类。历史离线码的两层 Base64/JSON 在提取前校验，损坏内容按无签入限制处理，避免破坏列表查询。
+- 在线/离线列表、离线统计及在线导出在 SQL 中应用 `deviceMode` 后再分页/计数，保留既有创建人、部门、客户及软删除范围；省略或 `all` 保留旧 API 全量范围。CSV/JSON 标注电脑数量上限。授权弹窗保存后刷新两类列表和离线统计，在线改变上限可跨分类移动，v4 离线取消上限显示“不限量（新版授权）”。
+- 验证使用合成密钥及账号，不连接生产网站；普通 RSA 签名与字段、限额输入、角色校验、事务回滚、重签继承、SQL 分类范围、真实页面导航/生成/列表/导出及移动端布局纳入回归。真实 MySQL、跨电脑名额与生产部署仍需环境验证，浏览器合成 API 结果不能代替服务器实测。
+- 本轮 `pnpm check`、常规 232 项测试与系统临时目录中的 Vite/esbuild 生产构建通过；19 项真实 MySQL 集成案例因未配置连接跳过。`node scripts/tests/limited-keys.mjs` 对真实页面使用隔离 API 完成上述交互回归，浏览器及临时服务已关闭；截图用于本地视觉检查。
+
+### 更新日志（追加）
+
+| 日期 | 类型 | 说明 |
+| --- | --- | --- |
+| 2026-10-15 | 新增功能 | 将限制电脑数量的密钥独立为生成和管理分类，在线/离线共用入口内页签，补齐分类导出、原子策略保存及重签上限继承。 |
+
+### 项目进度（追加）
+
+| 日期 | 工作 | 状态 |
+| --- | --- | --- |
+| 2026-10-15 | 限制密钥分类 | 已实现前后端分类、表单与权限边界、普通格式兼容及本地回归；尚未提交、推送或部署，真实数据库与客户电脑验收待执行。 |

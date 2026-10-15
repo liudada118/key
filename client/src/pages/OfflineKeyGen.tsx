@@ -37,6 +37,7 @@ import { toast } from "sonner";
 import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { formatLicenseScope } from "@shared/licenseScopes";
+import { parseDeviceLimit, type LicenseDeviceMode } from "@/lib/licenseDeviceMode";
 
 type SensorGroup = {
   group: string;
@@ -208,7 +209,8 @@ function SelectedSensorTags({
 }
 
 /* ============ 主页面 ============ */
-export default function OfflineKeyGen() {
+/** Keep unlimited offline codes on the original schema and issue device-bound codes only in the restricted workflow. */
+export default function OfflineKeyGen({ deviceMode = "unlimited", embedded = false }: { deviceMode?: LicenseDeviceMode; embedded?: boolean }) {
   const { user } = useAuth();
   const utils = trpc.useUtils();
 
@@ -249,7 +251,8 @@ export default function OfflineKeyGen() {
   const [selectedGroupKeys, setSelectedGroupKeys] = useState<string[]>([]);
   const [isAll, setIsAll] = useState(false);
   const [days, setDays] = useState(30);
-  const [deviceLimit, setDeviceLimit] = useState(0);
+  const [deviceLimit, setDeviceLimit] = useState("1");
+  const parsedDeviceLimit = deviceMode === "limited" ? parseDeviceLimit(deviceLimit) : 0;
   const [customerId, setCustomerId] = useState<number | undefined>();
   const [customerName, setCustomerName] = useState("");
   const [showNewCustomer, setShowNewCustomer] = useState(false);
@@ -396,6 +399,7 @@ export default function OfflineKeyGen() {
   }, [isAll, selectedGroupKeys, selectedTypes, licenseGroupByKey]);
 
   const handleGenerate = () => {
+    if (parsedDeviceLimit === null) { toast.error("请输入 1–10000 的整数作为电脑数量上限"); return; }
     if (!hasSelection) {
       toast.error("请至少选择一个传感器类型或一个分类");
       return;
@@ -407,7 +411,7 @@ export default function OfflineKeyGen() {
     generateMutation.mutate({
       sensorTypes: getSensorTypesParam(),
       days,
-      deviceLimit,
+      deviceLimit: parsedDeviceLimit ?? 0,
       customerId,
       customerName: customerName || undefined,
       contractId,
@@ -427,16 +431,16 @@ export default function OfflineKeyGen() {
   return (
     <div className="space-y-6">
       {/* 页面标题 */}
-      <div>
+      {!embedded && <div>
         <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
           <Shield className="h-6 w-6 text-primary" />
           离线密钥
         </h1>
         <p className="text-muted-foreground mt-1">
-          默认不限电脑数量；限定数量的离线码须先联网登记，之后可凭本机授权离线使用。
+          此入口生成不限电脑数量的离线码。需要限制电脑数量，请进入“限制密钥”分类。
         </p>
-        {companySystemsError && <p className="mt-2 text-sm text-muted-foreground">公司系统列表暂不可用；内置系统密钥仍可正常生成。</p>}
-      </div>
+      </div>}
+      {companySystemsError && <p className="text-sm text-muted-foreground">公司系统列表暂不可用；内置系统密钥仍可正常生成。</p>}
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         {/* 左侧：传感器选择 */}
@@ -688,11 +692,14 @@ export default function OfflineKeyGen() {
                 </Select>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="offline-device-limit">电脑数量上限（0 表示不限量）</Label>
-                <Input id="offline-device-limit" type="number" min="0" max="10000" value={deviceLimit} onChange={event => setDeviceLimit(Number(event.target.value))} />
-                <p className="text-xs text-muted-foreground">限定数量时，客户需使用支持电脑授权的新版软件；联网验证后可离线使用 7 天。</p>
-              </div>
+              {deviceMode === "limited" && <div className="space-y-2">
+                <Label htmlFor="offline-device-limit">电脑数量上限</Label>
+                <Input id="offline-device-limit" type="number" inputMode="numeric" min={1} max={10000} step={1} value={deviceLimit} onChange={event => setDeviceLimit(event.target.value)}
+                  aria-invalid={parsedDeviceLimit === null} aria-describedby="offline-device-limit-hint" />
+                <p id="offline-device-limit-hint" className={`text-sm ${parsedDeviceLimit === null ? "text-destructive" : "text-muted-foreground"}`}>
+                  {parsedDeviceLimit === null ? "请输入 1–10000 的整数。" : "客户需使用新版软件首次联网登记，之后凭本机授权最多离线使用 7 天，且不能超过密钥到期时间。"}
+                </p>
+              </div>}
               {/* 备注 */}
               <div>
                 <Label className="text-sm font-medium">备注（可选）</Label>
@@ -706,6 +713,7 @@ export default function OfflineKeyGen() {
 
               {/* 摘要 */}
               <div className="border-t pt-3 space-y-1.5">
+                <div className="flex justify-between gap-3 text-sm"><span className="text-muted-foreground">电脑数量：</span><span>{deviceMode === "limited" ? `${parsedDeviceLimit ?? "待填写"} 台` : "不限量"}</span></div>
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">授权模式：</span>
                   <span>

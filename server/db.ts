@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, gte, inArray, isNull, isNotNull, like, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, getTableColumns, gte, inArray, isNull, isNotNull, like, lte, ne, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
@@ -9,6 +9,7 @@ import {
   keyStatusHistory,
   keyGenerationRequests,
   licenseKeys,
+  licenseDevicePolicies,
   offlineKeys,
   rsaKeyPairs,
   sensorTypes,
@@ -37,6 +38,7 @@ import {
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { generateLicenseKey, decodeLicenseKey } from "../shared/crypto";
+import { deviceModeCondition, effectiveDeviceLimit, restrictedDeviceFormat, type LicenseDeviceMode } from "./licenseDeviceMode";
 import {
   GROUP_SCOPE_PREFIX,
   LICENSE_GROUP_META,
@@ -710,15 +712,14 @@ export async function deleteCustomer(id: number) {
 
 // ===== License Key Helpers =====
 
-export async function insertLicenseKey(data: InsertLicenseKey) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  // 生成密钥哈希用于安全比对
-  const keyHash = crypto.createHash("sha256").update(data.keyString as string).digest("hex");
-  await db.insert(licenseKeys).values({ ...data, keyHash, status: "ISSUED" });
+/** Persist a single license using the same atomic policy path as batch generation. */
+export async function insertLicenseKey(data: InsertLicenseKey, deviceLimit = 0) {
+  await insertLicenseKeys([data], deviceLimit);
 }
 
-export async function insertLicenseKeys(dataList: InsertLicenseKey[]) {
+/** A limited license and its computer policy must commit together or neither becomes usable. */
+export async function insertLicenseKeys(dataList: InsertLicenseKey[], deviceLimit = 0) {
+  if (!Number.isInteger(deviceLimit) || deviceLimit < 0 || deviceLimit > 10000) throw new Error("DEVICE_LIMIT_INVALID");
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   if (dataList.length === 0) return;
@@ -727,7 +728,16 @@ export async function insertLicenseKeys(dataList: InsertLicenseKey[]) {
     keyHash: crypto.createHash("sha256").update(d.keyString as string).digest("hex"),
     status: "ISSUED" as const,
   }));
-  await db.insert(licenseKeys).values(dataWithHash);
+  if (!deviceLimit) {
+    await db.insert(licenseKeys).values(dataWithHash);
+    return;
+  }
+  await db.transaction(async tx => {
+    for (const record of dataWithHash) {
+      const [result] = await tx.insert(licenseKeys).values(record);
+      await tx.insert(licenseDevicePolicies).values({ keyType: "online", keyId: result.insertId, maxDevices: deviceLimit });
+    }
+  });
 }
 
 export async function getGeneratedKeyCountsByContractNos(contractNos: string[]) {
@@ -995,6 +1005,7 @@ export async function getLicenseKeys(opts: {
   customerId?: number;
   /** 传感器分组可见：密钥用到这些传感器值（或 all）也可见（事业部管理员跨部门看，仅密钥管理模块） */
   visibleSensorValues?: string[];
+  deviceMode?: LicenseDeviceMode;
 }) {
   const db = await getDb();
   if (!db) return { items: [], total: 0 };
@@ -1012,6 +1023,8 @@ export async function getLicenseKeys(opts: {
     visibility = or(visibility, or(...sensorConds));
   }
   const conditions: any[] = [visibility, eq(licenseKeys.isDeleted, false)];
+  const deviceCondition = deviceModeCondition("online", opts.deviceMode);
+  if (deviceCondition) conditions.push(deviceCondition);
 
   if (opts.category) conditions.push(eq(licenseKeys.category, opts.category as "production" | "rental"));
   // 单个生成 = batchId 为空；批量生成 = batchId 非空
@@ -1034,8 +1047,11 @@ export async function getLicenseKeys(opts: {
   const offset = (opts.page - 1) * opts.pageSize;
 
   const [items, totalResult] = await Promise.all([
-    db.select().from(licenseKeys).where(where).orderBy(desc(licenseKeys.createdAt)).limit(opts.pageSize).offset(offset),
-    db.select({ count: count() }).from(licenseKeys).where(where),
+    db.select({ ...getTableColumns(licenseKeys), deviceLimit: effectiveDeviceLimit("online"), deviceRestricted: restrictedDeviceFormat("online") }).from(licenseKeys)
+      .leftJoin(licenseDevicePolicies, and(eq(licenseDevicePolicies.keyType, "online"), eq(licenseDevicePolicies.keyId, licenseKeys.id)))
+      .where(where).orderBy(desc(licenseKeys.createdAt)).limit(opts.pageSize).offset(offset),
+    db.select({ count: count() }).from(licenseKeys)
+      .leftJoin(licenseDevicePolicies, and(eq(licenseDevicePolicies.keyType, "online"), eq(licenseDevicePolicies.keyId, licenseKeys.id))).where(where),
   ]);
 
   return { items, total: totalResult[0]?.count ?? 0 };
@@ -1554,6 +1570,8 @@ export async function generateOfflineActivationCode(params: {
   createdByName: string;
   remark?: string | null;
 }) {
+  const deviceLimit = params.deviceLimit ?? 0;
+  if (!Number.isInteger(deviceLimit) || deviceLimit < 0 || deviceLimit > 10000) throw new Error("DEVICE_LIMIT_INVALID");
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
@@ -1566,11 +1584,11 @@ export async function generateOfflineActivationCode(params: {
 
   // 授权范围归一化 + 校验（未知分类 / 空范围直接 throw）；分类令牌原样保存，不在此展开
   const scope = normalizeLicenseFile(params.sensorTypes);
-  const licenseVersion = params.deviceLimit ? 4 : containsGroupScopeToken(scope) ? LICENSE_VERSION_WITH_GROUPS : LICENSE_VERSION;
+  const licenseVersion = deviceLimit ? 4 : containsGroupScopeToken(scope) ? LICENSE_VERSION_WITH_GROUPS : LICENSE_VERSION;
 
   // 构造 payload（已去掉机器码绑定：离线版不再绑定具体机器）
   const payload = {
-    ...(params.deviceLimit ? { boundSensorTypes: scope, deviceLimit: params.deviceLimit } : { sensorTypes: scope }),
+    ...(deviceLimit ? { boundSensorTypes: scope, deviceLimit } : { sensorTypes: scope }),
     expireDate,
     issuedAt: Date.now(),
     version: licenseVersion,
@@ -1591,7 +1609,7 @@ export async function generateOfflineActivationCode(params: {
   // 存储到数据库：与 payload 的 sensorTypes 逐字一致（分类令牌原样存）
   const sensorTypeStr = Array.isArray(scope) ? scope.join(",") : scope;
 
-  await db.insert(offlineKeys).values({
+  const record = {
     machineId: "", // 已弃用：离线版不再绑定机器码，占位空串（列仍为 notNull，避免 DB 迁移）
     sensorTypes: sensorTypeStr,
     expireDate,
@@ -1606,7 +1624,15 @@ export async function generateOfflineActivationCode(params: {
     contractNo: params.contractNo || null,
     remark: params.remark || null,
     licenseVersion,
-  });
+  };
+  if (deviceLimit) {
+    await db.transaction(async tx => {
+      const [result] = await tx.insert(offlineKeys).values(record);
+      await tx.insert(licenseDevicePolicies).values({ keyType: "offline", keyId: result.insertId, maxDevices: deviceLimit });
+    });
+  } else {
+    await db.insert(offlineKeys).values(record);
+  }
 
   return {
     activationCode,
@@ -1614,6 +1640,8 @@ export async function generateOfflineActivationCode(params: {
     expireDate,
     days: params.days,
     licenseVersion,
+    deviceLimit,
+    deviceRestricted: deviceLimit > 0,
   };
 }
 
@@ -1624,11 +1652,14 @@ export async function getOfflineKeys(params: {
   pageSize: number;
   search?: string;
   machineId?: string;
+  deviceMode?: LicenseDeviceMode;
 }) {
   const db = await getDb();
   if (!db) return { items: [], total: 0, page: params.page, pageSize: params.pageSize };
 
   const conditions: any[] = [inArray(offlineKeys.createdById, params.userIds), eq(offlineKeys.isDeleted, false)];
+  const deviceCondition = deviceModeCondition("offline", params.deviceMode);
+  if (deviceCondition) conditions.push(deviceCondition);
 
   if (params.search) {
     conditions.push(
@@ -1647,11 +1678,13 @@ export async function getOfflineKeys(params: {
   const where = conditions.length > 1 ? and(...conditions) : conditions[0];
 
   const [items, totalResult] = await Promise.all([
-    db.select().from(offlineKeys).where(where)
+    db.select({ ...getTableColumns(offlineKeys), deviceLimit: effectiveDeviceLimit("offline"), deviceRestricted: restrictedDeviceFormat("offline") }).from(offlineKeys)
+      .leftJoin(licenseDevicePolicies, and(eq(licenseDevicePolicies.keyType, "offline"), eq(licenseDevicePolicies.keyId, offlineKeys.id))).where(where)
       .orderBy(desc(offlineKeys.createdAt))
       .limit(params.pageSize)
       .offset((params.page - 1) * params.pageSize),
-    db.select({ count: count() }).from(offlineKeys).where(where),
+    db.select({ count: count() }).from(offlineKeys)
+      .leftJoin(licenseDevicePolicies, and(eq(licenseDevicePolicies.keyType, "offline"), eq(licenseDevicePolicies.keyId, offlineKeys.id))).where(where),
   ]);
 
   return {
@@ -1663,12 +1696,13 @@ export async function getOfflineKeys(params: {
 }
 
 /** 获取离线密钥统计 */
-export async function getOfflineKeyStats(userIds: number[]) {
+export async function getOfflineKeyStats(userIds: number[], deviceMode?: LicenseDeviceMode) {
   const db = await getDb();
   if (!db) return { total: 0 };
 
   const result = await db.select({ count: count() }).from(offlineKeys)
-    .where(and(inArray(offlineKeys.createdById, userIds), eq(offlineKeys.isDeleted, false)));
+    .leftJoin(licenseDevicePolicies, and(eq(licenseDevicePolicies.keyType, "offline"), eq(licenseDevicePolicies.keyId, offlineKeys.id)))
+    .where(and(inArray(offlineKeys.createdById, userIds), eq(offlineKeys.isDeleted, false), deviceModeCondition("offline", deviceMode)));
 
   return { total: result[0]?.count ?? 0 };
 }
@@ -2001,7 +2035,7 @@ export async function getTamperedKeyCount(userIds: number[]) {
  * 重新签发新密钥：按原密钥的传感器/天数/客户生成一把【新密文串】（ACTIVATED），
  * 默认同时把旧密钥吊销。用于异常/盗用后给客户换新 key。
  */
-export async function reissueLicenseKey(keyId: number, actorId: number, actorName: string, opts?: { revokeOld?: boolean }) {
+export async function reissueLicenseKey(keyId: number, actorId: number, actorName: string, opts?: { revokeOld?: boolean; issuerRole?: string }) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const old = await getLicenseKeyById(keyId);
@@ -2016,26 +2050,37 @@ export async function reissueLicenseKey(keyId: number, actorId: number, actorNam
   const expireTimestamp = decoded.expireTimestamp ?? (Date.now() + old.days * 24 * 60 * 60 * 1000);
   const keyHash = crypto.createHash("sha256").update(newKeyString).digest("hex");
 
-  await db.insert(licenseKeys).values({
-    keyString: newKeyString,
-    keyHash,
-    sensorType: old.sensorType,
-    category: old.category,
-    days: old.days,
-    expireTimestamp,
-    createdById: old.createdById,
-    createdByName: old.createdByName,
-    customerId: old.customerId,
-    contractId: old.contractId,
-    contractNo: old.contractNo,
-    customerName: old.customerName,
-    isActivated: true,
-    status: "ACTIVATED",
-    activatedAt: new Date(),
-    remark: old.remark ? `${old.remark}（由 #${old.id} 重签）` : `由 #${old.id} 重签`,
+  const newKey = await db.transaction(async tx => {
+    await tx.insert(licenseDevicePolicies).values({ keyType: "online", keyId: old.id, maxDevices: 0 })
+      .onDuplicateKeyUpdate({ set: { keyId: sql`key_id` } });
+    const [policy] = await tx.select().from(licenseDevicePolicies)
+      .where(and(eq(licenseDevicePolicies.keyType, "online"), eq(licenseDevicePolicies.keyId, old.id))).for("update");
+    // ⚠️ Recheck under the policy lock: a concurrent limit change must not let an ordinary issuer bypass the restriction.
+    if (policy.maxDevices > 0 && opts?.issuerRole !== "super_admin") throw new Error("仅超级管理员可以重新签发限制电脑数量的密钥");
+    const [result] = await tx.insert(licenseKeys).values({
+      keyString: newKeyString,
+      keyHash,
+      sensorType: old.sensorType,
+      category: old.category,
+      days: old.days,
+      expireTimestamp,
+      createdById: old.createdById,
+      createdByName: old.createdByName,
+      customerId: old.customerId,
+      contractId: old.contractId,
+      contractNo: old.contractNo,
+      customerName: old.customerName,
+      isActivated: true,
+      status: "ACTIVATED",
+      activatedAt: new Date(),
+      remark: old.remark ? `${old.remark}（由 #${old.id} 重签）` : `由 #${old.id} 重签`,
+    });
+    if (policy.maxDevices > 0) {
+      await tx.insert(licenseDevicePolicies).values({ keyType: "online", keyId: result.insertId, maxDevices: policy.maxDevices });
+    }
+    const [inserted] = await tx.select().from(licenseKeys).where(eq(licenseKeys.id, result.insertId)).limit(1);
+    return { ...inserted, deviceLimit: policy.maxDevices, deviceRestricted: policy.maxDevices > 0 };
   });
-  const inserted = await db.select().from(licenseKeys).where(eq(licenseKeys.keyHash, keyHash)).orderBy(desc(licenseKeys.id)).limit(1);
-  const newKey = inserted[0];
 
   await recordKeyStatusChange({
     keyType: "online",

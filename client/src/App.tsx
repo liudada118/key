@@ -32,6 +32,7 @@ import Login from "./pages/Login";
 import AgentChats from "./pages/AgentChats";
 import SystemPackages from "./pages/SystemPackages";
 import UsageAnalytics from "./pages/UsageAnalytics";
+import { LimitedKeyGeneration, LimitedKeyManagement } from "./pages/LimitedKeys";
 import { useAuth } from "./_core/hooks/useAuth";
 import { Loader2 } from "lucide-react";
 
@@ -40,16 +41,18 @@ function AuthenticatedRouter() {
     <DashboardLayout>
       <Switch>
         <Route path={"/"} component={Home} />
-        <Route path={"/generate"} component={GenerateKey} />
+        <Route path={"/generate"}><GenerateKey /></Route>
         <Route path={"/key-generation-requests"} component={KeyGenerationRequests} />
-        <Route path={"/keys"} component={KeyList} />
+        <Route path={"/keys"}><KeyList /></Route>
         <Route path={"/verify"} component={VerifyKey} />
         <Route path={"/accounts"} component={AccountManagement} />
         <Route path={"/departments"} component={DepartmentManagement} />
         <Route path={"/customers"} component={CustomerManagement} />
         <Route path={"/sensor-types"} component={SensorTypeManagement} />
-        <Route path={"/offline-keys"} component={OfflineKeyGen} />
-        <Route path={"/offline-key-list"} component={OfflineKeyList} />
+        <Route path={"/offline-keys"}><OfflineKeyGen /></Route>
+        <Route path={"/offline-key-list"}><OfflineKeyList /></Route>
+        <Route path={"/limited-generate"} component={LimitedKeyGeneration} />
+        <Route path={"/limited-keys"} component={LimitedKeyManagement} />
         <Route path={"/mac-reader"} component={MacReader} />
         <Route path={"/api-docs"} component={ApiDocs} />
         <Route path={"/foot-device-code"} component={FootDeviceCode} />

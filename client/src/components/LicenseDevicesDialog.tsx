@@ -8,9 +8,16 @@ import { Button } from "@/components/ui/button";
 /** Manage activation slots independently from license expiry and system authorization. */
 export default function LicenseDevicesDialog({ keyId, onClose, keyType = "online" }: { keyId: number | null; onClose: () => void; keyType?: "online" | "offline" }) {
   const [limit, setLimit] = useState("0"), [error, setError] = useState("");
+  const utils = trpc.useUtils();
   const query = trpc.keys.devices.useQuery({ keyId: keyId!, keyType }, { enabled: keyId !== null });
   useEffect(() => { if (query.data) setLimit(String(query.data.maxDevices)); }, [query.data]);
-  const save = trpc.keys.setDeviceLimit.useMutation({ onSuccess: () => { setError(""); void query.refetch(); }, onError: err => setError(err.message) });
+  const save = trpc.keys.setDeviceLimit.useMutation({ onSuccess: () => {
+    setError("");
+    void query.refetch();
+    void utils.keys.list.invalidate();
+    void utils.offlineKeys.list.invalidate();
+    void utils.offlineKeys.stats.invalidate();
+  }, onError: err => setError(err.message) });
   const change = trpc.keys.changeDevice.useMutation({ onSuccess: () => { setError(""); void query.refetch(); }, onError: err => setError(err.message) });
   const pending = save.isPending || change.isPending;
   return <Dialog open={keyId !== null} onOpenChange={open => { if (!open) onClose(); }}><DialogContent>

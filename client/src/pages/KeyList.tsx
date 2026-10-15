@@ -41,6 +41,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { formatScopeEntry, isGroupScopeToken } from "@shared/licenseScopes";
 import { useAuth } from "@/_core/hooks/useAuth";
 import LicenseDevicesDialog from "@/components/LicenseDevicesDialog";
+import { deviceLimitLabel, type LicenseDeviceMode } from "@/lib/licenseDeviceMode";
 
 /** 状态 Badge 配置 */
 const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
@@ -53,7 +54,8 @@ const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
   TAMPERED: { label: "异常", className: "bg-red-600 text-white border-red-700 font-semibold" },
 };
 
-export default function KeyList() {
+/** List online licenses in the selected computer-authorization category. */
+export default function KeyList({ deviceMode = "unlimited", embedded = false }: { deviceMode?: LicenseDeviceMode; embedded?: boolean }) {
   const { user } = useAuth();
   const [deviceKeyId, setDeviceKeyId] = useState<number | null>(null);
 
@@ -96,12 +98,13 @@ export default function KeyList() {
     () => ({
       page,
       pageSize: 20,
+      deviceMode,
       genType: genType === "__all__" ? undefined : (genType as "single" | "batch"),
       sensorType: sensorType === "__all__" ? undefined : sensorType,
       status: statusFilter === "__all__" ? undefined : statusFilter,
       search: search || undefined,
     }),
-    [page, genType, sensorType, statusFilter, search]
+    [page, genType, sensorType, statusFilter, search, deviceMode]
   );
 
   const utils = trpc.useUtils();
@@ -451,13 +454,13 @@ export default function KeyList() {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
+    <div className="min-w-0 space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {!embedded && <div>
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">密钥管理</h1>
-          <p className="text-muted-foreground mt-1">查看和管理所有密钥</p>
-        </div>
-        <div className="flex gap-2">
+          <p className="text-muted-foreground mt-1">查看和管理不限电脑数量的在线密钥</p>
+        </div>}
+        <div className="ml-auto flex flex-wrap gap-2">
           {selectedIds.length > 0 && (
             <Button
               variant="destructive"
@@ -475,6 +478,7 @@ export default function KeyList() {
             onClick={() =>
               exportMutation.mutate({
                 format: "csv",
+                deviceMode,
                 sensorType: sensorType === "__all__" ? undefined : sensorType,
               })
             }
@@ -489,6 +493,7 @@ export default function KeyList() {
             onClick={() =>
               exportMutation.mutate({
                 format: "json",
+                deviceMode,
                 sensorType: sensorType === "__all__" ? undefined : sensorType,
               })
             }
@@ -601,6 +606,7 @@ export default function KeyList() {
                       <TableHead className="text-muted-foreground">类型</TableHead>
                       <TableHead className="text-muted-foreground">传感器</TableHead>
                       <TableHead className="text-muted-foreground">有效期</TableHead>
+                      <TableHead className="text-muted-foreground">电脑数量</TableHead>
                       <TableHead className="text-muted-foreground">到期时间</TableHead>
                       <TableHead className="text-muted-foreground">状态</TableHead>
                       <TableHead className="text-muted-foreground">客户</TableHead>
@@ -647,6 +653,7 @@ export default function KeyList() {
                           {renderSensorTypes(key.sensorType)}
                         </TableCell>
                         <TableCell className="text-sm text-foreground">{key.days}天</TableCell>
+                        <TableCell className="whitespace-nowrap text-sm">{deviceLimitLabel(key.deviceLimit, key.deviceRestricted)}</TableCell>
                         <TableCell className="text-sm text-foreground">
                           {new Date(key.expireTimestamp).toLocaleDateString("zh-CN")}
                         </TableCell>

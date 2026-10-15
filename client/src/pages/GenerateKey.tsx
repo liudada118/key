@@ -27,6 +27,7 @@ import {
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { toast } from "sonner";
 import { copyText } from "@/lib/clipboard";
+import { parseDeviceLimit, type LicenseDeviceMode } from "@/lib/licenseDeviceMode";
 
 /** 传感器分组类型 */
 type SensorGroup = {
@@ -56,7 +57,8 @@ const TIME_PRESETS = [
   { label: "3年", days: 1095 },
 ];
 
-export default function GenerateKey() {
+/** Generate ordinary or computer-limited online licenses through the same contract-aware form. */
+export default function GenerateKey({ deviceMode = "unlimited", embedded = false }: { deviceMode?: LicenseDeviceMode; embedded?: boolean }) {
   const { data: sensorGroups, isLoading: sensorGroupsLoading } =
     trpc.sensors.groups.useQuery();
   const { data: licenseGroupData } = trpc.sensors.licenseGroups.useQuery();
@@ -82,15 +84,15 @@ export default function GenerateKey() {
 
   return (
     <div className="space-y-6">
-      <div>
+      {!embedded && <div>
         <h1 className="text-2xl font-semibold tracking-tight text-foreground">
           生成密钥
         </h1>
         <p className="text-muted-foreground mt-1">
-          选择传感器类型与有效期，生成在线密钥
+          此入口生成不限电脑数量的在线密钥。需要限制电脑数量，请进入“限制密钥”分类。
         </p>
-        {companySystemsError && <p className="mt-2 text-sm text-muted-foreground">公司系统列表暂不可用；内置系统密钥仍可正常生成。</p>}
-      </div>
+      </div>}
+      {companySystemsError && <p className="text-sm text-muted-foreground">公司系统列表暂不可用；内置系统密钥仍可正常生成。</p>}
 
       {sensorGroupsLoading ? (
         <div className="flex items-center justify-center h-64">
@@ -115,6 +117,7 @@ export default function GenerateKey() {
               licenseGroups={licenseGroups}
               companySystemIds={companySystems.map((item) => item.systemId)}
               preselectedSystemId={preselectedSystemId}
+              deviceMode={deviceMode}
               mode="single"
             />
           </TabsContent>
@@ -124,6 +127,7 @@ export default function GenerateKey() {
               licenseGroups={licenseGroups}
               companySystemIds={companySystems.map((item) => item.systemId)}
               preselectedSystemId={preselectedSystemId}
+              deviceMode={deviceMode}
               mode="batch"
             />
           </TabsContent>
@@ -133,18 +137,21 @@ export default function GenerateKey() {
   );
 }
 
+/** Apply the selected computer limit to both contract and no-contract issuance. */
 function KeyGenerator({
   sensorGroups,
   licenseGroups,
   companySystemIds,
   preselectedSystemId,
   mode,
+  deviceMode,
 }: {
   sensorGroups: SensorGroup[];
   licenseGroups: LicenseGroupOption[];
   companySystemIds: string[];
   preselectedSystemId: string;
   mode: "single" | "batch";
+  deviceMode: LicenseDeviceMode;
 }) {
   const { user } = useAuth();
 
@@ -167,6 +174,8 @@ function KeyGenerator({
   const category = "production" as const;
   const [days, setDays] = useState("30");
   const [count, setCount] = useState("10");
+  const [deviceLimit, setDeviceLimit] = useState("1");
+  const parsedDeviceLimit = deviceMode === "limited" ? parseDeviceLimit(deviceLimit) : 0;
   const [remark, setRemark] = useState("");
   const [gateOpen, setGateOpen] = useState(false);
 
@@ -348,6 +357,7 @@ function KeyGenerator({
   });
 
   const handleGenerate = () => {
+    if (parsedDeviceLimit === null) return toast.error("请输入 1–10000 的整数作为电脑数量上限");
     if (!hasSelection) {
       return toast.error("请至少选择一个传感器类型或整个分类，或开启全部授权");
     }
@@ -366,11 +376,13 @@ function KeyGenerator({
   };
 
   const handleGenerateWithContract = (contract: GenerationContract) => {
+    if (parsedDeviceLimit === null) return toast.error("请输入 1–10000 的整数作为电脑数量上限");
     const commonInput = {
       sensorTypes: getSensorTypesParam(),
       ...(customerId ? { customerId: Number(customerId) } : {}),
       days: parseInt(days),
       category,
+      deviceLimit: parsedDeviceLimit,
       contractId: contract.id,
       contractNo: contract.contractNo,
       remark: remark.trim() || undefined,
@@ -386,6 +398,7 @@ function KeyGenerator({
   };
 
   const handleGenerateWithoutContract = (note?: string) => {
+    if (parsedDeviceLimit === null) return toast.error("请输入 1–10000 的整数作为电脑数量上限");
     const combinedRemark =
       [remark.trim(), note?.trim()].filter(Boolean).join("；") || undefined;
     const commonInput = {
@@ -393,6 +406,7 @@ function KeyGenerator({
       ...(customerId ? { customerId: Number(customerId) } : {}),
       days: parseInt(days),
       category,
+      deviceLimit: parsedDeviceLimit,
       remark: combinedRemark,
     };
 
@@ -675,6 +689,15 @@ function KeyGenerator({
                 </div>
               )}
 
+              {deviceMode === "limited" && <div className="space-y-1.5">
+                <Label htmlFor={`online-device-limit-${mode}`}>电脑数量上限</Label>
+                <Input id={`online-device-limit-${mode}`} type="number" inputMode="numeric" min={1} max={10000} step={1} value={deviceLimit}
+                  onChange={event => setDeviceLimit(event.target.value)} aria-invalid={parsedDeviceLimit === null} aria-describedby={`online-device-limit-hint-${mode}`} />
+                <p id={`online-device-limit-hint-${mode}`} className={`text-sm ${parsedDeviceLimit === null ? "text-destructive" : "text-muted-foreground"}`}>
+                  {parsedDeviceLimit === null ? "请输入 1–10000 的整数。" : "客户需使用支持电脑授权的新版软件；同一电脑升级不重复占名额。"}
+                </p>
+              </div>}
+
               {/* 备注 */}
               <div className="space-y-1.5">
                 <Label className="text-foreground text-sm">备注（可选）</Label>
@@ -689,6 +712,7 @@ function KeyGenerator({
 
               {/* 授权摘要 */}
               <div className="p-3 bg-secondary/30 rounded-lg space-y-2">
+                <div className="flex justify-between gap-3 text-xs"><span className="text-muted-foreground">电脑数量：</span><span>{deviceMode === "limited" ? `${parsedDeviceLimit ?? "待填写"} 台 / 密钥` : "不限量"}</span></div>
                 <div className="flex justify-between text-xs">
                   <span className="text-muted-foreground">授权模式：</span>
                   <span className="text-foreground font-medium">

@@ -67,4 +67,20 @@ describe("sidebar disclosure and direct license navigation", () => {
     expect(html).toContain("客户使用分析");
     expect(html).toContain("SDK 获取");
   });
+
+  it.each(["/limited-generate", "/limited-keys"])("keeps the restricted category visible and marks %s active", (path) => {
+    session.path = path;
+    const html = render();
+    expect(html).toContain("限制密钥");
+    expect(html).toContain("生成限制密钥");
+    expect(html).toContain("限制密钥管理");
+    expect(html).toContain('aria-current="page"');
+  });
+
+  it.each(["admin", "user"])("hides restricted key navigation from %s", role => {
+    session.role = role;
+    const html = render();
+    expect(html).not.toContain("限制密钥");
+    expect(html).toContain("生成密钥");
+  });
 });

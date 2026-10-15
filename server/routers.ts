@@ -122,7 +122,7 @@ import {
 import { getLicenseRegistryInfo } from "./licenseRegistry";
 import { agentSyncRouter } from "./agentSyncRouter";
 import { usageRouter } from "./usageRouter";
-import { changeLicenseDevice, listLicenseDevices, setLicenseDeviceLimit } from "./licenseDevices";
+import { changeLicenseDevice, listLicenseDevices, readDevicePolicy, setLicenseDeviceLimit } from "./licenseDevices";
 
 /**
  * 授权范围入参的公共校验：`"all"` / 单系统 key / 数组（元素可为 `@group:<groupKey>` 分类令牌）。
@@ -142,6 +142,15 @@ function licenseScopeSchema<T extends z.ZodTypeAny>(inner: T) {
     }
   });
 }
+
+/** Only super administrators may issue computer-limited licenses; ordinary issuance retains its permissions. */
+function requireDeviceLimitIssuer(role: string, deviceLimit: number) {
+  if (deviceLimit > 0 && role !== "super_admin") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "仅超级管理员可以生成限制电脑数量的密钥" });
+  }
+}
+
+const deviceModeSchema = z.enum(["all", "unlimited", "limited"]).optional();
 
 async function getAccessibleFeishuContract(
   user: { role: string; name?: string | null },
@@ -628,6 +637,7 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ ctx, input }) => {
+        requireDeviceLimitIssuer(ctx.user.role, input.deviceLimit);
         let customerName = input.customerName || null;
         if (input.customerId && !customerName) {
           const customer = await getCustomerById(input.customerId);
@@ -655,6 +665,7 @@ export const appRouter = router({
           pageSize: z.number().min(1).max(100).default(20),
           search: z.string().optional(),
           machineId: z.string().optional(),
+          deviceMode: deviceModeSchema,
         })
       )
       .query(async ({ ctx, input }) => {
@@ -665,13 +676,14 @@ export const appRouter = router({
           pageSize: input.pageSize,
           search: input.search,
           machineId: input.machineId,
+          deviceMode: input.deviceMode,
         });
       }),
 
     /** 离线密钥统计 */
-    stats: protectedProcedure.query(async ({ ctx }) => {
+    stats: protectedProcedure.input(z.object({ deviceMode: deviceModeSchema }).optional()).query(async ({ ctx, input }) => {
       const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
-      return getOfflineKeyStats(userIds);
+      return getOfflineKeyStats(userIds, input?.deviceMode);
     }),
 
     /** 删除离线密钥（仅从列表移除；离线激活码无法服务端作废）——谁能看到谁能删 */
@@ -748,6 +760,7 @@ export const appRouter = router({
           ),
           days: z.number().int().min(1).max(36500),
           category: z.enum(["production", "rental"]),
+          deviceLimit: z.number().int().min(0).max(10000).default(0),
           customerId: z.number().optional(),
           customerName: z.string().optional(),
           contractId: z.number().optional(),
@@ -756,6 +769,7 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ ctx, input }) => {
+        requireDeviceLimitIssuer(ctx.user.role, input.deviceLimit);
         const contract = await getAccessibleFeishuContract(
           ctx.user,
           input.contractId,
@@ -776,8 +790,8 @@ export const appRouter = router({
           contractNo: contract?.contractNo,
           remark: input.remark,
         });
-        await insertLicenseKey(prepared.records[0]);
-        const result = prepared.keys[0];
+        await insertLicenseKey(prepared.records[0], input.deviceLimit);
+        const result = { ...prepared.keys[0], deviceLimit: input.deviceLimit, deviceRestricted: input.deviceLimit > 0 };
         if (!contract) {
           await createAuditLog({
             userId: ctx.user.id,
@@ -805,6 +819,7 @@ export const appRouter = router({
           days: z.number().int().min(1).max(36500),
           category: z.enum(["production", "rental"]),
           count: z.number().int().min(1).max(500),
+          deviceLimit: z.number().int().min(0).max(10000).default(0),
           customerId: z.number().optional(),
           customerName: z.string().optional(),
           contractId: z.number().optional(),
@@ -813,6 +828,7 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ ctx, input }) => {
+        requireDeviceLimitIssuer(ctx.user.role, input.deviceLimit);
         const contract = await getAccessibleFeishuContract(
           ctx.user,
           input.contractId,
@@ -833,7 +849,7 @@ export const appRouter = router({
           contractNo: contract?.contractNo,
           remark: input.remark,
         });
-        await insertLicenseKeys(prepared.records);
+        await insertLicenseKeys(prepared.records, input.deviceLimit);
         if (!contract) {
           await createAuditLog({
             userId: ctx.user.id,
@@ -850,7 +866,7 @@ export const appRouter = router({
         }
         return {
           batchId: prepared.batchId as string,
-          keys: prepared.keys,
+          keys: prepared.keys.map(key => ({ ...key, deviceLimit: input.deviceLimit, deviceRestricted: input.deviceLimit > 0 })),
           count: prepared.keys.length,
         };
       }),
@@ -867,6 +883,7 @@ export const appRouter = router({
           status: z.string().optional(),
           search: z.string().optional(),
           customerId: z.number().optional(),
+          deviceMode: deviceModeSchema,
         })
       )
       .query(async ({ ctx, input }) => {
@@ -886,6 +903,7 @@ export const appRouter = router({
           search: input.search,
           customerId: input.customerId,
           visibleSensorValues,
+          deviceMode: input.deviceMode,
         });
       }),
 
@@ -1065,6 +1083,7 @@ export const appRouter = router({
       .input(
         z.object({
           format: z.enum(["csv", "json"]),
+          deviceMode: deviceModeSchema,
           category: z.string().optional(),
           sensorType: z.string().optional(),
           isActivated: z.boolean().optional(),
@@ -1081,6 +1100,7 @@ export const appRouter = router({
           sensorType: input.sensorType,
           isActivated: input.isActivated,
           customerId: input.customerId,
+          deviceMode: input.deviceMode,
         });
 
         // 从数据库动态获取传感器标签映射
@@ -1108,6 +1128,7 @@ export const appRouter = router({
             密钥: k.keyString,
             传感器类型: k.sensorType.split(",").map((v: string) => sensorMap[v] || v).join(", "),
             密钥类型: k.category === "production" ? "量产密钥" : "在线租赁密钥",
+            电脑数量上限: k.deviceLimit > 0 ? k.deviceLimit : "不限量",
             有效期天数: k.days,
             到期时间: new Date(k.expireTimestamp).toLocaleString("zh-CN"),
             状态: k.status,
@@ -1120,12 +1141,13 @@ export const appRouter = router({
           }));
         }
 
-        const header = "密钥,传感器类型,密钥类型,有效期天数,到期时间,状态,是否已激活,激活时间,客户,创建者,创建时间,备注";
+        const header = "密钥,传感器类型,密钥类型,电脑数量上限,有效期天数,到期时间,状态,是否已激活,激活时间,客户,创建者,创建时间,备注";
         const rows = items.map((k) =>
           [
             k.keyString,
             k.sensorType.split(",").map((v: string) => sensorMap[v] || v).join("/"),
             k.category === "production" ? "量产密钥" : "在线租赁密钥",
+            k.deviceLimit > 0 ? k.deviceLimit : "不限量",
             k.days,
             new Date(k.expireTimestamp).toLocaleString("zh-CN"),
             k.status,
@@ -1305,7 +1327,8 @@ export const appRouter = router({
     reissue: adminProcedure
       .input(z.object({ keyId: z.number(), revokeOld: z.boolean().default(true) }))
       .mutation(async ({ ctx, input }) => {
-        const result = await reissueLicenseKey(input.keyId, ctx.user.id, ctx.user.name || ctx.user.username, { revokeOld: input.revokeOld });
+        requireDeviceLimitIssuer(ctx.user.role, await readDevicePolicy("online", input.keyId));
+        const result = await reissueLicenseKey(input.keyId, ctx.user.id, ctx.user.name || ctx.user.username, { revokeOld: input.revokeOld, issuerRole: ctx.user.role });
         await createAuditLog({
           userId: ctx.user.id,
           userName: ctx.user.name || ctx.user.username,
