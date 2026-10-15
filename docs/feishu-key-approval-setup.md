@@ -60,7 +60,7 @@ FEISHU_APPROVAL_REVIEWER_USERNAME=系统中的超级管理员用户名
 - `FEISHU_CALLBACK_ENCRYPT_KEY`
 - `FEISHU_APPROVAL_REVIEWER_USERNAME`
 
-部署工作流会在服务器重新生成 `.env` 并通过 PM2 的 `--update-env` 加载配置。
+部署工作流会保留服务器已有 `.env`，仅首次缺少文件时从 GitHub Secrets 创建。后续修改飞书配置应更新服务器 `.env`，再通过 PM2 的 `--update-env` 重启加载。
 
 ## 5. 验证
 

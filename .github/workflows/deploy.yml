@@ -6,10 +6,36 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: key-manager-production
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
+      - name: 拉取待部署代码
+        uses: actions/checkout@v4
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: 安装 Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: 在 runner 安装依赖并验证构建
+        run: |
+          pnpm install --frozen-lockfile --prod=false
+          pnpm check
+          pnpm test
+          pnpm build
+          tar -czf key-manager-build.tgz dist
+          sha256sum key-manager-build.tgz > key-manager-build.tgz.sha256
+
       # SSH 步骤失败时 appleboy 的报错很含糊,而完整 job 日志要 repo admin 权限才看得到,
       # 所以先在这里自检一遍:哪个 Secret 空了、私钥格式对不对、端口通不通。
       # 只打印名字、长度和判定结果,不打印任何 Secret 的值。
@@ -39,7 +65,7 @@ jobs:
                 echo "  ✗ $1 未设置或为空"
                 fatal=1
               else
-                echo "  · $1 未设置(可选,对应功能会关掉)"
+                echo "  · $1 未设置(可选,保留服务器已有配置)"
               fi
             else
               echo "  ✓ $1 已设置(${#2} 字符)"
@@ -153,6 +179,35 @@ jobs:
           echo ""
           echo "自检通过($verdict)。"
 
+      - name: 服务器资源预检
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          port: ${{ secrets.SERVER_PORT }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            set -eu
+            cd /opt/key-manager
+            disk_kb=$(df -Pk . | awk 'NR == 2 { print $4 }')
+            free_inodes=$(df -Pi . | awk 'NR == 2 { print $4 }')
+            available_kb=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)
+            echo "可用磁盘 $((disk_kb / 1024)) MiB；可用内存 $((available_kb / 1024)) MiB；剩余 inode $free_inodes"
+            [ "$disk_kb" -ge 2097152 ] || { echo "磁盘剩余不足 2 GiB，停止部署。"; exit 1; }
+            [ "$free_inodes" -ge 50000 ] || { echo "剩余 inode 不足 50000，停止部署。"; exit 1; }
+            [ "$available_kb" -ge 262144 ] || { echo "可用内存不足 256 MiB，停止部署。"; exit 1; }
+            command -v flock >/dev/null
+
+      - name: 上传预构建产物
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          port: ${{ secrets.SERVER_PORT }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          source: key-manager-build.tgz,key-manager-build.tgz.sha256,scripts/deploy-maintenance.mjs
+          target: /opt/key-manager-deployments/${{ github.run_id }}-${{ github.run_attempt }}
+
       - name: SSH 登录服务器并部署
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -161,23 +216,45 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
-            set -e
+            set -eu
             export PATH=$PATH:/usr/local/bin:/usr/bin
             export NODE_ENV=production
             cd /opt/key-manager
+            DEPLOY_ROOT=/opt/key-manager-deployments
+            DEPLOY_INPUT=$DEPLOY_ROOT/${{ github.run_id }}-${{ github.run_attempt }}
+            MAINTENANCE=$DEPLOY_INPUT/scripts/deploy-maintenance.mjs
+            exec 9>"$DEPLOY_ROOT/.deploy.lock"
+            flock -n 9 || { echo "已有部署任务运行，停止本次部署。"; exit 1; }
+            node "$MAINTENANCE" record "$DEPLOY_ROOT" "$DEPLOY_INPUT" prepared
+            finish_deployment() {
+              result=$?
+              trap - EXIT
+              if [ "$result" -ne 0 ]; then
+                node "$MAINTENANCE" record "$DEPLOY_ROOT" "$DEPLOY_INPUT" failed || true
+              fi
+              node "$MAINTENANCE" cleanup "$DEPLOY_ROOT" "$DEPLOY_INPUT" || echo "历史产物清理未完成，下次部署重试。"
+              flock -u 9
+              exit "$result"
+            }
+            trap finish_deployment EXIT
+            node "$MAINTENANCE" cleanup "$DEPLOY_ROOT" "$DEPLOY_INPUT"
+            echo "==> 校验并解包预构建产物"
+            (cd "$DEPLOY_INPUT" && sha256sum -c key-manager-build.tgz.sha256)
+            mkdir -p "$DEPLOY_INPUT/staging"
+            tar -xzf "$DEPLOY_INPUT/key-manager-build.tgz" -C "$DEPLOY_INPUT/staging"
+            test -s "$DEPLOY_INPUT/staging/dist/index.js"
+            test -s "$DEPLOY_INPUT/staging/dist/public/index.html"
             echo "==> 拉取最新代码"
-            # 国内服务器拉 GitHub 容易断流,放宽缓冲与低速超时,并重试多次
-            git config http.postBuffer 524288000
-            git config http.lowSpeedLimit 0
-            git config http.lowSpeedTime 600
+            # 限制拉取耗时，网络异常时保留运行中的版本。
             ok=0
-            for i in 1 2 3 4 5; do
-              if git fetch origin main; then ok=1; break; fi
+            for i in 1 2 3; do
+              if timeout 60s git fetch origin ${{ github.sha }}; then ok=1; break; fi
               echo "fetch 第 $i 次失败,5 秒后重试..."
               sleep 5
             done
             [ "$ok" = 1 ] || { echo "拉取代码多次失败,放弃"; exit 1; }
-            git reset --hard origin/main
+            # 与 runner 构建的提交保持一致，避免排队部署时取到更新的 main。
+            git reset --hard ${{ github.sha }}
             echo "==> 检查公司系统包签名密钥"
             SIGNING_KEY_PATH=/opt/key-manager-secrets/system-package-private.pem
             FRONTEND_RELEASE_DIR=/data/html
@@ -186,8 +263,10 @@ jobs:
               echo "公司系统包签名密钥不可读取：$SIGNING_KEY_PATH。请先在服务器安全部署与桌面端公钥配对的私钥。"
               exit 1
             fi
-            echo "==> 写入 .env 配置(从 GitHub Secrets)"
-            cat > .env <<EOF
+            if [ ! -f .env ]; then
+            echo "==> 首次创建 .env 配置(从 GitHub Secrets)"
+            umask 077
+            cat > "$DEPLOY_INPUT/bootstrap.env" <<EOF
             DATABASE_URL=${{ secrets.DATABASE_URL }}
             JWT_SECRET=${{ secrets.JWT_SECRET }}
             PORT=3000
@@ -206,14 +285,61 @@ jobs:
             SHROOM_SYSTEM_PACKAGE_SIGNING_KEY_PATH=$SIGNING_KEY_PATH
             SHROOM_FRONTEND_RELEASE_DIR=$FRONTEND_RELEASE_DIR
             EOF
+            mv "$DEPLOY_INPUT/bootstrap.env" .env
+            else
+              echo "==> 保留服务器现有 .env 配置"
+            fi
             echo "==> 安装依赖"
-            pnpm install --frozen-lockfile
+            # 迁移需要 drizzle-kit；同一 Node 版本及依赖输入复用安装结果。
+            dependency_hash=$(node "$MAINTENANCE" fingerprint "$PWD")
+            dependency_marker=$DEPLOY_ROOT/dependencies.sha256
+            if [ -f "$dependency_marker" ] && [ -f node_modules/.modules.yaml ] && [ -f node_modules/drizzle-kit/bin.cjs ] && [ "$(cat "$dependency_marker")" = "$dependency_hash" ]; then
+              echo "依赖未变化，跳过安装。"
+            else
+              timeout 180s env NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=384" pnpm install --frozen-lockfile --prod=false --network-concurrency=4 --child-concurrency=1
+              printf '%s\n' "$dependency_hash" > "$dependency_marker"
+            fi
             echo "==> 应用数据库迁移(仅应用已提交的迁移,不在服务器上重新生成,避免漂移导致重复建表失败)"
             # 表结构以已提交的迁移为准;新增表(如 deviceCodeRecords)由服务启动时的 ensure* 幂等自愈
-            pnpm db:migrate
-            echo "==> 构建项目"
-            pnpm build
-            echo "==> 重启服务"
-            SHROOM_SYSTEM_PACKAGE_SIGNING_KEY_PATH="$SIGNING_KEY_PATH" SHROOM_FRONTEND_RELEASE_DIR="$FRONTEND_RELEASE_DIR" pm2 restart key-manager --update-env
+            timeout 120s env NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=384" pnpm db:migrate
+            echo "==> 切换预构建产物"
+            HAD_PREVIOUS=0
+            if [ -d dist ]; then
+              mv dist "$DEPLOY_INPUT/previous-dist"
+              HAD_PREVIOUS=1
+            fi
+            if ! mv "$DEPLOY_INPUT/staging/dist" dist; then
+              if [ "$HAD_PREVIOUS" = 1 ]; then
+                mv "$DEPLOY_INPUT/previous-dist" dist
+              fi
+              exit 1
+            fi
+            echo "==> 重启并检查服务"
+            healthy=0
+            consecutive=0
+            if SHROOM_SYSTEM_PACKAGE_SIGNING_KEY_PATH="$SIGNING_KEY_PATH" SHROOM_FRONTEND_RELEASE_DIR="$FRONTEND_RELEASE_DIR" pm2 restart key-manager --update-env; then
+              for i in $(seq 1 15); do
+                if curl -fsS --max-time 3 http://127.0.0.1:3000/ -o "$DEPLOY_INPUT/health-index.html" && cmp -s "$DEPLOY_INPUT/health-index.html" dist/public/index.html; then
+                  consecutive=$((consecutive + 1))
+                  if [ "$consecutive" -ge 3 ]; then
+                    healthy=1
+                    break
+                  fi
+                else
+                  consecutive=0
+                fi
+                sleep 2
+              done
+            fi
+            if [ "$healthy" != 1 ]; then
+              echo "服务健康检查失败，保留失败产物并恢复上一版 dist。"
+              if [ "$HAD_PREVIOUS" = 1 ]; then
+                mv dist "$DEPLOY_INPUT/failed-dist"
+                mv "$DEPLOY_INPUT/previous-dist" dist
+                pm2 restart key-manager --update-env || true
+              fi
+              exit 1
+            fi
             pm2 save
+            node "$MAINTENANCE" record "$DEPLOY_ROOT" "$DEPLOY_INPUT" success
             echo "==> 部署完成"

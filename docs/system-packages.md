@@ -4,7 +4,7 @@
 
 部署前运行 `pnpm db:migrate`，应用 `0016_kind_puma.sql`、`0017_harsh_darkstar.sql`、`0018_brief_fixer.sql` 和 `0019_handy_gwen_stacy.sql`。通过 `SHROOM_SYSTEM_PACKAGE_SIGNING_KEY_PATH` 指定独立 Ed25519 私钥文件，公钥已固定在桌面软件的 `backend/extension-host/workspace/systemPackagePublicKey.pem`。私钥必须与该公钥配对、限制文件权限且不可放入仓库或安装包；未配置私钥时发布与客户目录接口会拒绝服务。数据库应允许至少 18 MiB 的单次包写入，HTTPS 反向代理也须允许相应请求体。
 
-生产部署会重写 `/opt/key-manager/.env`。先把现有配对私钥安全安装到生产机 `/opt/key-manager-secrets/system-package-private.pem`，使运行 PM2 的账号可读、其他账号不可读；不要生成一把与桌面端公钥不匹配的新私钥。部署流程会先检查该文件，再把绝对路径写入 `.env` 和 PM2 重启环境，因此手工只改 `.env` 不能持久解决问题。部署完成后，由 `super_admin` 在同一条待审提交上重新点击“确认发布”，确认状态变为“已发布”，再用目标客户的有效密钥刷新桌面系统列表。若仍是“待审核”，以页面内的发布失败提示排查，不必重新提交系统包。
+生产部署保留已有 `/opt/key-manager/.env`，缺少文件时才从 GitHub Secrets 创建。先把现有配对私钥安全安装到生产机 `/opt/key-manager-secrets/system-package-private.pem`，使运行 PM2 的账号可读、其他账号不可读；不要生成一把与桌面端公钥不匹配的新私钥。部署流程会先检查该文件，并显式传入 PM2 重启环境；首次创建 `.env` 时也写入该路径。部署完成后，由 `super_admin` 在同一条待审提交上重新点击“确认发布”，确认状态变为“已发布”，再用目标客户的有效密钥刷新桌面系统列表。若仍是“待审核”，以页面内的发布失败提示排查，不必重新提交系统包。
 
 接口挂载在 `/api/system-packages`：`POST /submissions` 提交包；`GET/POST/DELETE /staff-tokens` 管理员工令牌；`GET /staff/releases` 和 `GET /staff/releases/:systemId/:version` 使用员工 `Bearer` 令牌只读取得已发布包；`GET /admin/submissions`、`GET /admin/submissions/:id`、`POST /admin/submissions/:id/{publish,reject,revoke}` 审核；`POST /admin/releases/:id/activate` 由超级管理员指定客户当前版本。`GET /client/catalog` 与 `GET /client/packages/:id/:version` 使用 `Authorization: License <现有软件密钥>`。目录签名绑定密钥哈希并最多有效 24 小时；包另有内容摘要签名。客户必须关联启用中的客户记录，密钥状态须为已签发、已激活或已续期且未过期。
 
