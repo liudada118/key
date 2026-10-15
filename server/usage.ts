@@ -25,7 +25,7 @@ export function registerUsage(app: Express, dependencies = { authenticate: authe
   });
   route.use(async (req, res, next) => {
     try {
-      const match = /^License ([a-fA-F0-9]{32,8192})$/.exec(req.headers.authorization ?? "");
+      const match = /^License ([A-Za-z0-9+/=]{32,8192})$/.exec(req.headers.authorization ?? "");
       if (!match) throw new AgentSyncError(401, "INVALID_CREDENTIAL");
       const principal = await dependencies.authenticate(match[1]);
       if (res.writableEnded || res.destroyed) return;

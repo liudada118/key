@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertCircle, BarChart3, RefreshCw } from "lucide-react";
-import { usageFeatureLabels, usageFeatureLabel, usageSystemLabel, usageMetricText, usageDurationText as hours } from "@/lib/usagePresentation";
+import { usageFeatureLabels, usageFeatureLabel, usageActionLabel, usageErrorLabel, usageSystemLabel, usageMetricText, usageDurationText as hours } from "@/lib/usagePresentation";
 
 const eventLabels: Record<string, string> = {
   app_session_started: "软件启动", feature_exposed: "功能入口展示", feature_attempted: "功能操作发起",
@@ -109,7 +109,8 @@ export default function UsageAnalytics() {
               row.event.properties.algorithmId && `算法：${row.event.properties.algorithmId}`,
               row.event.properties.mode && `模式：${row.event.properties.mode === "playback" ? "回放" : "实时"}`,
               row.event.eventName !== "error_reported" && usageMetricText(row.event.properties),
-              row.event.properties.action && `动作：${row.event.properties.action}`,
+              row.event.properties.action && `动作：${usageActionLabel(row.event.properties.action)}`,
+              row.event.properties.errorCode && `原因：${usageErrorLabel(row.event.properties.errorCode)}`,
               row.event.properties.format && `格式：${row.event.properties.format}`,
               row.event.properties.connectionType && `连接：${row.event.properties.connectionType}`,
             ].filter(Boolean).join(" · ")}</p>

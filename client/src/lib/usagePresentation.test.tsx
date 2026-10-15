@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { usageDurationText, usageMetricText, usageSystemLabel } from "./usagePresentation";
+import { usageActionLabel, usageErrorLabel, usageFeatureLabel, usageDurationText, usageMetricText, usageSystemLabel } from "./usagePresentation";
 
 describe("usage dashboard metric meanings", () => {
+  it("presents new controls, frame summaries and confirmed rows in their own units", () => {
+    expect(usageFeatureLabel("tuning_gaussian")).toBe("高斯平滑");
+    expect(usageActionLabel("restore_update_display")).toBe("恢复 · 展示配置");
+    expect(usageMetricText({ featureId: "sensor_frames", count: 1500, durationMs: 30000 })).toContain("50.0 帧/秒");
+    expect(usageMetricText({ featureId: "sensor_frames", count: 1500, durationMs: 30000 })).toContain("不等于丢帧统计");
+    expect(usageMetricText({ featureId: "collection", count: 209, durationMs: 4200 })).toContain("已保存 209 条帧记录");
+    expect(usageMetricText({ featureId: "webpage_update", action: "download_ready", count: 1048576 })).toContain("1.00 MiB");
+    expect(usageActionLabel("future-action")).toBe("future-action");
+    expect(usageErrorLabel("DEVICE_LIMIT_REACHED")).toContain("电脑数量上限");
+    expect(usageErrorLabel("future-error")).toBe("future-error");
+  });
   it("keeps memory, frame gaps and long task durations in their actual units", () => {
     expect(usageMetricText({ featureId: "main_memory", count: 512 })).toBe("主进程峰值驻留内存：512 MiB");
     expect(usageDurationText(15000)).toBe("15 秒");

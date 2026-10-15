@@ -40,6 +40,13 @@ async function harness(overrides: Partial<Parameters<typeof registerUsage>[1]> =
 }
 
 describe("usage receiver contract", () => {
+  it("accepts bounded RSA license headers through the same authenticated receiver", async () => {
+    const key = Buffer.from(JSON.stringify({ payload: "fixture", signature: "fixture" })).toString("base64");
+    const { send, authenticate } = await harness();
+    expect((await send(undefined, { Authorization: `License ${key}` })).status).toBe(200);
+    expect(authenticate).toHaveBeenCalledWith(key);
+    expect((await send(undefined, { Authorization: `License ${"a".repeat(8193)}` })).status).toBe(401);
+  });
   it("acknowledges exact IDs only after durable completion under server identity", async () => {
     let commit!: () => void;
     const persisted = new Promise<void>(resolve => { commit = resolve; });
@@ -112,7 +119,7 @@ describe("usage receiver contract", () => {
       message: "token=hidden API_KEY=private License abcdef123456 test@example.com https://host/path?key=hidden {\"apiKey\":\"quoted-secret\"}",
       stack: "Error at C:\\Users\\person\\secret.js\n at /home/person/secret.js\n Bearer secretvalue",
     } });
-    const safe = JSON.stringify(sanitizeUsageEvent(event));
+    const safe = JSON.stringify(sanitizeUsageEvent(event).properties);
     for (const privateText of ["hidden", "private", "abcdef123456", "test@example.com", "host/path", "person", "secretvalue", "quoted-secret"]) expect(safe).not.toContain(privateText);
   });
 
@@ -121,7 +128,7 @@ describe("usage receiver contract", () => {
       message: '{"password":"private phrase \\"quoted\\" tail","apiKey":"key value"} token=bare_value',
       stack: "secret='single quoted phrase' authorization=\"Basic abc def\" licenseKey:'license value' harmless context",
     } });
-    const safe = JSON.stringify(sanitizeUsageEvent(event));
+    const safe = JSON.stringify(sanitizeUsageEvent(event).properties);
     for (const privateText of ["private", "phrase", "quoted", "tail", "key value", "bare_value", "single", "Basic", "abc", "def", "license value"]) expect(safe).not.toContain(privateText);
     expect(safe).toContain("harmless context");
   });

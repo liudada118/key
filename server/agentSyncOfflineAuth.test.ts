@@ -11,6 +11,7 @@ vi.mock('./db', () => ({ getDb: async () => ({
   insert: () => ({ values: (value: unknown) => { inserted.push(value); return { onDuplicateKeyUpdate: async () => {} }; } }),
 }) }));
 import { authenticateLicenseUpload } from './agentSyncStore';
+import { authenticateUsage } from './usageStore';
 
 /** Sign a synthetic offline code and return the database fields used by the actual authentication function. */
 function fixture() {
@@ -25,6 +26,14 @@ function fixture() {
 beforeEach(() => { selections = []; inserted = []; });
 
 describe('offline software license chat synchronization', () => {
+  it('authenticates usage with the real RSA validation and server-owned company/source identity', async () => {
+    const { activationCode, row } = fixture();
+    selections = [[row], [{ id: 303 }], [{ customerId: 42, customerName: 'Fixture Company', licenseName: 'Fixture License', licenseKeyId: 7 }]];
+    expect(await authenticateUsage(activationCode)).toEqual({ sourceId: 303, customerId: 42, customerName: 'Fixture Company' });
+    selections = [[{ ...row, status: 'REVOKED' }], [{ id: 303 }]];
+    await expect(authenticateUsage(activationCode)).rejects.toMatchObject({ status: 403 });
+    expect(selections).toHaveLength(1, 'denial stops before any usage attribution lookup');
+  });
   it('verifies the real RSA signature and uses a stable offline-key source rather than the company ID', async () => {
     const { activationCode, row } = fixture(); selections = [[row], [{ id: 303 }]];
     expect(await authenticateLicenseUpload(activationCode)).toEqual({ tenantId: 303, credentialId: 0 });

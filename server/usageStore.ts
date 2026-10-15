@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, asc, count, desc, eq, gte, lt, lte, sql, type SQL } from "drizzle-orm";
-import { agentChatSources, customers, licenseKeys, usageEvents, usageSources } from "../drizzle/schema";
+import { agentChatSources, customers, licenseKeys, offlineKeys, usageEvents, usageSources } from "../drizzle/schema";
 import { getDb } from "./db";
 import { AgentSyncError, authenticateLicenseUpload } from "./agentSyncStore";
 import { sanitizeUsageEvent, type UsageEvent, type UsageFilters } from "./usageSchema";
@@ -18,10 +18,13 @@ async function database() {
 export async function authenticateUsage(key: string): Promise<UsagePrincipal> {
   const principal = await authenticateLicenseUpload(key);
   const db = await database();
-  const [source] = await db.select({ customerId: licenseKeys.customerId, customerName: customers.name,
-    licenseName: licenseKeys.customerName, licenseKeyId: licenseKeys.id,
-  }).from(agentChatSources).innerJoin(licenseKeys, eq(agentChatSources.licenseKeyId, licenseKeys.id))
-    .leftJoin(customers, eq(customers.id, licenseKeys.customerId)).where(eq(agentChatSources.id, principal.tenantId)).limit(1);
+  const [source] = await db.select({ customerId: sql<number | null>`COALESCE(${licenseKeys.customerId}, ${offlineKeys.customerId})`, customerName: customers.name,
+    licenseName: sql<string | null>`COALESCE(${licenseKeys.customerName}, ${offlineKeys.customerName})`,
+    licenseKeyId: sql<number | null>`COALESCE(${licenseKeys.id}, ${offlineKeys.id})`,
+  }).from(agentChatSources).leftJoin(licenseKeys, eq(agentChatSources.licenseKeyId, licenseKeys.id))
+    .leftJoin(offlineKeys, eq(agentChatSources.offlineKeyId, offlineKeys.id))
+    .leftJoin(customers, sql`${customers.id} = COALESCE(${licenseKeys.customerId}, ${offlineKeys.customerId})`)
+    .where(eq(agentChatSources.id, principal.tenantId)).limit(1);
   if (!source) throw new AgentSyncError(401, "INVALID_LICENSE");
   return { sourceId: principal.tenantId, customerId: source.customerId,
     customerName: source.customerName || source.licenseName || `未绑定公司 · 密钥 #${source.licenseKeyId}` };
