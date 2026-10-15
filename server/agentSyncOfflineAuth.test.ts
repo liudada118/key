@@ -58,6 +58,10 @@ describe('offline software license chat synchronization', () => {
       selections = [[{ ...row, ...patch }]];
       await expect(authenticateLicenseUpload(activationCode)).rejects.toMatchObject({ status: 403 });
     }
+    selections = [[{ ...row, customerId: null }]];
+    await expect(authenticateLicenseUpload(activationCode)).rejects.toMatchObject({ status: 403, code: 'LICENSE_CUSTOMER_REQUIRED' });
+    selections = [[{ ...row, customerActive: false }]];
+    await expect(authenticateLicenseUpload(activationCode)).rejects.toMatchObject({ status: 403, code: 'LICENSE_CUSTOMER_INACTIVE' });
     expect(inserted).toHaveLength(0);
   });
 });

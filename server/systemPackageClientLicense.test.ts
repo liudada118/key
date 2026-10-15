@@ -1,6 +1,8 @@
 import { createSign, generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { verifyOfflineClientKey } from "./systemPackageClientLicense";
+import { aesEncrypt, generateLicenseKey } from "../shared/crypto";
+import { getGroupSensorTypes, getLicenseGroupKeys } from "../shared/licenseScopes";
+import { verifyOfflineClientKey, verifyOnlineClientKey } from "./systemPackageClientLicense";
 
 /** Issue a test-only offline code with the same RSA-SHA256 envelope as production. */
 function fixture(scope: string[] | "all" = ["seatpad"], deviceLimit = 0) {
@@ -16,7 +18,7 @@ function fixture(scope: string[] | "all" = ["seatpad"], deviceLimit = 0) {
 }
 
 describe("offline key access to company system packages", () => {
-  it("grants only the signed scope to the linked active customer", () => {
+  it("grants only the signed scope while preserving optional customer metadata", () => {
     const { activationCode, record } = fixture(["seatpad"]);
     expect(verifyOfflineClientKey(activationCode, record)).toEqual({ grant: { customerId: 42, scope: ["seatpad"] } });
   });
@@ -31,10 +33,26 @@ describe("offline key access to company system packages", () => {
     expect(verifyOfflineClientKey(activationCode, record)).toEqual({ grant: { customerId: 42, scope: ["seatpad"] } });
   });
 
-  it("rejects missing customer, inactive status, expiry, and mismatched records", () => {
+  it("grants a signed company system without customer association or active customer metadata", () => {
     const { activationCode, record } = fixture();
-    expect(verifyOfflineClientKey(activationCode, { ...record, customerId: null }).error).toBe("LICENSE_CUSTOMER_REQUIRED");
-    expect(verifyOfflineClientKey(activationCode, { ...record, customerActive: false }).error).toBe("LICENSE_CUSTOMER_INACTIVE");
+    expect(verifyOfflineClientKey(activationCode, { ...record, customerId: null }).grant)
+      .toEqual({ customerId: null, scope: ["seatpad"] });
+    const inactiveCustomer = { ...record, customerActive: false };
+    expect(verifyOfflineClientKey(activationCode, inactiveCustomer).grant?.scope).toEqual(["seatpad"]);
+  });
+
+  it("expands registered groups without including unrelated company systems", () => {
+    const group = getLicenseGroupKeys()[0];
+    const { activationCode, record } = fixture([`@group:${group}`]);
+    const result = verifyOfflineClientKey(activationCode, record);
+    expect(result.grant?.scope).toEqual(getGroupSensorTypes(group));
+    expect(result.grant?.scope).not.toContain("seatpad");
+    const invalid = fixture(["@group:unregistered-test-group"]);
+    expect(verifyOfflineClientKey(invalid.activationCode, invalid.record).error).toBe("LICENSE_INVALID");
+  });
+
+  it("rejects inactive status, expiry, and mismatched records", () => {
+    const { activationCode, record } = fixture();
     expect(verifyOfflineClientKey(activationCode, { ...record, status: "REVOKED" }).error).toBe("LICENSE_INACTIVE");
     expect(verifyOfflineClientKey(activationCode, { ...record, isDeleted: true }).error).toBe("LICENSE_INACTIVE");
     expect(verifyOfflineClientKey(activationCode, record, record.expireDate).error).toBe("LICENSE_EXPIRED");
@@ -48,5 +66,40 @@ describe("offline key access to company system packages", () => {
     envelope.signature = Buffer.from("invalid").toString("base64");
     const tampered = Buffer.from(JSON.stringify(envelope)).toString("base64");
     expect(verifyOfflineClientKey(tampered, { ...record, activationCode: tampered }).error).toBe("LICENSE_INVALID");
+  });
+});
+
+describe("online key access to company system packages", () => {
+  /** Prepare a registered online key without requiring a customer account. */
+  function online(scope: string[] | "all" = ["seatpad"]) {
+    const keyString = generateLicenseKey(scope, 1);
+    return { keyString, record: { keyString, status: "ISSUED", isDeleted: false,
+      customerId: null, expireTimestamp: Date.now() + 3600000 } };
+  }
+
+  it("uses the encrypted scope directly even when no customer is associated", () => {
+    const { keyString, record } = online();
+    expect(verifyOnlineClientKey(keyString, record)).toEqual({ grant: { customerId: null, scope: ["seatpad"] } });
+    expect(verifyOnlineClientKey(keyString, { ...record, customerId: 42 }).grant)
+      .toEqual({ customerId: 42, scope: ["seatpad"] });
+  });
+
+  it("preserves all and group scope semantics without granting unrelated company systems", () => {
+    const unlimited = online("all");
+    expect(verifyOnlineClientKey(unlimited.keyString, unlimited.record).grant?.scope).toBe("all");
+    const group = getLicenseGroupKeys()[0], grouped = online([`@group:${group}`]);
+    expect(verifyOnlineClientKey(grouped.keyString, grouped.record).grant?.scope).toEqual(getGroupSensorTypes(group));
+    const invalidKey = aesEncrypt(JSON.stringify({ date: Date.now() + 3600000, file: "@group:unregistered-test-group" }));
+    expect(verifyOnlineClientKey(invalidKey, { ...grouped.record, keyString: invalidKey }).error).toBe("LICENSE_INVALID");
+  });
+
+  it("rejects deleted, revoked, expired and mismatched records and invalid payloads", () => {
+    const { keyString, record } = online();
+    expect(verifyOnlineClientKey(keyString, { ...record, isDeleted: true }).error).toBe("LICENSE_INACTIVE");
+    expect(verifyOnlineClientKey(keyString, { ...record, status: "REVOKED" }).error).toBe("LICENSE_INACTIVE");
+    expect(verifyOnlineClientKey(keyString, record, record.expireTimestamp).error).toBe("LICENSE_EXPIRED");
+    expect(verifyOnlineClientKey(keyString, { ...record, expireTimestamp: NaN }).error).toBe("LICENSE_EXPIRED");
+    expect(verifyOnlineClientKey("invalid", record).error).toBe("LICENSE_INACTIVE");
+    expect(verifyOnlineClientKey("invalid", { ...record, keyString: "invalid" }).error).toBe("LICENSE_INVALID");
   });
 });

@@ -331,8 +331,6 @@ export default function OfflineKeyGen({ deviceMode = "unlimited", embedded = fal
     ? allSensors.length
     : selectedGroupKeys.length + selectedTypes.length;
   const hasSelection = isAll || selectedGroupKeys.length > 0 || selectedTypes.length > 0;
-  const needsCustomer = companySystems.length > 0
-    && (isAll || selectedTypes.some((value) => companySystems.some((item) => item.systemId === value)));
 
   const handleToggleAll = useCallback((checked: boolean) => {
     setIsAll(checked);
@@ -402,10 +400,6 @@ export default function OfflineKeyGen({ deviceMode = "unlimited", embedded = fal
     if (parsedDeviceLimit === null) { toast.error("请输入 1–10000 的整数作为电脑数量上限"); return; }
     if (!hasSelection) {
       toast.error("请至少选择一个传感器类型或一个分类");
-      return;
-    }
-    if (needsCustomer && !customerId) {
-      toast.error("请选择使用公司发布系统的客户");
       return;
     }
     generateMutation.mutate({
@@ -611,7 +605,7 @@ export default function OfflineKeyGen({ deviceMode = "unlimited", embedded = fal
               {/* 关联客户 */}
               <div>
                 <Label className="text-sm font-medium flex items-center gap-1">
-                  <Building2 className="h-3.5 w-3.5" /> 关联客户{needsCustomer ? "（公司系统必选）" : "（可选）"}
+                  <Building2 className="h-3.5 w-3.5" /> 关联客户（可选）
                 </Label>
                 {!showNewCustomer ? (
                   <div className="space-y-2 mt-1.5">

@@ -3,11 +3,10 @@ import { createHash, randomBytes, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { customers, licenseKeys, offlineKeys, rsaKeyPairs, systemPackageEvents, systemPackageRollouts, systemPackageSubmissions, systemPackageSubmitTokens, users } from "../drizzle/schema";
-import { decodeLicenseKey } from "../shared/crypto";
 import { getRegistrySensorTypes } from "../shared/licenseScopes";
 import { getDb } from "./db";
 import { sdk } from "./_core/sdk";
-import { type ClientLicenseResult, verifyOfflineClientKey } from "./systemPackageClientLicense";
+import { type ClientLicenseResult, verifyOfflineClientKey, verifyOnlineClientKey } from "./systemPackageClientLicense";
 
 const MAX_BODY = "18mb";
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
@@ -68,53 +67,44 @@ export function validateSystemPackage(input: any) {
 }
 
 /** Authenticate a registered online or offline software key before granting company packages. */
-async function clientCustomer(req: Request): Promise<ClientLicenseResult> {
+async function clientLicense(req: Request): Promise<ClientLicenseResult> {
   const key = /^License (\S{32,8192})$/.exec(req.get("authorization") || "")?.[1];
   if (!key) return { error: "LICENSE_INVALID" };
   const db = await getDb();
   if (!db) return { error: "STORAGE_UNAVAILABLE" };
   if (/^[a-fA-F0-9]{32,8192}$/.test(key)) {
-    const decoded = decodeLicenseKey(key, Date.now());
-    if (!decoded?.valid) return { error: "LICENSE_INVALID" };
-    const [row] = await db.select({ status: licenseKeys.status, expiresAt: licenseKeys.expireTimestamp,
-      customerId: licenseKeys.customerId, active: customers.isActive, deleted: licenseKeys.isDeleted })
-      .from(licenseKeys).leftJoin(customers, eq(customers.id, licenseKeys.customerId))
+    const [row] = await db.select({ keyString: licenseKeys.keyString, status: licenseKeys.status,
+      expireTimestamp: licenseKeys.expireTimestamp, customerId: licenseKeys.customerId, isDeleted: licenseKeys.isDeleted })
+      .from(licenseKeys)
       .where(eq(licenseKeys.keyString, key)).limit(1);
-    if (!row || row.deleted || !["ISSUED", "ACTIVATED", "RENEWED"].includes(row.status)) return { error: "LICENSE_INACTIVE" };
-    if (row.expiresAt <= Date.now()) return { error: "LICENSE_EXPIRED" };
-    if (!row.customerId) return { error: "LICENSE_CUSTOMER_REQUIRED" };
-    if (!row.active) return { error: "LICENSE_CUSTOMER_INACTIVE" };
-    return { grant: { customerId: row.customerId,
-      scope: decoded.isAllTypes ? "all" : decoded.sensorTypes || [] } };
+    return row ? verifyOnlineClientKey(key, row) : { error: "LICENSE_INACTIVE" };
   }
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(key)) return { error: "LICENSE_INVALID" };
   const [row] = await db.select({ activationCode: offlineKeys.activationCode, status: offlineKeys.status,
     isDeleted: offlineKeys.isDeleted, customerId: offlineKeys.customerId,
-    customerActive: customers.isActive, expireDate: offlineKeys.expireDate,
+    expireDate: offlineKeys.expireDate,
     publicKey: rsaKeyPairs.publicKey })
     .from(offlineKeys).innerJoin(rsaKeyPairs, eq(rsaKeyPairs.id, offlineKeys.rsaKeyPairId))
-    .leftJoin(customers, eq(customers.id, offlineKeys.customerId))
     .where(eq(offlineKeys.activationCode, key)).limit(1);
   return row ? verifyOfflineClientKey(key, row) : { error: "OFFLINE_KEY_NOT_REGISTERED" };
 }
 
-/** Resolve legacy audience-only releases before a system receives explicit rollout pointers. */
+/** Select the latest published release in a key's scope, ignoring historical customer audience metadata. */
 export function visibleReleases<T extends { systemId: string; audienceJson: string | null; status: string }>(
-  rows: T[], customerId: number, scope: "all" | string[] = "all"
+  rows: T[], _customerId: number | null, scope: "all" | string[] = "all"
 ): T[] {
   const found = new Map<string, T>();
   for (const row of rows) {
     if (row.status !== "published" || found.has(row.systemId)
       || (scope !== "all" && !scope.includes(row.systemId))) continue;
-    const audience: Audience = JSON.parse(row.audienceJson || "[]");
-    if (audience === "all" || (Array.isArray(audience) && audience.includes(customerId))) found.set(row.systemId, row);
+    found.set(row.systemId, row);
   }
   return Array.from(found.values());
 }
 
-/** Resolve one active version per system, preserving legacy audiences until that system receives a rollout pointer. */
+/** Resolve authorized versions while preserving explicit rollback and withdrawal pointers. */
 export function activeReleases<T extends { id: number; systemId: string; audienceJson: string | null; status: string }>(
-  rows: T[], rollouts: Rollout[], customerId: number, scope: "all" | string[] = "all"
+  rows: T[], rollouts: Rollout[], customerId: number | null, scope: "all" | string[] = "all"
 ): T[] {
   const bySystem = new Map<string, T[]>();
   for (const row of rows) {
@@ -578,7 +568,7 @@ export function registerSystemPackages(app: Express) {
 
   router.get("/client/catalog", async (req, res) => {
     try {
-      const auth = await clientCustomer(req);
+      const auth = await clientLicense(req);
       if (!auth.grant) { res.status(auth.error === "STORAGE_UNAVAILABLE" ? 503 : 403).json({ error: auth.error }); return; }
       const client = auth.grant;
       const db = await getDb(); if (!db) throw new Error("STORAGE_UNAVAILABLE");
@@ -605,7 +595,7 @@ export function registerSystemPackages(app: Express) {
 
   router.get("/client/packages/:id/:version", async (req, res) => {
     try {
-      const auth = await clientCustomer(req);
+      const auth = await clientLicense(req);
       if (!auth.grant) { res.status(auth.error === "STORAGE_UNAVAILABLE" ? 503 : 403).json({ error: auth.error }); return; }
       const client = auth.grant;
       const db = await getDb(); if (!db) { res.status(503).json({ error: "STORAGE_UNAVAILABLE" }); return; }

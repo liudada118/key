@@ -36,6 +36,7 @@ export default function SystemPackages() {
   const [issuedToken, setIssuedToken] = useState("");
   const [updateConflict, setUpdateConflict] = useState<{ package: any; currentVersion: number } | null>(null);
   const [staffTokens, setStaffTokens] = useState<{ id: number; expiresAt: string; revokedAt: string | null }[]>([]);
+  const defaultVersion = detail?.rollouts.find((item) => item.customerId === 0)?.versionId;
 
   /** Refresh only metadata; full package bytes stay on the server until a reviewer opens one item. */
   const refresh = async (silent = false) => {
@@ -145,7 +146,7 @@ export default function SystemPackages() {
   return <main className="mx-auto max-w-5xl space-y-6 p-4" translate="no">
     <header className="flex items-center gap-3"><ShieldCheck className="size-6 text-primary" /><div>
       <h1 className="text-2xl font-semibold">公司系统库</h1>
-      <p className="text-sm text-muted-foreground">员工提交只进入审核队列；发布后按客户授权自动交付。</p>
+      <p className="text-sm text-muted-foreground">员工提交只进入审核队列；发布后，软件凭密钥中已授权的系统自动获取，无需额外关联客户。</p>
     </div></header>
     <section className="space-y-3 rounded-xl border bg-card p-5">
       <h2 className="font-medium">软件直接提交凭证</h2>
@@ -206,7 +207,8 @@ export default function SystemPackages() {
           {detail.algorithms.map((algorithm) => <p key={algorithm.id}>算法：{algorithm.name} ({algorithm.id})</p>)}
         </div></div></div>
       {detail.status === "pending" && <>
-        <fieldset className="space-y-2"><legend className="font-medium">发布范围</legend>
+        <fieldset className="space-y-2"><legend className="font-medium">版本投放范围</legend>
+          <p className="text-sm text-muted-foreground">这里选择哪些客户使用此版本；系统使用权限由密钥决定，开密钥时无需再选择客户。</p>
           <label className="mr-5"><input type="radio" checked={audience === "all"} onChange={() => setAudience("all")} /> 全部客户</label>
           <label><input type="radio" checked={audience === "selected"} onChange={() => setAudience("selected")} /> 指定客户</label>
           {audience === "selected" && <div className="max-h-40 overflow-auto rounded border p-3">{customers.data?.map((item) => <label key={item.id} className="mr-5 block py-1">
@@ -228,8 +230,8 @@ export default function SystemPackages() {
           <button type="button" disabled={busy} className="rounded-md border px-4 py-2" onClick={() => void act("revoke")}>紧急撤回此版本</button></div>
         <section className="space-y-3 rounded-lg border p-4" aria-label="系统版本发布范围">
           <h3 className="font-medium">版本推广与客户回退</h3>
-          <p className="text-sm text-muted-foreground">已审核的包保持不变；选旧版本可只为指定客户回退。客户软件仍须持有此系统 ID 的有效密钥授权。</p>
-          <p className="text-sm">全体默认版本：#{detail.rollouts.find((item) => item.customerId === 0)?.versionId ?? "沿用原发布范围"}；单独指定客户：{detail.rollouts.filter((item) => item.customerId !== 0).length} 位</p>
+          <p className="text-sm text-muted-foreground">客户关联仅用于版本推广和回退。软件凭有效密钥中的系统授权获取；未关联客户时，使用全体默认版本，未设置默认版本则使用最新已发布版本。</p>
+          <p className="text-sm">全体默认版本：{defaultVersion ? `#${defaultVersion}` : "最新已发布版本"}；单独指定客户：{detail.rollouts.filter((item) => item.customerId !== 0).length} 位</p>
           <label className="block text-sm">目标版本
             <select className="ml-2 rounded border bg-background p-2" value={releaseVersion ?? ""} onChange={(event) => setReleaseVersion(Number(event.target.value))}>
               {detail.versions.map((item) => <option key={item.id} value={item.id}>#{item.id} · {item.name}</option>)}
@@ -239,7 +241,7 @@ export default function SystemPackages() {
             <label className="mr-5 text-sm"><input type="radio" checked={releaseAudience === "selected"} onChange={() => setReleaseAudience("selected")} /> 指定客户</label>
             <label className="text-sm"><input type="radio" checked={releaseAudience === "all"} onChange={() => setReleaseAudience("all")} /> 全部客户（清除单独指定）</label>
             {releaseAudience === "selected" && <div className="max-h-40 overflow-auto rounded border p-3">{customers.data?.map((item) => <label key={item.id} className="mr-5 block py-1 text-sm">
-              <input type="checkbox" checked={releaseCustomers.includes(item.id)} onChange={(event) => setReleaseCustomers((current) => event.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id))} /> {item.name} (#{item.id}) · 当前 #{detail.rollouts.find((row) => row.customerId === item.id)?.versionId ?? detail.rollouts.find((row) => row.customerId === 0)?.versionId ?? "原发布范围"}
+              <input type="checkbox" checked={releaseCustomers.includes(item.id)} onChange={(event) => setReleaseCustomers((current) => event.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id))} /> {item.name} (#{item.id}) · 当前 {detail.rollouts.find((row) => row.customerId === item.id)?.versionId ?? detail.rollouts.find((row) => row.customerId === 0)?.versionId ?? "最新已发布版本"}
             </label>)}</div>}
           </fieldset>
           <button type="button" disabled={busy || !releaseVersion || (releaseAudience === "selected" && !releaseCustomers.length)}

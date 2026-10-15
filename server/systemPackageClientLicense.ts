@@ -1,20 +1,41 @@
 import { createVerify } from "node:crypto";
+import { decodeLicenseKey } from "../shared/crypto";
 import { expandLicenseFile } from "../shared/licenseScopes";
 
-export type ClientLicenseGrant = { customerId: number; scope: "all" | string[] };
+export type ClientLicenseGrant = { customerId: number | null; scope: "all" | string[] };
 export type ClientLicenseResult = { grant: ClientLicenseGrant; error?: never } | { grant?: never; error: string };
+
+export type OnlineClientKeyRecord = {
+  keyString: string;
+  status: string;
+  isDeleted: boolean;
+  customerId: number | null;
+  expireTimestamp: number;
+};
 
 export type OfflineClientKeyRecord = {
   activationCode: string;
   status: string;
   isDeleted: boolean;
   customerId: number | null;
-  customerActive: boolean | null;
   expireDate: number;
   publicKey: string;
 };
 
-/** Verify a registered offline code against its issuing RSA key and current customer entitlement. */
+/** Grant company systems from the online key's scope; customer association is optional metadata. */
+export function verifyOnlineClientKey(
+  key: string, record: OnlineClientKeyRecord, now = Date.now()
+): ClientLicenseResult {
+  if (record.keyString !== key || record.isDeleted || !["ISSUED", "ACTIVATED", "RENEWED"].includes(record.status)) {
+    return { error: "LICENSE_INACTIVE" };
+  }
+  if (!Number.isFinite(record.expireTimestamp) || record.expireTimestamp <= now) return { error: "LICENSE_EXPIRED" };
+  const decoded = decodeLicenseKey(key, now);
+  if (!decoded.valid) return { error: "LICENSE_INVALID" };
+  return { grant: { customerId: record.customerId, scope: decoded.isAllTypes ? "all" : decoded.sensorTypes || [] } };
+}
+
+/** Verify a registered offline code's signature and scope without requiring customer association. */
 export function verifyOfflineClientKey(
   key: string, record: OfflineClientKeyRecord, now = Date.now()
 ): ClientLicenseResult {
@@ -23,8 +44,6 @@ export function verifyOfflineClientKey(
     return { error: "LICENSE_INACTIVE" };
   }
   if (!Number.isFinite(record.expireDate) || record.expireDate <= now) return { error: "LICENSE_EXPIRED" };
-  if (!record.customerId) return { error: "LICENSE_CUSTOMER_REQUIRED" };
-  if (!record.customerActive) return { error: "LICENSE_CUSTOMER_INACTIVE" };
   try {
     const envelope = JSON.parse(Buffer.from(key, "base64").toString("utf8"));
     if (typeof envelope?.payload !== "string" || typeof envelope?.signature !== "string"

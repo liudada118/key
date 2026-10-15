@@ -33,16 +33,38 @@ describe("system package publishing contract", () => {
       sha256: createHash("sha256").update(JSON.stringify(reserved)).digest("hex") })).toThrow("SYSTEM_ID_RESERVED");
   });
 
-  it("filters by customer and falls back to an older release after revocation", () => {
+  it("filters published versions by license scope without requiring historical audience membership", () => {
     const rows = [
       { systemId: "seatpad", status: "revoked", audienceJson: '"all"', version: 3 },
       { systemId: "seatpad", status: "published", audienceJson: "[42]", version: 2 },
       { systemId: "seatpad", status: "published", audienceJson: '"all"', version: 1 },
     ];
     expect(visibleReleases(rows, 42)[0].version).toBe(2);
-    expect(visibleReleases(rows, 7)[0].version).toBe(1);
+    expect(visibleReleases(rows, 7)[0].version).toBe(2);
+    expect(visibleReleases(rows, null, ["seatpad"])[0].version).toBe(2);
     expect(visibleReleases(rows, 42, [])).toEqual([]);
     expect(visibleReleases(rows, 42, ["seatpad"])[0].version).toBe(2);
+  });
+
+  it("lets unlinked authorized keys fetch customer-only published systems without bypassing rollout withdrawal", () => {
+    const rows = [
+      { id: 4, systemId: "other", status: "published", audienceJson: "[7]" },
+      { id: 3, systemId: "seatpad", status: "published", audienceJson: "[42]" },
+      { id: 2, systemId: "seatpad", status: "published", audienceJson: "[42]" },
+      { id: 1, systemId: "seatpad", status: "published", audienceJson: "[42]" },
+    ];
+    expect(activeReleases(rows, [], null, ["seatpad"]).map((item) => item.id)).toEqual([3]);
+    expect(activeReleases(rows, [{ systemId: "seatpad", customerId: 42, versionId: 2 }], null, ["seatpad"])
+      .map((item) => item.id)).toEqual([3]);
+    expect(activeReleases(rows, [{ systemId: "seatpad", customerId: 0, versionId: 1 }], null, ["seatpad"])
+      .map((item) => item.id)).toEqual([1]);
+    expect(activeReleases(rows, [{ systemId: "seatpad", customerId: 0, versionId: 99 }], null, ["seatpad"]))
+      .toEqual([]);
+    const withdrawn = [{ ...rows[1], status: "revoked" }, ...rows.slice(2)];
+    expect(activeReleases(withdrawn, [{ systemId: "seatpad", customerId: 0, versionId: 3 }], null, ["seatpad"]))
+      .toEqual([]);
+    expect(activeReleases(rows, [], null, [])).toEqual([]);
+    expect(activeReleases(rows, [], null, ["hand"])).toEqual([]);
   });
 
   it("resolves customer overrides before the global release and never leaks inactive versions", () => {

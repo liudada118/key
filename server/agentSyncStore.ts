@@ -144,6 +144,9 @@ export async function authenticateLicenseUpload(key: string) {
       .leftJoin(customers, eq(offlineKeys.customerId, customers.id)).where(eq(offlineKeys.activationCode, key)).limit(1);
     if (!row) throw new AgentSyncError(401, "INVALID_LICENSE");
     const verified = verifyOfflineClientKey(key, row, now);
+    // ⚠️ Package downloads use license scope, while offline uploads still require an active customer attribution.
+    if (!row.customerId) throw new AgentSyncError(403, "LICENSE_CUSTOMER_REQUIRED");
+    if (!row.customerActive) throw new AgentSyncError(403, "LICENSE_CUSTOMER_INACTIVE");
     if (!verified.grant) throw new AgentSyncError(verified.error === "LICENSE_INVALID" ? 401 : 403, verified.error);
     return { tenantId: await resolveSource(db, { offlineKeyId: row.id }), credentialId: 0 };
   }

@@ -115,7 +115,6 @@ export default function GenerateKey({ deviceMode = "unlimited", embedded = false
             <KeyGenerator
               sensorGroups={availableGroups}
               licenseGroups={licenseGroups}
-              companySystemIds={companySystems.map((item) => item.systemId)}
               preselectedSystemId={preselectedSystemId}
               deviceMode={deviceMode}
               mode="single"
@@ -125,7 +124,6 @@ export default function GenerateKey({ deviceMode = "unlimited", embedded = false
             <KeyGenerator
               sensorGroups={availableGroups}
               licenseGroups={licenseGroups}
-              companySystemIds={companySystems.map((item) => item.systemId)}
               preselectedSystemId={preselectedSystemId}
               deviceMode={deviceMode}
               mode="batch"
@@ -141,14 +139,12 @@ export default function GenerateKey({ deviceMode = "unlimited", embedded = false
 function KeyGenerator({
   sensorGroups,
   licenseGroups,
-  companySystemIds,
   preselectedSystemId,
   mode,
   deviceMode,
 }: {
   sensorGroups: SensorGroup[];
   licenseGroups: LicenseGroupOption[];
-  companySystemIds: string[];
   preselectedSystemId: string;
   mode: "single" | "batch";
   deviceMode: LicenseDeviceMode;
@@ -160,8 +156,6 @@ function KeyGenerator({
   /** 勾了「整个分类」的分类 key —— 密钥里存 `@group:<key>` 令牌，以后往分类里加系统会自动生效 */
   const [selectedGroupKeys, setSelectedGroupKeys] = useState<string[]>([]);
   const [isAll, setIsAll] = useState(false);
-  const [customerId, setCustomerId] = useState("");
-  const { data: customers } = trpc.customers.all.useQuery();
   /** Select a just-published system once it reaches the available list. */
   useEffect(() => {
     if (preselectedSystemId && sensorGroups.some((group) => group.items.some((item) => item.value === preselectedSystemId))) {
@@ -254,7 +248,6 @@ function KeyGenerator({
         ...selectedTypes.map((value) => sensorLabelMap[value] || value),
       ].join("、");
   const hasSelection = isAll || selectedGroupKeys.length > 0 || selectedTypes.length > 0;
-  const needsCustomer = companySystemIds.length > 0 && (isAll || selectedTypes.some((value) => companySystemIds.includes(value)));
 
   // 全选/取消全选
   const handleToggleAll = useCallback((checked: boolean) => {
@@ -365,7 +358,6 @@ function KeyGenerator({
     if (mode === "batch" && (!count || parseInt(count) < 1)) {
       return toast.error("请输入生成数量");
     }
-    if (needsCustomer && !customerId) return toast.error("请选择使用公司发布系统的客户");
     // 不强制绑定合同时直接签发，不再弹「确认生成方式」。
     // policy 还没回来时按需要绑定处理（弹窗），避免这一瞬间绕过服务端策略。
     if (contractPolicy && !contractPolicy.requireContract) {
@@ -379,7 +371,6 @@ function KeyGenerator({
     if (parsedDeviceLimit === null) return toast.error("请输入 1–10000 的整数作为电脑数量上限");
     const commonInput = {
       sensorTypes: getSensorTypesParam(),
-      ...(customerId ? { customerId: Number(customerId) } : {}),
       days: parseInt(days),
       category,
       deviceLimit: parsedDeviceLimit,
@@ -403,7 +394,6 @@ function KeyGenerator({
       [remark.trim(), note?.trim()].filter(Boolean).join("；") || undefined;
     const commonInput = {
       sensorTypes: getSensorTypesParam(),
-      ...(customerId ? { customerId: Number(customerId) } : {}),
       days: parseInt(days),
       category,
       deviceLimit: parsedDeviceLimit,
@@ -628,16 +618,6 @@ function KeyGenerator({
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              {needsCustomer && <div className="space-y-1.5">
-                <Label htmlFor={`package-customer-${mode}`}>使用此系统的客户</Label>
-                <select id={`package-customer-${mode}`} className="w-full rounded-md border bg-background p-2 text-sm" value={customerId}
-                  onChange={(event) => setCustomerId(event.target.value)}>
-                  <option value="">请选择客户</option>
-                  {(customers || []).map((customer) =>
-                    <option key={customer.id} value={customer.id}>{customer.name}</option>)}
-                </select>
-                <p className="text-xs text-muted-foreground">公司系统同时检查密钥选项、客户发布范围和有效期。</p>
-              </div>}
               {/* 有效天数 */}
               <div className="space-y-1.5">
                 <Label className="text-foreground text-sm">有效天数</Label>

@@ -22,6 +22,7 @@ let browser;
 let page;
 const user = { id: 91, name: "合成验收账号", role: "super_admin", email: "fixture@example.invalid" };
 const groups = [{ group: "精密", icon: "", items: [{ label: "手部检测", value: "hand" }] }];
+const companySystem = { systemId: "company-seat-fixture", name: "公司坐垫展示" };
 const limits = { online: 3, offline: 3 };
 
 /** Produce populated lists, including a v4 offline code whose allowance was lifted. */
@@ -74,7 +75,7 @@ async function mockRequests(route) {
     const results = procedures.map((procedure, index) => ({ result: { data: superjson.serialize(reply(procedure, superjson.deserialize(inputs[index] || { json: null }))) } }));
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(url.searchParams.get("batch") ? results : results[0]) });
   }
-  if (url.pathname.startsWith("/api/system-packages")) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ systems: [] }) });
+  if (url.pathname.startsWith("/api/system-packages")) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ systems: [companySystem] }) });
   if (url.pathname.startsWith("/api/")) {
     unexpected.push(url.pathname);
     return route.fulfill({ status: 500, contentType: "application/json", body: "{}" });
@@ -118,8 +119,8 @@ async function waitForRequest(procedure, start = 0, predicate = () => true) {
 }
 
 /** 通过实际生成按钮提交所选合成系统，并取得送往接口的参数。 */
-async function generate(procedure) {
-  await page.getByText("手部检测", { exact: true }).click();
+async function generate(procedure, systemName = "手部检测") {
+  await page.getByText(systemName, { exact: true }).click();
   const start = requests.length;
   await page.locator("main").last().getByRole("button", { name: /^生成(?:限制)?密钥$|^生成离线激活码$/ }).click();
   return (await waitForRequest(procedure, start)).input;
@@ -200,6 +201,30 @@ try {
   assert.equal(await page.locator('input[id*="device-limit"]').count(), 0, "ordinary offline generation cannot enable computer limits");
   assert.equal((await generate("offlineKeys.generate")).deviceLimit || 0, 0);
 
+  for (const pathname of ["/generate", "/limited-generate", "/offline-keys", "/limited-generate?type=offline"]) {
+    const offline = pathname.includes("offline");
+    const start = requests.length;
+    await page.goto(origin + pathname);
+    await page.getByText(companySystem.name, { exact: true }).waitFor();
+    assert.equal(await page.locator('[id^="package-customer-"]').count(), 0, "a published system must not introduce an extra customer selector");
+    assert.equal(await page.getByText("（公司系统必选）", { exact: false }).count(), 0);
+    const input = await generate(offline ? "offlineKeys.generate" : "keys.generate", companySystem.name);
+    assert.deepEqual([].concat(input.sensorTypes), [companySystem.systemId], "the published system is granted by the key scope");
+    assert.equal(input.customerId, undefined, "company system generation does not require a linked customer");
+    if (!offline) assert(!requests.slice(start).some(item => item.procedure === "customers.all"), "online generation has no customer-list dependency");
+    if (pathname === "/limited-generate") {
+      await page.getByRole("tab", { name: "批量生成", exact: true }).click();
+      await page.getByText(companySystem.name, { exact: true }).click();
+      await page.locator('input[max="500"]').fill("2");
+      const batchStart = requests.length;
+      await page.locator("main").last().getByRole("button", { name: "批量生成", exact: true }).click();
+      const input = (await waitForRequest("keys.batchGenerate", batchStart)).input;
+      assert.deepEqual([].concat(input.sensorTypes), [companySystem.systemId]);
+      assert.equal(input.customerId, undefined);
+      assert.equal(input.deviceLimit, 1);
+    }
+  }
+
   await page.goto(`${origin}/keys`);
   await waitForRequest("keys.list", 0, input => input?.deviceMode === "unlimited");
   await exportCategory("unlimited");
@@ -261,7 +286,7 @@ try {
   }
   assert.deepEqual(errors, []);
   assert.deepEqual(unexpected, []);
-  console.log("Limited key UI checks passed: real navigation, ordinary/limited online and offline generation, integer validation, populated list and CSV/JSON filters, refreshed categories after editing, v4 offline display, role guard, keyboard tabs, 390px layout; all API responses synthetic.");
+  console.log("Limited key UI checks passed: real navigation, ordinary/limited online and offline generation, published systems without customer selection, integer validation, populated list and CSV/JSON filters, refreshed categories after editing, v4 offline display, role guard, keyboard tabs, 390px layout; all API responses synthetic.");
   console.log(`Synthetic UI screenshots: ${artifacts}`);
 } catch (error) {
   await page?.screenshot({ path: path.join(artifacts, "failure.png"), fullPage: true });
