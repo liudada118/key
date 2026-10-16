@@ -8,7 +8,8 @@ import { generateLicenseKey } from "../shared/crypto";
 
 let testDb: ReturnType<typeof drizzle>;
 vi.mock("./db", () => ({ getDb: async () => testDb }));
-import { authenticateUsage, getUsageEventContext, getUsageOverview, listUsageEvents, persistUsageBatch } from "./usageStore";
+import { authenticateUsage, getUsageAnalysisSummary, getUsageEventContext, getUsageOverview,
+  listUsageCustomerUsage, listUsageEvents, listUsageFeatureUsage, listUsageSystems, persistUsageBatch } from "./usageStore";
 const adminUrl = process.env.USAGE_TEST_ADMIN_URL;
 
 describe.skipIf(!adminUrl)("usage MySQL transaction and attribution", () => {
@@ -135,5 +136,113 @@ describe.skipIf(!adminUrl)("usage MySQL transaction and attribution", () => {
     }
     await pool.query("UPDATE licenseKeys SET status='ACTIVATED', customerId=3 WHERE id=?", [insert.insertId]);
     await expect(authenticateUsage(key)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("groups a feature across event types, deduplicates operations and counts customers only once", async () => {
+    const installationId = randomUUID(), sessionId = randomUUID();
+    const make = (eventName: UsageEvent["eventName"], properties: UsageEvent["properties"]) => event({
+      eventName, properties, installationId, sessionId, occurredAt: "2026-10-01T10:00:00Z" });
+    const source = { sourceId: 501, customerId: 41, customerName: "Feature Company" };
+    await persistUsageBatch(source, [
+      ...Array.from({ length: 3 }, () => make("feature_exposed", { featureId: "export" })),
+      make("feature_attempted", { featureId: "export", operationId: "export-1", result: "success" }),
+      make("feature_attempted", { featureId: "export", operationId: "export-1" }),
+      make("export_result", { featureId: "export", operationId: "export-1", result: "success" }),
+      make("export_result", { featureId: "export", operationId: "export-1", result: "success" }),
+      make("export_result", { featureId: "export", operationId: "export-2", result: "failure" }),
+      make("export_result", { featureId: "export", operationId: "export-3", result: "cancelled" }),
+      make("export_result", { featureId: "export", operationId: "export-4" }),
+      make("error_reported", { featureId: "export", count: 5 }),
+    ]);
+    await persistUsageBatch({ ...source, sourceId: 502 }, [make("export_result", { featureId: "export", operationId: "export-1", result: "success" })]);
+    await persistUsageBatch({ sourceId: 503, customerId: 42, customerName: "Exposure Only" }, [make("feature_exposed", { featureId: "export" })]);
+    const scoped = { ...filters, from: "2026-10-01", to: "2026-10-01", identityScope: "company" as const };
+    const features = await listUsageFeatureUsage({ filters: scoped, page: 1, sort: "usage", category: "business" });
+    expect(features.total).toBe(1);
+    expect(features.items[0]).toMatchObject({ featureId: "export", observedCustomers: 2, usedCustomers: 1,
+      attempts: 1, exposures: 4, successes: 2, failures: 1, cancelled: 1, unknownResults: 1, uses: 2, errors: 5 });
+    const customers = await listUsageCustomerUsage({ filters: { ...scoped, featureId: "export" }, page: 1, sort: "recent" });
+    expect(customers.total).toBe(2);
+    expect(customers.items.find(row => row.customerKey === "customer:42")).toMatchObject({ usedCustomers: 0, uses: 0, lastUsedMs: null });
+    expect((await getUsageAnalysisSummary(scoped))).toMatchObject({ observedCustomers: 2, usedCustomers: 1, errorCustomers: 1, errors: 5 });
+  });
+
+  it("does not call attempts, failures, visits or performance summaries successful business use", async () => {
+    const scope = { sourceId: 511, customerId: 43, customerName: "No Confirmed Use" };
+    const make = (eventName: UsageEvent["eventName"], properties: UsageEvent["properties"]) => event({ eventName, properties, occurredAt: "2026-10-02T12:00:00Z" });
+    await persistUsageBatch(scope, [make("feature_exposed", { featureId: "collection" }),
+      make("feature_attempted", { featureId: "collection" }), make("collection_started", { featureId: "collection" }),
+      make("collection_finished", { featureId: "collection", durationMs: 30000 }),
+      make("export_result", { featureId: "export", result: "failure" }),
+      make("system_entered", { systemType: "hand" }),
+      make("monitoring_usage_summary", { featureId: "monitoring", durationMs: 0 }),
+      make("usage_session_summary", { featureId: "foreground", durationMs: 60000 }),
+      make("usage_session_summary", { featureId: "main_memory", count: 512 }),
+      make("error_reported", { count: 3 }),
+    ]);
+    const scoped = { ...filters, from: "2026-10-02", to: "2026-10-02" };
+    expect(await getUsageAnalysisSummary(scoped)).toMatchObject({ usedCustomers: 0, monitoringMs: 0,
+      monitoringSamples: 1, collectionMs: 30000, errors: 3 });
+    const diagnostic = await listUsageFeatureUsage({ filters: scoped, page: 1, sort: "usage", category: "diagnostic" });
+    expect(diagnostic.items.map(item => item.featureId).sort()).toEqual(["foreground", "main_memory"]);
+    expect(diagnostic.items.every(item => item.usedCustomers === 0)).toBe(true);
+    const business = await listUsageFeatureUsage({ filters: scoped, page: 1, sort: "usage", category: "business" });
+    expect(business.items.find(item => item.featureId === "collection")).toMatchObject({ uses: 0, successes: 0, unknownResults: 1 });
+  });
+
+  it("keeps legacy feature identity consistent across detail, event and system queries", async () => {
+    const scope = { sourceId: 521, customerId: 44, customerName: "Legacy Feature" };
+    await persistUsageBatch(scope, [
+      event({ eventName: "collection_finished", occurredAt: "2026-10-03T12:00:00Z", properties: { result: "success", durationMs: 12000, systemType: "custom.0123456789abcdef" } }),
+      event({ eventName: "error_reported", occurredAt: "2026-10-03T12:01:00Z", properties: { module: "collection", count: 7 } }),
+    ]);
+    const scoped = { ...filters, from: "2026-10-03", to: "2026-10-03", featureId: "collection" };
+    expect(await getUsageAnalysisSummary(scoped)).toMatchObject({ usedCustomers: 1, collectionMs: 12000, errors: 0, monitoringSamples: 0 });
+    const list = await listUsageEvents({ filters: scoped, errorsOnly: false, page: 1 });
+    expect(list.total).toBe(1); expect(list.items[0].event.eventName).toBe("collection_finished");
+    const systems = await listUsageSystems(scoped);
+    expect(systems).toHaveLength(1); expect(systems[0].systemType).toBe("custom.0123456789abcdef");
+    expect((await listUsageEvents({ filters: { ...scoped, systemType: "hand" }, errorsOnly: false, page: 1 })).total).toBe(0);
+  });
+
+  it("separates company identities from each unbound source without silently changing legacy scope", async () => {
+    const payload = () => event({ occurredAt: "2026-10-04T12:00:00Z" });
+    for (const sourceId of [531, 532]) await persistUsageBatch({ sourceId, customerId: null, customerName: "Unbound" }, [payload()]);
+    await persistUsageBatch({ sourceId: 533, customerId: 45, customerName: "Company" }, [payload()]);
+    const scoped = { ...filters, from: "2026-10-04", to: "2026-10-04" };
+    expect((await getUsageAnalysisSummary(scoped)).observedCustomers).toBe(3);
+    expect((await getUsageAnalysisSummary({ ...scoped, identityScope: "company" })).observedCustomers).toBe(1);
+    expect((await getUsageAnalysisSummary({ ...scoped, identityScope: "unbound" })).observedCustomers).toBe(2);
+    const unbound = await listUsageCustomerUsage({ filters: { ...scoped, identityScope: "unbound" }, page: 1, sort: "recent" });
+    expect(unbound.items.map(row => row.customerKey).sort()).toEqual(["source:531", "source:532"]);
+  });
+
+  it("paginates grouped features and customers while keeping totals full-scope and clamping stale pages", async () => {
+    for (let index = 0; index < 21; index++) await persistUsageBatch({ sourceId: 551 + index, customerId: 100 + index, customerName: `Page Company ${index}` }, [
+      event({ occurredAt: "2026-10-05T12:00:00Z", eventName: "analysis_tool_used", properties: { featureId: `feature_test_${index}`, result: "success" } }),
+    ]);
+    const scoped = { ...filters, from: "2026-10-05", to: "2026-10-05" };
+    const first = await listUsageFeatureUsage({ filters: scoped, page: 1, sort: "usage", category: "business" });
+    const last = await listUsageFeatureUsage({ filters: scoped, page: 99, sort: "usage", category: "business" });
+    expect(first.total).toBe(21); expect(first.items).toHaveLength(20);
+    expect(last.page).toBe(2); expect(last.items).toHaveLength(1);
+    const clients = await listUsageCustomerUsage({ filters: scoped, page: 2, sort: "recent" });
+    expect(clients.total).toBe(21); expect(clients.items).toHaveLength(1);
+    expect((await getUsageAnalysisSummary(scoped)).usedCustomers).toBe(21);
+    const empty = await getUsageAnalysisSummary({ ...scoped, customerKey: "customer:99999" });
+    expect(empty).toMatchObject({ observedCustomers: 0, usedCustomers: 0, monitoringMs: 0, monitoringSamples: 0, errors: 0 });
+  });
+
+  it("keeps UTC boundaries, versions, environments and system filters aligned in every view", async () => {
+    const scope = { sourceId: 581, customerId: 130, customerName: "Boundary" };
+    await persistUsageBatch(scope, [
+      event({ occurredAt: "2026-10-06T23:59:59Z", properties: { featureId: "export", result: "success", systemType: "hand" } }),
+      event({ occurredAt: "2026-10-07T00:00:00Z", properties: { featureId: "export", result: "success", systemType: "hand" } }),
+      event({ occurredAt: "2026-10-06T22:00:00Z", environment: "production", properties: { featureId: "export", result: "success", systemType: "hand" } }),
+    ]);
+    const scoped = { ...filters, from: "2026-10-06", to: "2026-10-06", appVersion: "1.2.3", systemType: "hand" };
+    expect((await getUsageAnalysisSummary(scoped)).observedEvents).toBe(1);
+    expect((await listUsageFeatureUsage({ filters: scoped, page: 1, sort: "usage", category: "business" })).items[0].successes).toBe(1);
+    expect((await listUsageCustomerUsage({ filters: { ...scoped, appVersion: "missing" }, page: 1, sort: "recent" })).items).toHaveLength(0);
   });
 });

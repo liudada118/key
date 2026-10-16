@@ -2,7 +2,8 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { router, superAdminProcedure } from "./_core/trpc";
 import { usageFiltersSchema } from "./usageSchema";
-import { getUsageEventContext, getUsageOverview, listUsageCustomers, listUsageEvents } from "./usageStore";
+import { getUsageAnalysisSummary, getUsageEventContext, getUsageOverview, listUsageCustomerUsage,
+  listUsageCustomers, listUsageEvents, listUsageFeatureUsage, listUsageSystems } from "./usageStore";
 
 const usageAdmin = superAdminProcedure.use(({ ctx, next }) => {
   if (!ctx.user.isActive) throw new TRPCError({ code: "FORBIDDEN", message: "账号已被禁用" });
@@ -10,9 +11,19 @@ const usageAdmin = superAdminProcedure.use(({ ctx, next }) => {
   return next({ ctx });
 });
 
+const listInput = z.object({ filters: usageFiltersSchema,
+  page: z.number().int().min(1).max(100000).default(1),
+  sort: z.enum(["recent", "usage", "errors"]).default("recent"),
+});
+
 export const usageRouter = router({
   customers: usageAdmin.query(() => listUsageCustomers()),
   overview: usageAdmin.input(usageFiltersSchema).query(({ input }) => getUsageOverview(input)),
+  summary: usageAdmin.input(usageFiltersSchema).query(({ input }) => getUsageAnalysisSummary(input)),
+  customerUsage: usageAdmin.input(listInput.strict()).query(({ input }) => listUsageCustomerUsage(input)),
+  featureUsage: usageAdmin.input(listInput.extend({ category: z.enum(["all", "business", "diagnostic"]).default("business") }).strict())
+    .query(({ input }) => listUsageFeatureUsage(input)),
+  systems: usageAdmin.input(usageFiltersSchema).query(({ input }) => listUsageSystems(input)),
   events: usageAdmin.input(z.object({ filters: usageFiltersSchema, errorsOnly: z.boolean().default(false),
     page: z.number().int().min(1).max(100000).default(1),
   }).strict()).query(({ input }) => listUsageEvents(input)),

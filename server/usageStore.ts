@@ -4,6 +4,8 @@ import { agentChatSources, customers, licenseKeys, offlineKeys, usageEvents, usa
 import { getDb } from "./db";
 import { AgentSyncError, authenticateLicenseUpload } from "./agentSyncStore";
 import { sanitizeUsageEvent, type UsageEvent, type UsageFilters } from "./usageSchema";
+import { usageAnalysisColumns, usageCustomerKey, usageFeatureCategory,
+  usageFeatureId, usageSystemType } from "./usageAnalyticsSql";
 
 export type UsagePrincipal = { sourceId: number; customerId: number | null; customerName: string };
 
@@ -83,7 +85,10 @@ function whereFilters(filters: UsageFilters): SQL | undefined {
   if (filters.customerKey) conditions.push(eq(customerKey, filters.customerKey));
   if (filters.appVersion) conditions.push(eq(usageEvents.appVersion, filters.appVersion));
   if (filters.module) conditions.push(eq(usageEvents.module, filters.module));
-  if (filters.featureId) conditions.push(eq(usageEvents.featureId, filters.featureId));
+  if (filters.featureId) conditions.push(eq(usageFeatureId, filters.featureId));
+  if (filters.identityScope === "company") conditions.push(sql`${usageSources.customerId} IS NOT NULL`);
+  if (filters.identityScope === "unbound") conditions.push(sql`${usageSources.customerId} IS NULL`);
+  if (filters.systemType) conditions.push(eq(usageSystemType, filters.systemType));
   return and(...conditions);
 }
 
@@ -92,6 +97,67 @@ export async function listUsageCustomers() {
   const db = await database();
   return db.select({ customerKey, customerName: sql<string>`MAX(${usageSources.customerName})` }).from(usageSources)
     .groupBy(customerKey).orderBy(asc(customerKey));
+}
+
+/** Full-scope summaries are independent of the currently visible list page. */
+export async function getUsageAnalysisSummary(filters: UsageFilters) {
+  const db = await database();
+  const { observedCustomers, usedCustomers, errorCustomers, installations, observedEvents,
+    errors, uses, successes, failures, monitoringMs, monitoringSamples, collectionMs, collectionSamples } = usageAnalysisColumns;
+  const [summary] = await db.select({ observedCustomers, usedCustomers, errorCustomers, installations,
+    observedEvents, errors, uses, successes, failures, monitoringMs, monitoringSamples, collectionMs, collectionSamples })
+    .from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(whereFilters(filters));
+  return summary;
+}
+
+export type UsageAnalysisListInput = { filters: UsageFilters; page: number; sort: "recent" | "usage" | "errors" };
+const analysisPageSize = 20;
+
+/** Group product features before pagination, never add overlapping event-row customer counts. */
+export async function listUsageFeatureUsage(input: UsageAnalysisListInput & { category: "all" | "business" | "diagnostic" }) {
+  const db = await database();
+  const where = and(whereFilters(input.filters), sql`${usageFeatureId} IS NOT NULL`,
+    input.category === "all" ? undefined : eq(usageFeatureCategory, input.category));
+  const [{ total }] = await db.select({ total: sql<number>`COUNT(DISTINCT ${usageFeatureId})`.mapWith(Number) })
+    .from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(where);
+  const page = Math.min(input.page, Math.max(1, Math.ceil(total / analysisPageSize)));
+  const order = input.sort === "errors" ? usageAnalysisColumns.errors
+    : input.sort === "recent" ? usageAnalysisColumns.lastUsedMs : usageAnalysisColumns.usedCustomers;
+  const items = await db.select({ featureId: usageFeatureId, category: usageFeatureCategory, ...usageAnalysisColumns })
+    .from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(where)
+    .groupBy(usageFeatureId, usageFeatureCategory).orderBy(desc(order), asc(usageFeatureId))
+    .limit(analysisPageSize).offset((page - 1) * analysisPageSize);
+  return { items, total, page, pageSize: analysisPageSize };
+}
+
+/** Customer drill-down uses identical feature semantics, including legacy events without a feature ID. */
+export async function listUsageCustomerUsage(input: UsageAnalysisListInput) {
+  const db = await database(), where = whereFilters(input.filters);
+  const [{ total }] = await db.select({ total: sql<number>`COUNT(DISTINCT ${usageCustomerKey})`.mapWith(Number) })
+    .from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(where);
+  const page = Math.min(input.page, Math.max(1, Math.ceil(total / analysisPageSize)));
+  const usageOrder = input.filters.featureId && input.filters.featureId !== "monitoring"
+    ? usageAnalysisColumns.uses : usageAnalysisColumns.monitoringMs;
+  const order = input.sort === "errors" ? usageAnalysisColumns.errors
+    : input.sort === "usage" ? usageOrder : usageAnalysisColumns.lastUsedMs;
+  const items = await db.select({ customerKey: usageCustomerKey,
+    customerName: sql<string>`MAX(${usageSources.customerName})`, ...usageAnalysisColumns,
+    systemCount: sql<number>`COUNT(DISTINCT ${usageSystemType})`.mapWith(Number),
+  }).from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(where)
+    .groupBy(usageCustomerKey).orderBy(desc(order), asc(usageCustomerKey))
+    .limit(analysisPageSize).offset((page - 1) * analysisPageSize);
+  return { items, total, page, pageSize: analysisPageSize };
+}
+
+/** Bounded system detail for the selected feature/customer; anonymous IDs remain installation-scoped. */
+export async function listUsageSystems(filters: UsageFilters) {
+  const db = await database();
+  return db.select({ systemType: usageSystemType, ...summaryColumns,
+    entries: sql<number>`SUM(IF(${usageEvents.eventName} = 'system_entered', 1, 0))`.mapWith(Number),
+    monitoringMs: usageAnalysisColumns.monitoringMs, monitoringSamples: usageAnalysisColumns.monitoringSamples,
+  }).from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId))
+    .where(and(whereFilters(filters), sql`${usageSystemType} IS NOT NULL`))
+    .groupBy(usageSystemType).orderBy(desc(usageAnalysisColumns.monitoringMs), asc(usageSystemType)).limit(100);
 }
 
 /** Aggregate all matching events in SQL; displayed top lists state their explicit cap. */

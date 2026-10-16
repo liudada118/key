@@ -1394,6 +1394,15 @@ export async function getAllUsers() {
   }).from(users).orderBy(desc(users.createdAt));
 }
 
+export async function getContractSubmitterDepartments() {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db.select({
+    name: users.name,
+    departmentName: departments.name,
+  }).from(users).leftJoin(departments, eq(users.departmentId, departments.id));
+}
+
 // ===== RSA Key Pair Helpers =====
 
 /** 生成 RSA 密钥对并存储到数据库 */

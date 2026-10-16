@@ -45,6 +45,7 @@ import {
   User,
   Mail,
   MapPin,
+  RefreshCw,
 } from "lucide-react";
 import { useState, useMemo } from "react";
 import { toast } from "sonner";
@@ -66,11 +67,23 @@ export default function CustomerManagement() {
   });
 
   const pageSize = 15;
+  const utils = trpc.useUtils();
 
-  const { data, isLoading, refetch } = trpc.customers.list.useQuery({
+  const { data, isLoading, isFetching, error, refetch } = trpc.customers.list.useQuery({
     page,
     pageSize,
     search: search || undefined,
+  });
+
+  const syncMutation = trpc.customers.syncFeishu.useMutation({
+    onSuccess: async (result) => {
+      setSearch("");
+      setSearchInput("");
+      setPage(1);
+      await utils.customers.invalidate();
+      toast.success(`同步完成：新增 ${result.created} 个客户，已有 ${result.existing} 个${result.skipped ? `，跳过 ${result.skipped} 条无效客户名称` : ""}`);
+    },
+    onError: (err) => toast.error(err.message),
   });
 
   const createMutation = trpc.customers.create.useMutation({
@@ -156,15 +169,22 @@ export default function CustomerManagement() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">客户管理</h1>
           <p className="text-muted-foreground mt-1">管理客户信息，生成密钥时可关联客户</p>
         </div>
-        <Button onClick={openCreate} className="gap-2">
-          <Plus className="h-4 w-4" />
-          添加客户
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" className="h-11 gap-2" disabled={!user || syncMutation.isPending}
+            aria-busy={syncMutation.isPending} onClick={() => syncMutation.mutate()}>
+            <RefreshCw key="icon" aria-hidden="true" className={`h-4 w-4 ${syncMutation.isPending ? "animate-spin motion-reduce:animate-none" : ""}`} />
+            同步飞书客户
+          </Button>
+          <Button onClick={openCreate} className="h-11 gap-2">
+            <Plus key="icon" aria-hidden="true" className="h-4 w-4" />
+            添加客户
+          </Button>
+        </div>
       </div>
 
       {/* 搜索栏 */}
@@ -214,7 +234,21 @@ export default function CustomerManagement() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {isLoading ? (
+          {data?.contractMetadataError && (
+            <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 text-sm">
+              <p className="text-destructive">{data.contractMetadataError}</p>
+              <Button variant="outline" className="h-11 gap-2" disabled={isFetching} aria-busy={isFetching} onClick={() => refetch()}>
+                <RefreshCw key="icon" aria-hidden="true" className={`h-4 w-4 ${isFetching ? "animate-spin motion-reduce:animate-none" : ""}`} />
+                重试
+              </Button>
+            </div>
+          )}
+          {error ? (
+            <div role="alert" className="flex flex-wrap items-center justify-between gap-3 py-6">
+              <p className="text-sm text-destructive">客户读取失败：{error.message}</p>
+              <Button variant="outline" onClick={() => refetch()}>重试</Button>
+            </div>
+          ) : isLoading ? (
             <div className="flex items-center justify-center py-12">
               <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
             </div>
@@ -222,15 +256,16 @@ export default function CustomerManagement() {
             <div className="text-center py-12 text-muted-foreground">
               <Building2 className="h-12 w-12 mx-auto mb-4 opacity-30" />
               <p>暂无客户数据</p>
-              <p className="text-sm mt-1">点击"添加客户"创建第一个客户</p>
             </div>
           ) : (
             <>
               <div className="rounded-md border">
-                <Table>
+                <Table className="min-w-[1000px]">
                   <TableHeader>
                     <TableRow>
                       <TableHead>客户名称</TableHead>
+                      <TableHead className="min-w-36">部门</TableHead>
+                      <TableHead className="min-w-28">发起人</TableHead>
                       <TableHead>联系人</TableHead>
                       <TableHead>联系电话</TableHead>
                       <TableHead>邮箱</TableHead>
@@ -242,7 +277,27 @@ export default function CustomerManagement() {
                   <TableBody>
                     {data.items.map((customer) => (
                       <TableRow key={customer.id}>
-                        <TableCell className="font-medium">{customer.name}</TableCell>
+                        <TableCell className="min-w-48 max-w-72 whitespace-normal break-words font-medium">{customer.name}</TableCell>
+                        <TableCell className="max-w-56 whitespace-normal break-words">
+                          {data.contractMetadataError ? <span className="text-muted-foreground">暂不可用</span> : (
+                            <div className="space-y-1">
+                              {customer.departmentNames.map(name => <div key={name}>{name}</div>)}
+                              {customer.unmatchedDepartmentCount > 0 && (
+                                <div className="text-muted-foreground" title={`${customer.unmatchedDepartmentCount} 份合同未匹配到唯一的系统所属部门`}>待匹配部门</div>
+                              )}
+                              {customer.contractCount === 0 && <span className="text-muted-foreground">-</span>}
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell className="max-w-40 whitespace-normal break-words">
+                          {data.contractMetadataError ? <span className="text-muted-foreground">暂不可用</span> : (
+                            <div className="space-y-1">
+                              {customer.initiatorNames.map(name => <div key={name}>{name}</div>)}
+                              {customer.missingInitiatorCount > 0 && <div className="text-muted-foreground">待补发起人</div>}
+                              {customer.contractCount === 0 && <span className="text-muted-foreground">-</span>}
+                            </div>
+                          )}
+                        </TableCell>
                         <TableCell>{customer.contactPerson || "-"}</TableCell>
                         <TableCell className="font-mono text-sm">{customer.phone || "-"}</TableCell>
                         <TableCell className="text-sm">{customer.email || "-"}</TableCell>
@@ -262,7 +317,7 @@ export default function CustomerManagement() {
                               onClick={() => openEdit(customer)}
                               className="gap-1"
                             >
-                              <Edit className="h-3.5 w-3.5" />
+                              <Edit key="icon" aria-hidden="true" className="h-3.5 w-3.5" />
                               编辑
                             </Button>
                             <Button
@@ -272,16 +327,11 @@ export default function CustomerManagement() {
                               className="gap-1"
                             >
                               {customer.isActive ? (
-                                <>
-                                  <ToggleRight className="h-3.5 w-3.5" />
-                                  禁用
-                                </>
+                                <ToggleRight key="icon" aria-hidden="true" className="h-3.5 w-3.5" />
                               ) : (
-                                <>
-                                  <ToggleLeft className="h-3.5 w-3.5" />
-                                  启用
-                                </>
+                                <ToggleLeft key="icon" aria-hidden="true" className="h-3.5 w-3.5" />
                               )}
+                              {customer.isActive ? "禁用" : "启用"}
                             </Button>
                             <Button
                               variant="ghost"
@@ -290,7 +340,7 @@ export default function CustomerManagement() {
                               disabled={deleteMutation.isPending}
                               className="gap-1 text-destructive hover:text-destructive"
                             >
-                              <Trash2 className="h-3.5 w-3.5" />
+                              <Trash2 key="icon" aria-hidden="true" className="h-3.5 w-3.5" />
                               删除
                             </Button>
                           </div>
@@ -455,7 +505,7 @@ export default function CustomerManagement() {
               disabled={createMutation.isPending || updateMutation.isPending}
             >
               {(createMutation.isPending || updateMutation.isPending) && (
-                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                <Loader2 key="icon" aria-hidden="true" className="h-4 w-4 animate-spin mr-2" />
               )}
               {editingCustomer ? "保存修改" : "创建客户"}
             </Button>

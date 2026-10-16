@@ -13,6 +13,7 @@ import {
   getAuditLogs,
   getAllCustomers,
   getAllUsers,
+  getContractSubmitterDepartments,
   getCustomerById,
   getCustomerKeyCount,
   getCustomers,
@@ -107,10 +108,13 @@ import {
 import {
   getFeishuContracts,
   getFeishuContractSubmitterScope,
+  fillFeishuContractBusinessUnits,
   isContractBindingRequired,
   isFeishuContractsConfigured,
 } from "./feishuContracts";
 import { notifyFeishuKeyRequest } from "./feishuKeyRequestWebhook";
+import { syncFeishuCustomersForUser } from "./feishuCustomerSync";
+import { enrichCustomersWithContractMetadata } from "./feishuCustomerMetadata";
 import { sendFeishuKeyRequestApprovalCard } from "./feishuKeyRequestCard";
 import { reviewKeyGenerationRequest } from "./keyGenerationRequestApproval";
 import { prepareOnlineKeyGeneration } from "./onlineKeyGeneration";
@@ -419,6 +423,15 @@ export const appRouter = router({
 
   // ===== 客户管理 =====
   customers: router({
+    syncFeishu: protectedProcedure.mutation(async ({ ctx }) => {
+      try {
+        return await syncFeishuCustomersForUser(ctx.user);
+      } catch (error) {
+        if (error instanceof TRPCError) throw error;
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "客户同步失败，未完成的变更已回滚", cause: error });
+      }
+    }),
+
     list: protectedProcedure
       .input(
         z.object({
@@ -430,13 +443,14 @@ export const appRouter = router({
       )
       .query(async ({ ctx, input }) => {
         const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
-        return getCustomers({
+        const result = await getCustomers({
           userIds,
           page: input.page,
           pageSize: input.pageSize,
           search: input.search,
           isActive: input.isActive,
         });
+        return { ...result, ...await enrichCustomersWithContractMetadata(result.items, ctx.user) };
       }),
 
     all: protectedProcedure.query(async ({ ctx }) => {
@@ -1607,12 +1621,16 @@ export const appRouter = router({
               page: input.page,
               pageSize: input.pageSize,
             });
+            const departmentAccounts = result.items.some(
+              (item) => !item.businessUnit?.trim() && Boolean(item.submitter?.trim())
+            ) ? await getContractSubmitterDepartments() : [];
+            const items = fillFeishuContractBusinessUnits(result.items, departmentAccounts);
             const keyCounts = await getGeneratedKeyCountsByContractNos(
-              result.items.map((item) => item.contractNo)
+              items.map((item) => item.contractNo)
             );
             return {
               ...result,
-              items: result.items.map((item) => ({
+              items: items.map((item) => ({
                 ...item,
                 generatedKeyCount: keyCounts[item.contractNo] ?? 0,
               })),

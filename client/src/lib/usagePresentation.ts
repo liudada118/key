@@ -1,7 +1,8 @@
 import type { UsageEvent } from "../../../server/usageSchema";
+import { SENSOR_LABELS } from "@shared/licenseScopes";
 
 export const usageFeatureLabels: Record<string, string> = {
-  application: "软件运行", monitoring: "传感器监测", collection: "数据采集", export: "CSV 导出", playback: "历史回放",
+  application: "软件运行", system_navigation: "展示系统访问", monitoring: "传感器监测", collection: "数据采集", export: "CSV 导出", playback: "历史回放",
   connection: "设备连接", halow_listener: "HaLow 接收服务", algorithms: "算法运行", agent: "Agent 任务", agent_tool: "Agent 工具",
   workspace: "展示系统配置", workspace_copy: "系统复制", workspace_bindings: "算法绑定", agent_settings: "Agent 配置与应用",
   foreground: "窗口前台时长", background: "窗口后台时长", interaction: "交互活跃窗口", renderer_long_task: "页面长任务",
@@ -63,7 +64,34 @@ export function usageFeatureLabel(value?: string | null) { return value ? usageF
 /** Custom identifiers distinguish systems within one installation without publishing customer names. */
 export function usageSystemLabel(value: string) {
   if (/^(custom|copy)\.[a-f0-9]{16}$/.test(value)) return `${value.startsWith("copy.") ? "系统副本" : "自定义系统"} · ${value.split(".")[1]}`;
-  return value === "custom" ? "自定义系统（旧版未区分）" : value === "copy" ? "系统副本（旧版未区分）" : value;
+  return value === "custom" ? "自定义系统（旧版未区分）" : value === "copy" ? "系统副本（旧版未区分）" : SENSOR_LABELS[value] || value;
+}
+
+type FeatureMetric = { featureId: string; category: string; uses: number; successes: number; entries?: number;
+  observedEvents: number; monitoringMs: number; monitoringSamples: number; collectionMs: number; collectionSamples: number };
+
+/** Product metrics use domain evidence, never the sum of exposure/attempt/result event counts. */
+export function usageFeaturePrimaryMetric(row: FeatureMetric) {
+  if (row.category === "diagnostic") return { label: "运行记录", value: `${row.observedEvents} 条` };
+  if (row.featureId === "monitoring") return { label: "监测时长", value: row.monitoringSamples ? usageDurationText(row.monitoringMs) : "未上报时长" };
+  if (row.featureId === "collection") return { label: "成功采集", value: `${row.successes} 次` };
+  if (row.featureId === "export") return { label: "成功导出", value: `${row.successes} 次` };
+  if (row.featureId === "playback") return { label: "开始回放", value: `${row.uses} 次` };
+  if (row.featureId === "system_navigation") return { label: "系统访问记录", value: `${row.entries ?? 0} 条` };
+  return { label: "已确认使用", value: `${row.uses} 次` };
+}
+
+export const usageEventLabels: Record<UsageEvent["eventName"], string> = {
+  app_session_started: "软件启动", feature_exposed: "功能入口展示", feature_attempted: "功能操作发起",
+  system_entered: "进入系统", device_connection_result: "设备连接结果", monitoring_usage_summary: "监测时长汇总",
+  collection_started: "开始采集", collection_finished: "采集结束", export_result: "导出结果", playback_started: "开始回放",
+  algorithm_result: "算法结果", analysis_tool_used: "分析工具操作", custom_system_saved: "系统配置操作结果",
+  agent_task_result: "Agent 操作结果", usage_session_summary: "运行与使用摘要", error_reported: "错误上报",
+};
+
+/** Match the UTC date buckets used by the API instead of mixing them with browser-local timestamps. */
+export function usageTime(value: string | number | Date | null | undefined) {
+  return value == null ? "未观测到" : new Date(value).toLocaleString("zh-CN", { timeZone: "UTC", hour12: false });
 }
 
 /** Keep short observed durations visible instead of rounding them to zero hours. */

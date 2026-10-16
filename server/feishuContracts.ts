@@ -23,6 +23,21 @@ type FeishuTableListResponse = {
   };
 };
 
+type FeishuWikiNodeResponse = {
+  code: number;
+  msg?: string;
+  data?: {
+    node?: { obj_token?: string; obj_type?: string };
+  };
+};
+
+type ContractSource = {
+  kind: "base" | "sheet" | "wiki";
+  token: string;
+  tableId?: string;
+  viewId?: string;
+};
+
 type FeishuBitableRecord = {
   record_id: string;
   fields?: Record<string, unknown>;
@@ -92,6 +107,30 @@ export function filterFeishuContractsBySubmitter(
   );
 }
 
+export function fillFeishuContractBusinessUnits<T extends {
+  submitter: string | null;
+  businessUnit: string | null;
+}>(items: T[], accounts: { name: string | null; departmentName: string | null }[]): T[] {
+  const departmentsByName = new Map<string, string | null>();
+  for (const account of accounts) {
+    const name = normalizePersonName(account.name || "");
+    if (!name) continue;
+    const department = account.departmentName?.trim() || null;
+    if (!departmentsByName.has(name)) {
+      departmentsByName.set(name, department);
+    } else if (departmentsByName.get(name) !== department) {
+      // An ambiguous name must remain unresolved, even if a later account matches.
+      departmentsByName.set(name, null);
+    }
+  }
+
+  return items.map((item) => {
+    if (item.businessUnit?.trim()) return item;
+    const department = departmentsByName.get(normalizePersonName(item.submitter || ""));
+    return department ? { ...item, businessUnit: department } : item;
+  });
+}
+
 function normalizeContractNo(value: string) {
   return value.normalize("NFKC").trim().toLocaleLowerCase();
 }
@@ -145,12 +184,16 @@ function isEnabled() {
 }
 
 export function isFeishuContractsConfigured() {
-  return Boolean(
-    isEnabled()
-      && process.env.FEISHU_APP_ID
-      && process.env.FEISHU_APP_SECRET
-      && (getBaseAppToken() || getSpreadsheetToken())
-  );
+  try {
+    return Boolean(
+      isEnabled()
+        && process.env.FEISHU_APP_ID
+        && process.env.FEISHU_APP_SECRET
+        && getContractSource()
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -167,36 +210,45 @@ export function isContractBindingRequired() {
   return raw === "1" || raw === "true";
 }
 
-function getBaseAppToken() {
-  const raw = process.env.FEISHU_CONTRACT_BASE_APP_TOKEN
-    || process.env.FEISHU_CONTRACT_BASE_URL
-    || process.env.FEISHU_CONTRACT_SPREADSHEET_URL
-    || "";
-  const trimmed = raw.trim();
-  if (!trimmed) return "";
+function getContractSource(): ContractSource | null {
+  const candidates: [string | undefined, ContractSource["kind"]][] = [
+    [process.env.FEISHU_CONTRACT_BASE_APP_TOKEN, "base"],
+    [process.env.FEISHU_CONTRACT_BASE_URL, "base"],
+    [process.env.FEISHU_CONTRACT_SPREADSHEET_TOKEN, "sheet"],
+    [process.env.FEISHU_CONTRACT_SPREADSHEET_URL, "sheet"],
+  ];
+  const configured = candidates.find(([value]) => value?.trim());
+  if (!configured) return null;
+  const raw = configured[0]!.trim();
+  const source: ContractSource = { kind: configured[1], token: raw };
 
-  try {
-    const url = new URL(trimmed);
-    const fromPath = url.pathname.match(/\/base\/([^/?#]+)/)?.[1];
-    return fromPath || url.searchParams.get("app_token") || trimmed;
-  } catch {
-    return trimmed;
+  if (!/^[\w-]+$/.test(raw)) {
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      throw new Error("飞书合同表地址无效，请使用原表的 /base/、/sheets/ 或 /wiki/ 链接");
+    }
+    const match = url.pathname.match(/^\/(base|sheets|wiki)\/([^/]+)\/?$/);
+    const queryToken = url.searchParams.get("app_token") || url.searchParams.get("spreadsheetToken");
+    if (url.pathname.startsWith("/share/") || (!match && !queryToken)) {
+      throw new Error("飞书合同表需要原表链接（/base/、/sheets/ 或 /wiki/），不支持 /share/ 分享视图链接");
+    }
+    if (match) {
+      source.kind = match[1] === "sheets" ? "sheet" : match[1] as "base" | "wiki";
+    } else {
+      source.kind = url.searchParams.has("app_token") ? "base" : "sheet";
+    }
+    source.token = match?.[2] || queryToken!;
+    source.tableId = url.searchParams.get("table")?.trim() || undefined;
+    source.viewId = url.searchParams.get("view")?.trim() || undefined;
   }
-}
 
-function getSpreadsheetToken() {
-  const raw = process.env.FEISHU_CONTRACT_SPREADSHEET_TOKEN || process.env.FEISHU_CONTRACT_SPREADSHEET_URL || "";
-  const trimmed = raw.trim();
-  if (!trimmed) return "";
-
-  try {
-    const url = new URL(trimmed);
-    if (url.pathname.includes("/base/")) return "";
-    const fromPath = url.pathname.match(/\/sheets\/([^/?#]+)/)?.[1];
-    return fromPath || url.searchParams.get("spreadsheetToken") || trimmed;
-  } catch {
-    return trimmed;
-  }
+  source.tableId = process.env.FEISHU_CONTRACT_TABLE_ID?.trim()
+    || process.env.FEISHU_CONTRACT_BASE_TABLE_ID?.trim()
+    || source.tableId;
+  source.viewId = process.env.FEISHU_CONTRACT_VIEW_ID?.trim() || source.viewId;
+  return source;
 }
 
 function getContractRange() {
@@ -211,12 +263,13 @@ function getCacheTtlMs() {
   return Number.isFinite(value) && value >= 0 ? value : DEFAULT_CACHE_TTL_MS;
 }
 
-async function readJson<T>(url: string, init: RequestInit): Promise<T> {
+async function readJson<T extends { code: number }>(url: string, init: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  if (!response.ok) {
-    throw new Error(`Feishu API HTTP ${response.status}: ${await response.text()}`);
+  const data = await response.json() as T;
+  if (!response.ok && !data.code) {
+    throw new Error(`Feishu API HTTP ${response.status}`);
   }
-  return await response.json() as T;
+  return data;
 }
 
 async function getTenantAccessToken() {
@@ -300,7 +353,7 @@ function mapBitableRecordsToContracts(records: FeishuBitableRecord[]): FeishuCon
   const now = new Date();
   return records.reduce<FeishuContract[]>((acc, record) => {
     const fields = record.fields ?? {};
-    const contractNo = cellToString(pickField(fields, ["合同编号", "合同号", "合同编码", "编号", "contractNo", "contract_no"]));
+    const contractNo = cellToString(pickField(fields, ["合同编号", "录入合同编号", "合同号", "合同编码", "编号", "contractNo", "contract_no"]));
     if (!contractNo) return acc;
 
     const title = cellToString(pickField(fields, ["合同标题", "合同名称", "标题", "名称", "title", "contractTitle"])) || contractNo;
@@ -313,7 +366,7 @@ function mapBitableRecordsToContracts(records: FeishuBitableRecord[]): FeishuCon
       customerId: null,
       customerName: cellToString(pickField(fields, ["客户", "客户名称", "公司", "公司名称", "customerName"])) || null,
       businessUnit: cellToString(pickField(fields, ["订单所属事业部", "事业部", "所属事业部", "业务部门", "businessUnit", "business_unit"])) || null,
-      submitter: cellToString(pickField(fields, ["提交人", "填报人", "申请人", "submitter", "submittedBy"])) || null,
+      submitter: cellToString(pickField(fields, ["提交人", "填报人", "申请人", "发起人", "submitter", "submittedBy"])) || null,
       signDate: cellToString(pickField(fields, ["签订日期", "签约日期", "signDate"])) || null,
       startDate: cellToString(pickField(fields, ["开始日期", "生效日期", "startDate"])) || null,
       endDate: cellToString(pickField(fields, ["结束日期", "到期日期", "endDate"])) || null,
@@ -337,11 +390,11 @@ function mapRowsToContracts(values: unknown[][]): FeishuContract[] {
   if (values.length < 2) return [];
 
   const headers = values[0].map(cellToString);
-  const noIndex = findColumn(headers, ["合同编号", "合同号", "合同编码", "编号", "contractNo", "contract_no"]);
+  const noIndex = findColumn(headers, ["合同编号", "录入合同编号", "合同号", "合同编码", "编号", "contractNo", "contract_no"]);
   const titleIndex = findColumn(headers, ["合同标题", "合同名称", "标题", "名称", "title", "contractTitle"]);
   const customerIndex = findColumn(headers, ["客户", "客户名称", "公司", "公司名称", "customerName"]);
   const businessUnitIndex = findColumn(headers, ["订单所属事业部", "事业部", "所属事业部", "业务部门", "businessUnit", "business_unit"]);
-  const submitterIndex = findColumn(headers, ["提交人", "填报人", "申请人", "submitter", "submittedBy"]);
+  const submitterIndex = findColumn(headers, ["提交人", "填报人", "申请人", "发起人", "submitter", "submittedBy"]);
   const statusIndex = findColumn(headers, ["状态", "合同状态", "status"]);
   const totalIndex = findColumn(headers, ["授权数量", "密钥数量", "合同数量", "totalKeys", "total"]);
   const signDateIndex = findColumn(headers, ["签订日期", "签约日期", "signDate"]);
@@ -388,9 +441,29 @@ function mapRowsToContracts(values: unknown[][]): FeishuContract[] {
     }, []);
 }
 
-async function getBitableTableId(token: string, appToken: string) {
-  const configured = process.env.FEISHU_CONTRACT_TABLE_ID || process.env.FEISHU_CONTRACT_BASE_TABLE_ID;
-  if (configured?.trim()) return configured.trim();
+async function resolveWikiSource(token: string, source: ContractSource): Promise<ContractSource> {
+  if (source.kind !== "wiki") return source;
+  const params = new URLSearchParams({ token: source.token });
+  const data = await readJson<FeishuWikiNodeResponse>(
+    `${FEISHU_API_BASE}/wiki/v2/spaces/get_node?${params}`,
+    { method: "GET", headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (data.code === 99991672) {
+    throw new Error("飞书应用缺少知识库读取权限，请开通应用身份权限 wiki:node:read 并发布生效后重试");
+  }
+  if (data.code !== 0) {
+    throw new Error(`解析飞书知识库合同表失败（${data.code}）：${data.msg || "请确认应用具有该知识库节点的读取权限"}`);
+  }
+  const node = data.data?.node;
+  if (!node?.obj_token) throw new Error("飞书知识库节点未返回原表标识");
+  if (node.obj_type !== "bitable" && node.obj_type !== "sheet") {
+    throw new Error("此飞书知识库链接不是多维表格或电子表格，请提供合同原表节点链接");
+  }
+  return { ...source, kind: node.obj_type === "bitable" ? "base" : "sheet", token: node.obj_token };
+}
+
+async function getBitableTableId(token: string, appToken: string, configured?: string) {
+  if (configured) return configured;
 
   const data = await readJson<FeishuTableListResponse>(
     `${FEISHU_API_BASE}/bitable/v1/apps/${encodeURIComponent(appToken)}/tables`,
@@ -408,9 +481,10 @@ async function getBitableTableId(token: string, appToken: string) {
   return first;
 }
 
-async function readBitableContracts(token: string, appToken: string) {
-  const tableId = await getBitableTableId(token, appToken);
-  const viewId = process.env.FEISHU_CONTRACT_VIEW_ID?.trim();
+async function readBitableContracts(token: string, source: ContractSource) {
+  const appToken = source.token;
+  const tableId = await getBitableTableId(token, appToken, source.tableId);
+  const viewId = source.viewId;
   const records: FeishuBitableRecord[] = [];
   let pageToken = "";
 
@@ -462,7 +536,10 @@ export async function getFeishuContracts(opts?: {
   page?: number;
   pageSize?: number;
 }) {
-  if (!isFeishuContractsConfigured()) {
+  const source = isEnabled() && process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET
+    ? getContractSource()
+    : null;
+  if (!source) {
     return {
       items: [],
       total: 0,
@@ -472,20 +549,17 @@ export async function getFeishuContracts(opts?: {
   }
 
   const token = await getTenantAccessToken();
-  const baseAppToken = getBaseAppToken();
-  const spreadsheetToken = getSpreadsheetToken();
   const range = getContractRange();
-  const cacheKey = baseAppToken
-    ? `base:${baseAppToken}:${process.env.FEISHU_CONTRACT_TABLE_ID || process.env.FEISHU_CONTRACT_BASE_TABLE_ID || ""}:${process.env.FEISHU_CONTRACT_VIEW_ID || ""}`
-    : `sheet:${spreadsheetToken}:${range}`;
+  const cacheKey = JSON.stringify([source.kind, source.token, source.tableId, source.viewId, range]);
   const now = Date.now();
   if (!contractCache || contractCache.key !== cacheKey || contractCache.expiresAt <= now) {
+    const resolved = await resolveWikiSource(token, source);
     contractCache = {
       key: cacheKey,
       items: dedupeFeishuContractsByNo(
-        baseAppToken
-          ? await readBitableContracts(token, baseAppToken)
-          : await readSheetContracts(token, spreadsheetToken, range)
+        resolved.kind === "base"
+          ? await readBitableContracts(token, resolved)
+          : await readSheetContracts(token, resolved.token, range)
       ),
       expiresAt: now + getCacheTtlMs(),
     };

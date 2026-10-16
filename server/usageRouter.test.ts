@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { usageRouter } from "./usageRouter";
 import type { TrpcContext } from "./_core/context";
-import { getUsageEventContext, getUsageOverview } from "./usageStore";
+import { getUsageEventContext, getUsageOverview, listUsageFeatureUsage, listUsageCustomerUsage, getUsageAnalysisSummary, listUsageSystems } from "./usageStore";
 vi.mock("./usageStore", () => ({
   listUsageCustomers: vi.fn(async () => []), getUsageOverview: vi.fn(async () => ({})),
   listUsageEvents: vi.fn(async () => ({ items: [], total: 0 })), getUsageEventContext: vi.fn(async () => []),
+  getUsageAnalysisSummary: vi.fn(async () => ({})), listUsageFeatureUsage: vi.fn(async () => ({})),
+  listUsageCustomerUsage: vi.fn(async () => ({})), listUsageSystems: vi.fn(async () => []),
 }));
 const filters = { from: "2026-09-01", to: "2026-09-24", environment: "production" as const };
 const identity = { sourceId: 4, installationId: "249c3777-cff6-44e4-99ea-a812e302a992", eventId: "149c3777-cff6-44e4-99ea-a812e302a992" };
@@ -18,6 +20,10 @@ describe("usage administrator access", () => {
       const client = caller(role, active);
       await expect(client.customers()).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(client.overview(filters)).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(client.summary(filters)).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(client.customerUsage({ filters })).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(client.featureUsage({ filters })).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(client.systems(filters)).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(client.events({ filters })).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(client.context(identity)).rejects.toMatchObject({ code: "FORBIDDEN" });
     }
@@ -32,5 +38,19 @@ describe("usage administrator access", () => {
     await expect(client.overview({ ...filters, from: "2026-02-31" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
     await expect(client.overview({ ...filters, from: "2026-10-01" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
     await expect(client.context({ sourceId: 4 } as never)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+  it("validates and preserves feature/customer drill-down, pagination and diagnostic scope", async () => {
+    const client = caller("super_admin");
+    const scoped = { ...filters, featureId: "collection", identityScope: "company" as const,
+      customerKey: "customer:7", systemType: "custom.0123456789abcdef" };
+    await client.featureUsage({ filters: scoped, page: 2, sort: "usage", category: "diagnostic" });
+    expect(listUsageFeatureUsage).toHaveBeenCalledWith({ filters: scoped, page: 2, sort: "usage", category: "diagnostic" });
+    await client.customerUsage({ filters: scoped });
+    expect(listUsageCustomerUsage).toHaveBeenCalledWith({ filters: scoped, page: 1, sort: "recent" });
+    await client.summary(scoped); expect(getUsageAnalysisSummary).toHaveBeenCalledWith(scoped);
+    await client.systems(scoped); expect(listUsageSystems).toHaveBeenCalledWith(scoped);
+    await expect(client.featureUsage({ filters: scoped, page: 0 })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(client.customerUsage({ filters: { ...filters, identityScope: "invalid" } } as never)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(client.summary({ ...scoped, systemType: "invalid system" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 });

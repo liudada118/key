@@ -141,7 +141,9 @@ export default function ContractManagement() {
                 <TableRow key={contract.id}>
                   <TableCell className="font-mono text-sm">{contract.contractNo}</TableCell>
                   <TableCell>
-                    {"businessUnit" in contract ? contract.businessUnit || "-" : "-"}
+                    {"businessUnit" in contract ? contract.businessUnit || (
+                      <span className="text-xs text-muted-foreground" title="未匹配到唯一的系统所属部门">待匹配部门</span>
+                    ) : "-"}
                   </TableCell>
                   <TableCell>
                     {"submitter" in contract ? contract.submitter || "-" : "-"}

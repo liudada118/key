@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { usageActionLabel, usageErrorLabel, usageFeatureLabel, usageDurationText, usageMetricText, usageSystemLabel } from "./usagePresentation";
+import { usageActionLabel, usageErrorLabel, usageFeatureLabel, usageDurationText, usageMetricText, usageSystemLabel, usageFeaturePrimaryMetric, usageTime } from "./usagePresentation";
 
 describe("usage dashboard metric meanings", () => {
   it("presents new controls, frame summaries and confirmed rows in their own units", () => {
@@ -27,5 +27,22 @@ describe("usage dashboard metric meanings", () => {
     expect(usageSystemLabel("copy.0123456789abcdef")).toBe("系统副本 · 0123456789abcdef");
     expect(usageSystemLabel("custom")).toContain("未区分");
     expect(usageSystemLabel("copy")).toContain("未区分");
+  });
+  it("uses domain metrics instead of raw exposure/attempt totals and preserves missing duration", () => {
+    const row = { featureId: "monitoring", category: "business", uses: 4, successes: 2,
+      observedEvents: 1000, monitoringMs: 60000, monitoringSamples: 1, collectionMs: 30000, collectionSamples: 1 };
+    expect(usageFeaturePrimaryMetric(row)).toEqual({ label: "监测时长", value: "1.0 分钟" });
+    expect(usageFeaturePrimaryMetric({ ...row, monitoringSamples: 0 }).value).toBe("未上报时长");
+    expect(usageFeaturePrimaryMetric({ ...row, monitoringMs: 0 }).value).toBe("0 秒");
+    expect(usageFeaturePrimaryMetric({ ...row, featureId: "collection" }).value).toBe("2 次");
+    expect(usageFeaturePrimaryMetric({ ...row, featureId: "export" }).value).toBe("2 次");
+    expect(usageFeaturePrimaryMetric({ ...row, featureId: "playback" }).value).toBe("4 次");
+    expect(usageFeaturePrimaryMetric({ ...row, featureId: "tuning_gaussian" }).value).toBe("4 次");
+    expect(usageFeaturePrimaryMetric({ ...row, featureId: "main_memory", category: "diagnostic" }).value).toBe("1000 条");
+  });
+  it("uses UTC consistently and distinguishes an absent last use from the Unix epoch", () => {
+    expect(usageTime(null)).toBe("未观测到");
+    expect(usageTime("2026-10-16T23:30:00Z")).toContain("2026/10/16");
+    expect(usageSystemLabel("jqbed")).toBe("小床监测");
   });
 });
