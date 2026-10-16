@@ -50,7 +50,7 @@ describe("contract department enrichment", () => {
 
   it("preserves child-account submitter scoping before enrichment", async () => {
     await caller("user").contracts.list(input);
-    expect(getFeishuContracts).toHaveBeenCalledWith({ page: 1, pageSize: 20, status: undefined, submitter: "提交人甲" });
+    expect(getFeishuContracts).toHaveBeenCalledWith({ page: 1, pageSize: 1000, submitter: "提交人甲" });
   });
 
   it("requires an active authenticated account", async () => {
@@ -83,5 +83,50 @@ describe("contract department enrichment", () => {
     vi.mocked(getContractSubmitterDepartments).mockResolvedValue([{ name: "提交人甲", departmentName: "康养事业部" }]);
     expect((await caller("admin").contracts.list(input)).items[0]).toMatchObject({ businessUnit: "康养事业部" });
     expect(contract.businessUnit).toBeNull();
+  });
+
+  it("filters resolved departments and status before pagination, total and key-count lookup", async () => {
+    const items = Array.from({ length: 45 }, (_, i) => ({ ...contract, id: -i - 1, contractNo: `HT-${i}`,
+      businessUnit: i % 2 ? "康养事业部" : null, status: i === 0 ? "TERMINATED" as const : "ACTIVE" as const }));
+    vi.mocked(getFeishuContracts).mockResolvedValue({ items, total: items.length, source: "feishu" });
+    const result = await caller("super_admin").contracts.list({ ...input, page: 2, pageSize: 10, businessUnit: "精密事业部", status: "ACTIVE" });
+    expect(result.total).toBe(22);
+    expect(result.items.map(item => item.contractNo)).toEqual(Array.from({ length: 10 }, (_, i) => `HT-${22 + i * 2}`));
+    expect(result.items.every(item => "businessUnit" in item && item.businessUnit === "精密事业部")).toBe(true);
+    expect(getGeneratedKeyCountsByContractNos).toHaveBeenCalledWith(result.items.map(item => item.contractNo));
+  });
+
+  it("returns no matches for an unknown department without falling back to all contracts", async () => {
+    expect(await caller("super_admin").contracts.list({ ...input, businessUnit: "不存在" })).toMatchObject({ total: 0, items: [] });
+  });
+
+  it("offers distinct departments across all visible contract pages, not only the current page", async () => {
+    vi.mocked(getFeishuContracts)
+      .mockResolvedValueOnce({ items: Array.from({ length: 1000 }, () => contract), total: 1001, source: "feishu" })
+      .mockResolvedValueOnce({ items: [{ ...contract, businessUnit: "康养事业部" }], total: 1001, source: "feishu" });
+    expect((await caller("super_admin").contracts.businessUnits()).sort()).toEqual(["康养事业部", "精密事业部"].sort());
+    expect(getFeishuContracts).toHaveBeenNthCalledWith(2, { page: 2, pageSize: 1000 });
+  });
+
+  it("does not expose departments from other submitters to a subaccount", async () => {
+    vi.mocked(getFeishuContracts).mockImplementation(async opts => ({ source: "feishu", total: 1,
+      items: [{ ...contract, businessUnit: "精密事业部" }, { ...contract, submitter: "其他人", businessUnit: "其他事业部" }]
+        .filter(item => item.submitter === opts?.submitter) }));
+    expect(await caller("user").contracts.businessUnits()).toEqual(["精密事业部"]);
+    expect(getFeishuContracts).toHaveBeenCalledWith({ page: 1, pageSize: 1000, submitter: "提交人甲" });
+  });
+
+  it("fails closed for incomplete options and nameless or inactive accounts", async () => {
+    await expect(caller(null).contracts.businessUnits()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(caller("user", "提交人甲", false).contracts.businessUnits()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller("user", " ").contracts.businessUnits()).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(getFeishuContracts).not.toHaveBeenCalled();
+    vi.mocked(getFeishuContracts).mockResolvedValue({ items: [], total: 2, source: "feishu" });
+    await expect(caller("super_admin").contracts.businessUnits()).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("rejects a department filter for the legacy database source rather than ignoring it", async () => {
+    await expect(caller("super_admin").contracts.list({ ...input, source: "db", businessUnit: "精密事业部" }))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 });

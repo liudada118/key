@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { usageRouter } from "./usageRouter";
 import type { TrpcContext } from "./_core/context";
-import { getUsageEventContext, getUsageOverview, listUsageFeatureUsage, listUsageCustomerUsage, getUsageAnalysisSummary, listUsageSystems } from "./usageStore";
+import { getUsageDashboard, getUsageEventContext, getUsageOverview, listUsageFeatureUsage, listUsageCustomerUsage, getUsageAnalysisSummary, listUsageSystems } from "./usageStore";
 vi.mock("./usageStore", () => ({
   listUsageCustomers: vi.fn(async () => []), getUsageOverview: vi.fn(async () => ({})),
   listUsageEvents: vi.fn(async () => ({ items: [], total: 0 })), getUsageEventContext: vi.fn(async () => []),
   getUsageAnalysisSummary: vi.fn(async () => ({})), listUsageFeatureUsage: vi.fn(async () => ({})),
+  getUsageDashboard: vi.fn(async () => ({})),
   listUsageCustomerUsage: vi.fn(async () => ({})), listUsageSystems: vi.fn(async () => []),
 }));
 const filters = { from: "2026-09-01", to: "2026-09-24", environment: "production" as const };
@@ -21,6 +22,7 @@ describe("usage administrator access", () => {
       await expect(client.customers()).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(client.overview(filters)).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(client.summary(filters)).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(client.dashboard(filters)).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(client.customerUsage({ filters })).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(client.featureUsage({ filters })).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(client.systems(filters)).rejects.toMatchObject({ code: "FORBIDDEN" });
@@ -48,9 +50,11 @@ describe("usage administrator access", () => {
     await client.customerUsage({ filters: scoped });
     expect(listUsageCustomerUsage).toHaveBeenCalledWith({ filters: scoped, page: 1, sort: "recent" });
     await client.summary(scoped); expect(getUsageAnalysisSummary).toHaveBeenCalledWith(scoped);
+    await client.dashboard(scoped); expect(getUsageDashboard).toHaveBeenCalledWith(scoped);
     await client.systems(scoped); expect(listUsageSystems).toHaveBeenCalledWith(scoped);
     await expect(client.featureUsage({ filters: scoped, page: 0 })).rejects.toMatchObject({ code: "BAD_REQUEST" });
     await expect(client.customerUsage({ filters: { ...filters, identityScope: "invalid" } } as never)).rejects.toMatchObject({ code: "BAD_REQUEST" });
     await expect(client.summary({ ...scoped, systemType: "invalid system" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(client.dashboard({ ...scoped, from: "2025-01-01" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 });

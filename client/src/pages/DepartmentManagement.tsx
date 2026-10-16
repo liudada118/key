@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { OrganizationExportButton } from "@/components/OrganizationExportButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -120,7 +121,7 @@ export default function DepartmentManagement() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">
             部门管理
@@ -129,10 +130,13 @@ export default function DepartmentManagement() {
             管理部门与传感器分组的对应关系，指定部门管理员（决定密钥的跨部门可见范围）
           </p>
         </div>
-        <Button onClick={openCreate}>
-          <Plus className="h-4 w-4 mr-1.5" />
-          新增部门
-        </Button>
+        <div className="flex shrink-0 flex-wrap gap-2">
+          <OrganizationExportButton />
+          <Button className="h-11" onClick={openCreate}>
+            <Plus key="icon" aria-hidden="true" className="h-4 w-4 mr-1.5" />
+            新增部门
+          </Button>
+        </div>
       </div>
 
       <Card className="border-border/50">

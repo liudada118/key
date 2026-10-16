@@ -1,4 +1,7 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import { BusinessUnitFilter } from "@/components/BusinessUnitFilter";
+import { DashboardBreakdown, DashboardMetrics, DashboardState } from "@/components/OperationsDashboard";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -47,7 +50,7 @@ import {
   MapPin,
   RefreshCw,
 } from "lucide-react";
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 
 export default function CustomerManagement() {
@@ -55,6 +58,10 @@ export default function CustomerManagement() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
+  const [businessUnit, setBusinessUnit] = useState("");
+  const [view, setView] = useState("dashboard");
+  const [coverage, setCoverage] = useState<"with" | "without" | "unmatched">();
+  const [active, setActive] = useState<boolean>();
   const [showDialog, setShowDialog] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<any>(null);
   const [formData, setFormData] = useState({
@@ -73,7 +80,11 @@ export default function CustomerManagement() {
     page,
     pageSize,
     search: search || undefined,
-  });
+    businessUnit: businessUnit || undefined,
+    coverage, isActive: active,
+  }, { enabled: view === "details" });
+  const dashboard = trpc.customers.dashboard.useQuery({ search: search || undefined, businessUnit: businessUnit || undefined });
+  function drill(next?: typeof coverage, enabled?: boolean) { setCoverage(next); setActive(enabled); setPage(1); setView("details"); }
 
   const syncMutation = trpc.customers.syncFeishu.useMutation({
     onSuccess: async (result) => {
@@ -91,7 +102,7 @@ export default function CustomerManagement() {
       toast.success("客户创建成功");
       setShowDialog(false);
       resetForm();
-      refetch();
+      void utils.customers.invalidate();
     },
     onError: (err) => toast.error(err.message),
   });
@@ -101,7 +112,7 @@ export default function CustomerManagement() {
       toast.success("客户信息已更新");
       setShowDialog(false);
       resetForm();
-      refetch();
+      void utils.customers.invalidate();
     },
     onError: (err) => toast.error(err.message),
   });
@@ -113,7 +124,7 @@ export default function CustomerManagement() {
     onSuccess: () => {
       toast.success("客户已删除");
       setDeleteOpen(false);
-      refetch();
+      void utils.customers.invalidate();
     },
     onError: (err) => toast.error(err.message),
   });
@@ -168,13 +179,13 @@ export default function CustomerManagement() {
   const totalPages = data ? Math.ceil(data.total / pageSize) : 0;
 
   return (
-    <div className="space-y-6">
+    <div className="min-w-0 space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">客户管理</h1>
-          <p className="text-muted-foreground mt-1">管理客户信息，生成密钥时可关联客户</p>
+          <h1 className="text-2xl font-bold">客户管理</h1>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="icon" className="size-11" title="刷新客户看板" aria-label="刷新客户看板" disabled={dashboard.isFetching || isFetching} onClick={() => { void utils.customers.invalidate(); void utils.contracts.businessUnits.invalidate(); }}><RefreshCw aria-hidden="true" className="size-4" /></Button>
           <Button variant="outline" className="h-11 gap-2" disabled={!user || syncMutation.isPending}
             aria-busy={syncMutation.isPending} onClick={() => syncMutation.mutate()}>
             <RefreshCw key="icon" aria-hidden="true" className={`h-4 w-4 ${syncMutation.isPending ? "animate-spin motion-reduce:animate-none" : ""}`} />
@@ -188,25 +199,30 @@ export default function CustomerManagement() {
       </div>
 
       {/* 搜索栏 */}
-      <Card>
-        <CardContent className="pt-6">
-          <div className="flex gap-3">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="搜索客户名称、联系人、电话..."
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-                className="pl-10"
-              />
+      <section className="border-y py-4" aria-label="客户筛选">
+          <div className="flex flex-wrap items-end gap-3">
+            <BusinessUnitFilter value={businessUnit} onChange={value => { setBusinessUnit(value); setPage(1); setCoverage(undefined); setActive(undefined); }} />
+            <div className="min-w-0 flex-1 basis-64 space-y-2">
+              <Label htmlFor="customer-search">客户搜索</Label>
+              <div className="relative">
+                <Search aria-hidden="true" className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  id="customer-search"
+                  placeholder="搜索客户名称、联系人、电话..."
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+                  className="h-11 pl-10"
+                />
+              </div>
             </div>
-            <Button onClick={handleSearch} variant="secondary">
+            <Button onClick={handleSearch} variant="secondary" className="h-11">
               搜索
             </Button>
             {search && (
               <Button
                 variant="outline"
+                className="h-11"
                 onClick={() => {
                   setSearch("");
                   setSearchInput("");
@@ -217,11 +233,37 @@ export default function CustomerManagement() {
               </Button>
             )}
           </div>
-        </CardContent>
-      </Card>
+      </section>
+
+      <Tabs value={view} onValueChange={setView}><TabsList className="h-11" aria-label="客户视图"><TabsTrigger value="dashboard" id="customer-dashboard-tab" aria-controls="customer-dashboard">客户看板</TabsTrigger><TabsTrigger value="details" id="customer-details-tab" aria-controls="customer-details">客户明细</TabsTrigger></TabsList></Tabs>
+      {view === "dashboard" && <div id="customer-dashboard" role="tabpanel" aria-labelledby="customer-dashboard-tab" className="space-y-5">
+        <DashboardState loading={dashboard.isPending} error={dashboard.error?.message} onRetry={() => void dashboard.refetch()}>
+          {dashboard.data && <>
+            {dashboard.data.contractMetadataError && <p role="alert" className="text-sm text-destructive">{dashboard.data.contractMetadataError}</p>}
+            <DashboardMetrics items={[
+              { label: "客户总数", value: dashboard.data.total, note: `启用 ${dashboard.data.active} 家 · 当前筛选范围`, onClick: () => drill() },
+              { label: "已关联合同", value: dashboard.data.withContracts ?? "暂不可用", note: "至少关联一份可见合同的客户", onClick: dashboard.data.withContracts === null ? undefined : () => drill("with") },
+              { label: "未关联合同", value: dashboard.data.withoutContracts ?? "暂不可用", note: "本地档案暂无可见合同", onClick: dashboard.data.withoutContracts === null ? undefined : () => drill("without") },
+              { label: "部门待完善", value: dashboard.data.unmatched ?? "暂不可用", note: "至少一份合同尚未匹配部门", tone: 5, onClick: dashboard.data.unmatched === null ? undefined : () => drill("unmatched") },
+            ]} />
+            <div className="grid min-w-0 gap-x-8 border-b lg:grid-cols-2">
+              <DashboardBreakdown title="客户合同覆盖" empty={dashboard.data.contractMetadataError ? "合同资料暂不可用" : "暂无客户"} rows={dashboard.data.total && dashboard.data.withContracts !== null ? [
+                { id: "with", label: "已关联合同", value: dashboard.data.withContracts, tone: 2, onClick: () => drill("with") },
+                { id: "without", label: "未关联合同", value: dashboard.data.withoutContracts!, tone: 3, onClick: () => drill("without") },
+              ] : []} note={dashboard.data.withContracts !== null && dashboard.data.total ? `合同覆盖率 ${(dashboard.data.withContracts / dashboard.data.total * 100).toFixed(1)}%` : undefined} />
+              <DashboardBreakdown title="事业部客户分布" rows={dashboard.data.departments.slice(0, 8).map(row => ({ id: row.name, label: row.name, value: row.value, onClick: () => { setBusinessUnit(row.name); drill(); } }))} note="客户按事业部分别去重；跨部门客户可重复计入。展示前 8 个事业部。" empty={dashboard.data.contractMetadataError ? "部门资料暂不可用" : "暂无已匹配部门"} />
+            </div>
+          </>}
+        </DashboardState>
+      </div>}
 
       {/* 客户列表 */}
-      <Card>
+      {view === "details" && <section id="customer-details" role="tabpanel" aria-labelledby="customer-details-tab" className="min-w-0">
+      <div className="mb-4 flex flex-wrap items-end gap-3">
+        <div className="space-y-2"><Label htmlFor="customer-coverage">合同覆盖</Label><select id="customer-coverage" className="block h-11 rounded-md border bg-background px-3 text-sm" value={coverage || ""} onChange={e => { setCoverage(e.target.value as typeof coverage || undefined); setPage(1); }}><option value="">全部客户</option><option value="with">已关联合同</option><option value="without">未关联合同</option><option value="unmatched">部门待完善</option></select></div>
+        <div className="space-y-2"><Label htmlFor="customer-active">客户状态</Label><select id="customer-active" className="block h-11 rounded-md border bg-background px-3 text-sm" value={active === undefined ? "" : String(active)} onChange={e => { setActive(e.target.value ? e.target.value === "true" : undefined); setPage(1); }}><option value="">全部状态</option><option value="true">启用</option><option value="false">禁用</option></select></div>
+      </div>
+      <Card className="min-w-0 rounded-none border-0 bg-transparent shadow-none">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Building2 className="h-5 w-5" />
@@ -381,6 +423,7 @@ export default function CustomerManagement() {
           )}
         </CardContent>
       </Card>
+      </section>}
 
       {/* 删除确认弹窗 */}
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>

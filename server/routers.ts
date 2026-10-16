@@ -13,10 +13,10 @@ import {
   getAuditLogs,
   getAllCustomers,
   getAllUsers,
-  getContractSubmitterDepartments,
   getCustomerById,
   getCustomerKeyCount,
   getCustomers,
+  getCustomerNameRecords,
   getKeyStats,
   getKeyStatusHistoryList,
   getLicenseKeyById,
@@ -108,13 +108,15 @@ import {
 import {
   getFeishuContracts,
   getFeishuContractSubmitterScope,
-  fillFeishuContractBusinessUnits,
   isContractBindingRequired,
   isFeishuContractsConfigured,
 } from "./feishuContracts";
 import { notifyFeishuKeyRequest } from "./feishuKeyRequestWebhook";
-import { syncFeishuCustomersForUser } from "./feishuCustomerSync";
+import { normalizeCustomerName, syncFeishuCustomersForUser } from "./feishuCustomerSync";
 import { enrichCustomersWithContractMetadata } from "./feishuCustomerMetadata";
+import { getOrganizationExport } from "./organizationExport";
+import { getContractDashboard, matchesCustomerCoverage, readCustomerDashboardDirectory, summarizeCustomers } from "./managementDashboard";
+import { collectContractBusinessUnits, filterContractsByBusinessUnit, readVisibleContractsWithDepartments } from "./feishuContractDirectory";
 import { sendFeishuKeyRequestApprovalCard } from "./feishuKeyRequestCard";
 import { reviewKeyGenerationRequest } from "./keyGenerationRequestApproval";
 import { prepareOnlineKeyGeneration } from "./onlineKeyGeneration";
@@ -255,6 +257,24 @@ export const appRouter = router({
 
   // ===== 账号管理 =====
   accounts: router({
+    exportOrganization: superAdminProcedure.mutation(async ({ ctx }) => {
+      if (!ctx.user.isActive) throw new TRPCError({ code: "FORBIDDEN", message: "账号已被禁用" });
+      ctx.res.setHeader("Cache-Control", "no-store");
+      try {
+        const result = await getOrganizationExport();
+        await createAuditLog({
+          userId: ctx.user.id, userName: ctx.user.name || ctx.user.username,
+          action: "EXPORT", resourceType: "organization",
+          description: `导出账号部门资料：${result.counts.accounts} 个账号、${result.counts.departments} 个部门（不含密码）`,
+          ip: ctx.req?.socket?.remoteAddress || null,
+          userAgent: ctx.req?.headers?.["user-agent"] || null,
+        });
+        return result;
+      } catch (error) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "账号部门导出失败，请重试", cause: error });
+      }
+    }),
+
     list: protectedProcedure
       .input(z.object({
         page: z.number().min(1).default(1),
@@ -423,6 +443,13 @@ export const appRouter = router({
 
   // ===== 客户管理 =====
   customers: router({
+    dashboard: protectedProcedure.input(z.object({
+      search: z.string().max(256).optional(), businessUnit: z.string().trim().min(1).max(256).optional(),
+    }).strict()).query(async ({ ctx, input }) => {
+      ctx.res.setHeader("Cache-Control", "no-store");
+      try { return summarizeCustomers(await readCustomerDashboardDirectory(ctx.user, input)); }
+      catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: "客户看板读取失败，请检查数据来源后重试", cause: error }); }
+    }),
     syncFeishu: protectedProcedure.mutation(async ({ ctx }) => {
       try {
         return await syncFeishuCustomersForUser(ctx.user);
@@ -439,18 +466,42 @@ export const appRouter = router({
           pageSize: z.number().min(1).max(100).default(20),
           search: z.string().optional(),
           isActive: z.boolean().optional(),
+          businessUnit: z.string().trim().min(1).max(256).optional(),
+          coverage: z.enum(["with", "without", "unmatched"]).optional(),
         })
       )
       .query(async ({ ctx, input }) => {
         const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+        let resolvedContracts: Awaited<ReturnType<typeof readVisibleContractsWithDepartments>> | undefined;
+        let customerIds: number[] | undefined;
+        if (input.coverage) {
+          try {
+            const directory = await readCustomerDashboardDirectory(ctx.user, input);
+            if (directory.contractMetadataError) throw new Error("合同资料暂不可用");
+            customerIds = directory.items.filter(row => matchesCustomerCoverage(row, input.coverage!)).map(row => row.id);
+          } catch (error) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "合同覆盖筛选失败，请检查数据来源后重试", cause: error });
+          }
+        } else if (input.businessUnit) {
+          try {
+            resolvedContracts = await readVisibleContractsWithDepartments(ctx.user);
+            const names = new Set(filterContractsByBusinessUnit(resolvedContracts, input.businessUnit)
+              .map(item => normalizeCustomerName(item.customerName || "")).filter(Boolean));
+            const candidates = await getCustomerNameRecords(userIds);
+            customerIds = candidates.filter(item => names.has(normalizeCustomerName(item.name))).map(item => item.id);
+          } catch (error) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "事业部筛选失败，请检查合同来源和人员部门配置后重试", cause: error });
+          }
+        }
         const result = await getCustomers({
           userIds,
+          ...(customerIds ? { customerIds } : {}),
           page: input.page,
           pageSize: input.pageSize,
           search: input.search,
           isActive: input.isActive,
         });
-        return { ...result, ...await enrichCustomersWithContractMetadata(result.items, ctx.user) };
+        return { ...result, ...await enrichCustomersWithContractMetadata(result.items, ctx.user, resolvedContracts) };
       }),
 
     all: protectedProcedure.query(async ({ ctx }) => {
@@ -1585,6 +1636,19 @@ export const appRouter = router({
 
   // ===== 合同管理 =====
   contracts: router({
+    dashboard: protectedProcedure.input(z.object({ businessUnit: z.string().trim().min(1).max(256).optional() }).strict())
+      .query(async ({ ctx, input }) => {
+        ctx.res.setHeader("Cache-Control", "no-store");
+        try { return await getContractDashboard(ctx.user, input.businessUnit); }
+        catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: "合同看板读取失败，请检查飞书来源和人员部门配置", cause: error }); }
+      }),
+    businessUnits: protectedProcedure.query(async ({ ctx }) => {
+      try {
+        return collectContractBusinessUnits(await readVisibleContractsWithDepartments(ctx.user));
+      } catch (error) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "事业部选项读取失败，请检查合同来源和人员部门配置", cause: error });
+      }
+    }),
     /**
      * 生成密钥的合同策略，供前端决定「无合同」按钮是直接生成还是提交审批。
      * 只暴露布尔判定，不返回任何飞书凭据。
@@ -1602,6 +1666,8 @@ export const appRouter = router({
         page: z.number().min(1).default(1),
         pageSize: z.number().min(1).max(1000).default(50),
         source: z.enum(["db", "feishu"]).optional(),
+        businessUnit: z.string().trim().min(1).max(256).optional(),
+        issuance: z.enum(["with", "without"]).optional(),
       }))
       .query(async ({ ctx, input }) => {
         if (input.source === "feishu") {
@@ -1615,21 +1681,20 @@ export const appRouter = router({
             };
           }
           try {
-            const result = await getFeishuContracts({
-              status: input.status,
-              ...(submitterScope ? { submitter: submitterScope } : {}),
-              page: input.page,
-              pageSize: input.pageSize,
-            });
-            const departmentAccounts = result.items.some(
-              (item) => !item.businessUnit?.trim() && Boolean(item.submitter?.trim())
-            ) ? await getContractSubmitterDepartments() : [];
-            const items = fillFeishuContractBusinessUnits(result.items, departmentAccounts);
-            const keyCounts = await getGeneratedKeyCountsByContractNos(
+            const visible = await readVisibleContractsWithDepartments(ctx.user);
+            let filtered = filterContractsByBusinessUnit(visible, input.businessUnit)
+              .filter(item => !input.status || item.status === input.status);
+            const scopeCounts = input.issuance ? await getGeneratedKeyCountsByContractNos(filtered.map(item => item.contractNo)) : undefined;
+            if (input.issuance) filtered = filtered.filter(item => input.issuance === "with"
+              ? (scopeCounts![item.contractNo] ?? 0) > 0 : (scopeCounts![item.contractNo] ?? 0) === 0);
+            const start = (input.page - 1) * input.pageSize;
+            const items = filtered.slice(start, start + input.pageSize);
+            const keyCounts = scopeCounts ?? await getGeneratedKeyCountsByContractNos(
               items.map((item) => item.contractNo)
             );
             return {
-              ...result,
+              total: filtered.length,
+              source: "feishu" as const,
               items: items.map((item) => ({
                 ...item,
                 generatedKeyCount: keyCounts[item.contractNo] ?? 0,
@@ -1642,6 +1707,7 @@ export const appRouter = router({
             });
           }
         }
+        if (input.businessUnit || input.issuance) throw new TRPCError({ code: "BAD_REQUEST", message: "事业部和开钥进度筛选仅支持飞书合同来源" });
         const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
         return getContracts({ ...input, userIds });
       }),

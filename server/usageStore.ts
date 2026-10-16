@@ -110,6 +110,24 @@ export async function getUsageAnalysisSummary(filters: UsageFilters) {
   return summary;
 }
 
+/** Daily product evidence uses the same identity, operation and business-use rules as detail lists. */
+export async function getUsageDashboard(filters: UsageFilters) {
+  const db = await database(), where = whereFilters(filters);
+  const day = sql<number>`FLOOR(${usageEvents.occurredMs} / 86400000)`.mapWith(Number);
+  const { usedCustomers, monitoringMs, errors } = usageAnalysisColumns;
+  const days = await db.select({ day, usedCustomers, monitoringMs, errors }).from(usageEvents)
+    .innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(where).groupBy(day).orderBy(asc(day));
+  const features = await db.select({ featureId: usageFeatureId, usedCustomers, uses: usageAnalysisColumns.uses })
+    .from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId))
+    .where(and(where, sql`${usageFeatureId} IS NOT NULL`, eq(usageFeatureCategory, "business")))
+    .groupBy(usageFeatureId).orderBy(desc(usedCustomers), asc(usageFeatureId)).limit(8);
+  const customerRows = await db.select({ customerKey: usageCustomerKey, customerName: sql<string>`MAX(${usageSources.customerName})`,
+    monitoringMs, uses: usageAnalysisColumns.uses }).from(usageEvents)
+    .innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(where)
+    .groupBy(usageCustomerKey).orderBy(desc(monitoringMs), desc(usageAnalysisColumns.uses), asc(usageCustomerKey)).limit(8);
+  return { days, features, customers: customerRows };
+}
+
 export type UsageAnalysisListInput = { filters: UsageFilters; page: number; sort: "recent" | "usage" | "errors" };
 const analysisPageSize = 20;
 

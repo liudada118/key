@@ -2,11 +2,11 @@ import type { User } from "../drizzle/schema";
 import { getContractSubmitterDepartments } from "./db";
 import {
   fillFeishuContractBusinessUnits,
-  getFeishuContracts,
   getFeishuContractSubmitterScope,
   type FeishuContract,
 } from "./feishuContracts";
 import { normalizeCustomerName } from "./feishuCustomerSync";
+import { readVisibleFeishuContracts } from "./feishuContractDirectory";
 
 type CustomerContract = Pick<FeishuContract, "customerName" | "submitter" | "businessUnit">;
 
@@ -46,6 +46,7 @@ export function aggregateCustomerContractMetadata(contracts: CustomerContract[])
 export async function enrichCustomersWithContractMetadata<T extends { name: string }>(
   items: T[],
   user: Pick<User, "role" | "name">,
+  resolvedContracts?: CustomerContract[],
 ) {
   const fallback = (contractMetadataError: string | null = null) => ({
     items: items.map(item => ({ ...item, ...emptyMetadata() })),
@@ -57,18 +58,9 @@ export async function enrichCustomersWithContractMetadata<T extends { name: stri
 
   try {
     const names = new Set(items.map(item => normalizeCustomerName(item.name)));
-    const contracts: CustomerContract[] = [];
-    let readCount = 0;
-    // Read all scoped pages before enriching; later contracts can add another initiator or department.
-    for (let page = 1; ; page += 1) {
-      const result = await getFeishuContracts({ page, pageSize: 1000, ...(submitter ? { submitter } : {}) });
-      if (result.error) throw new Error("Contract source unavailable");
-      readCount += result.items.length;
-      contracts.push(...result.items.filter(item => names.has(normalizeCustomerName(item.customerName || ""))));
-      if (readCount >= result.total) break;
-      if (!result.items.length) throw new Error("Incomplete contract source");
-    }
-    const accounts = contracts.some(item => !item.businessUnit?.trim() && item.submitter?.trim())
+    const contracts = (resolvedContracts ?? await readVisibleFeishuContracts(user))
+      .filter(item => names.has(normalizeCustomerName(item.customerName || "")));
+    const accounts = !resolvedContracts && contracts.some(item => !item.businessUnit?.trim() && item.submitter?.trim())
       ? await getContractSubmitterDepartments()
       : [];
     const metadata = aggregateCustomerContractMetadata(fillFeishuContractBusinessUnits(contracts, accounts));

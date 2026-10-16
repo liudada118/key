@@ -2,7 +2,7 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { router, superAdminProcedure } from "./_core/trpc";
 import { usageFiltersSchema } from "./usageSchema";
-import { getUsageAnalysisSummary, getUsageEventContext, getUsageOverview, listUsageCustomerUsage,
+import { getUsageAnalysisSummary, getUsageDashboard, getUsageEventContext, getUsageOverview, listUsageCustomerUsage,
   listUsageCustomers, listUsageEvents, listUsageFeatureUsage, listUsageSystems } from "./usageStore";
 
 const usageAdmin = superAdminProcedure.use(({ ctx, next }) => {
@@ -20,6 +20,7 @@ export const usageRouter = router({
   customers: usageAdmin.query(() => listUsageCustomers()),
   overview: usageAdmin.input(usageFiltersSchema).query(({ input }) => getUsageOverview(input)),
   summary: usageAdmin.input(usageFiltersSchema).query(({ input }) => getUsageAnalysisSummary(input)),
+  dashboard: usageAdmin.input(usageFiltersSchema).query(({ input }) => getUsageDashboard(input)),
   customerUsage: usageAdmin.input(listInput.strict()).query(({ input }) => listUsageCustomerUsage(input)),
   featureUsage: usageAdmin.input(listInput.extend({ category: z.enum(["all", "business", "diagnostic"]).default("business") }).strict())
     .query(({ input }) => listUsageFeatureUsage(input)),

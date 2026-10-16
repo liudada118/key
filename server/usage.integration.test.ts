@@ -8,7 +8,7 @@ import { generateLicenseKey } from "../shared/crypto";
 
 let testDb: ReturnType<typeof drizzle>;
 vi.mock("./db", () => ({ getDb: async () => testDb }));
-import { authenticateUsage, getUsageAnalysisSummary, getUsageEventContext, getUsageOverview,
+import { authenticateUsage, getUsageDashboard, getUsageAnalysisSummary, getUsageEventContext, getUsageOverview,
   listUsageCustomerUsage, listUsageEvents, listUsageFeatureUsage, listUsageSystems, persistUsageBatch } from "./usageStore";
 const adminUrl = process.env.USAGE_TEST_ADMIN_URL;
 
@@ -53,6 +53,25 @@ describe.skipIf(!adminUrl)("usage MySQL transaction and attribution", () => {
     expect((await rows("SELECT * FROM usage_events WHERE event_id=?", [payload.eventId]))).toHaveLength(1);
     await expect(persistUsageBatch(principal, [{ ...payload, properties: { result: "failure" } }])).rejects.toMatchObject({ status: 409 });
     expect(JSON.parse((await rows("SELECT payload_json FROM usage_events WHERE event_id=?", [payload.eventId]))[0].payload_json)).toEqual(payload);
+  });
+  it("uses full-scope business evidence and UTC buckets for dashboard trends and rankings", async () => {
+    const scope = { sourceId: 4901, customerId: 4901, customerName: "Dashboard Fixture" };
+    const sample = event({ eventName: "monitoring_usage_summary", occurredAt: "2026-09-25T23:59:59Z",
+      properties: { featureId: "monitoring", durationMs: 120000, systemType: "foot" } });
+    await persistUsageBatch(scope, [sample, sample]);
+    await persistUsageBatch(scope, [event({ eventName: "feature_exposed", occurredAt: "2026-09-26T00:00:00Z", properties: { featureId: "export" } }),
+      event({ eventName: "error_reported", occurredAt: "2026-09-26T00:00:00Z", properties: { module: "export", message: "synthetic", count: 3 } })]);
+    const scoped = { from: "2026-09-25", to: "2026-09-26", environment: "test" as const, customerKey: "customer:4901" };
+    const result = await getUsageDashboard(scoped);
+    expect(result.days).toEqual([
+      { day: Date.parse("2026-09-25") / 86400000, usedCustomers: 1, monitoringMs: 120000, errors: 0 },
+      { day: Date.parse("2026-09-26") / 86400000, usedCustomers: 0, monitoringMs: 0, errors: 3 },
+    ]);
+    expect(result.features.find(row => row.featureId === "monitoring")).toMatchObject({ usedCustomers: 1, uses: 1 });
+    expect(result.features.find(row => row.featureId === "export")).toMatchObject({ usedCustomers: 0, uses: 0 });
+    expect(result.customers).toEqual([{ customerKey: "customer:4901", customerName: "Dashboard Fixture", monitoringMs: 120000, uses: 1 }]);
+    expect((await getUsageDashboard({ ...scoped, environment: "production" })).days).toEqual([]);
+    expect((await getUsageDashboard({ ...scoped, featureId: "export" })).days.every(row => row.usedCustomers === 0)).toBe(true);
   });
 
   it("rolls back all new events when any receipt in the batch conflicts", async () => {

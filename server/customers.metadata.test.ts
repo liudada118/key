@@ -4,6 +4,7 @@ import type { TrpcContext } from "./_core/context";
 vi.mock("./db", async (importOriginal) => ({
   ...await importOriginal<typeof import("./db")>(),
   getCustomers: vi.fn(),
+  getCustomerNameRecords: vi.fn(),
   getUserAndSubordinateIds: vi.fn(),
   getContractSubmitterDepartments: vi.fn(),
 }));
@@ -12,7 +13,7 @@ vi.mock("./feishuContracts", async (importOriginal) => ({
   getFeishuContracts: vi.fn(),
 }));
 
-import { getCustomers, getUserAndSubordinateIds, getContractSubmitterDepartments } from "./db";
+import { getCustomers, getCustomerNameRecords, getUserAndSubordinateIds, getContractSubmitterDepartments } from "./db";
 import { getFeishuContracts, type FeishuContract } from "./feishuContracts";
 import { aggregateCustomerContractMetadata, enrichCustomersWithContractMetadata } from "./feishuCustomerMetadata";
 import { appRouter } from "./routers";
@@ -40,6 +41,7 @@ function caller(role: string | null = "super_admin", name = "发起人甲", isAc
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getCustomers).mockResolvedValue({ items: [customer], total: 103 });
+  vi.mocked(getCustomerNameRecords).mockResolvedValue([{ id: customer.id, name: customer.name }]);
   vi.mocked(getUserAndSubordinateIds).mockResolvedValue([7, 8]);
   vi.mocked(getFeishuContracts).mockResolvedValue({ items: [contract], total: 1, source: "feishu" });
   vi.mocked(getContractSubmitterDepartments).mockResolvedValue([{ name: "发起人甲", departmentName: "事业部甲" }]);
@@ -157,5 +159,56 @@ describe("customer contract metadata", () => {
     await expect(caller("super_admin", "管理员", false).customers.list(input)).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(getCustomers).not.toHaveBeenCalled();
     expect(getFeishuContracts).not.toHaveBeenCalled();
+  });
+
+  it("applies department customer IDs before existing search and pagination, retaining every customer department", async () => {
+    vi.mocked(getFeishuContracts).mockResolvedValue({ source: "feishu", total: 2, items: [contract,
+      { ...contract, submitter: "发起人乙", businessUnit: "事业部乙" }] });
+    const result = await caller().customers.list({ ...input, businessUnit: "事业部甲" });
+    expect(getCustomerNameRecords).toHaveBeenCalledWith([7, 8]);
+    expect(getCustomers).toHaveBeenCalledWith({ ...input, userIds: [7, 8], customerIds: [customer.id] });
+    expect(result.items[0].departmentNames).toEqual(["事业部甲", "事业部乙"]);
+    expect(getFeishuContracts).toHaveBeenCalledTimes(1);
+    expect(getContractSubmitterDepartments).toHaveBeenCalledTimes(1);
+  });
+
+  it("matches imported normalized customer names for a department", async () => {
+    vi.mocked(getCustomerNameRecords).mockResolvedValue([{ id: 19, name: "ＡＣＭＥ " }, { id: 20, name: "Other" }]);
+    vi.mocked(getFeishuContracts).mockResolvedValue({ source: "feishu", total: 1,
+      items: [{ ...contract, customerName: "acme", businessUnit: "事业部甲" }] });
+    await caller().customers.list({ ...input, businessUnit: "事业部甲" });
+    expect(getCustomers).toHaveBeenCalledWith(expect.objectContaining({ customerIds: [19], userIds: [7, 8] }));
+  });
+
+  it("passes an explicit empty ID set when the selected department has no matching customers", async () => {
+    vi.mocked(getCustomers).mockResolvedValue({ items: [], total: 0 });
+    expect(await caller().customers.list({ ...input, businessUnit: "不存在" })).toMatchObject({ total: 0, items: [] });
+    expect(getCustomers).toHaveBeenCalledWith(expect.objectContaining({ customerIds: [] }));
+  });
+
+  it("leaves all and manually created customers unfiltered when no department is selected", async () => {
+    await caller().customers.list(input);
+    expect(getCustomerNameRecords).not.toHaveBeenCalled();
+    expect(getCustomers).toHaveBeenCalledWith({ ...input, userIds: [7, 8] });
+  });
+
+  it("does not show unfiltered customers or partial matches when department resolution fails", async () => {
+    vi.mocked(getFeishuContracts).mockRejectedValue(new Error("secret upstream response"));
+    await expect(caller().customers.list({ ...input, businessUnit: "事业部甲" })).rejects.toMatchObject({
+      code: "BAD_REQUEST", message: "事业部筛选失败，请检查合同来源和人员部门配置后重试",
+    });
+    expect(getCustomers).not.toHaveBeenCalled();
+    expect(getCustomerNameRecords).not.toHaveBeenCalled();
+  });
+
+  it("retains subaccount contract restrictions when filtering customers", async () => {
+    await caller("user").customers.list({ ...input, businessUnit: "事业部甲" });
+    expect(getFeishuContracts).toHaveBeenCalledWith({ page: 1, pageSize: 1000, submitter: "发起人甲" });
+    expect(getUserAndSubordinateIds).toHaveBeenCalledWith(7, "user");
+  });
+
+  it.each([" ", "x".repeat(257)])("rejects invalid department filters", async businessUnit => {
+    await expect(caller().customers.list({ ...input, businessUnit })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(getCustomers).not.toHaveBeenCalled();
   });
 });

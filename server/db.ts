@@ -610,6 +610,7 @@ export async function getCustomerById(id: number) {
 
 export async function getCustomers(opts: {
   userIds: number[];
+  customerIds?: number[];
   page: number;
   pageSize: number;
   search?: string;
@@ -619,6 +620,9 @@ export async function getCustomers(opts: {
   if (!db) return { items: [], total: 0 };
 
   const conditions = [inArray(customers.createdById, opts.userIds)];
+  if (opts.customerIds) {
+    conditions.push(opts.customerIds.length ? inArray(customers.id, opts.customerIds) : sql`1 = 0`);
+  }
   if (opts.search) {
     conditions.push(
       or(
@@ -655,6 +659,25 @@ export async function getCustomers(opts: {
   const itemsWithCount = items.map((c) => ({ ...c, keyCount: keyCountMap.get(c.id) ?? 0 }));
 
   return { items: itemsWithCount, total: totalResult[0]?.count ?? 0 };
+}
+
+export async function getCustomerNameRecords(userIds: number[]) {
+  if (!userIds.length) return [];
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db.select({ id: customers.id, name: customers.name }).from(customers)
+    .where(inArray(customers.createdById, userIds));
+}
+
+/** Minimal full-scope projection for dashboards; never return private contacts to charts. */
+export async function getCustomerDashboardRecords(userIds: number[], search?: string) {
+  if (!userIds.length) return [];
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db.select({ id: customers.id, name: customers.name, isActive: customers.isActive }).from(customers)
+    .where(and(inArray(customers.createdById, userIds), search ? or(
+      like(customers.name, `%${search}%`), like(customers.contactPerson, `%${search}%`), like(customers.phone, `%${search}%`),
+    ) : undefined));
 }
 
 export async function getAllCustomers(userIds: number[]) {

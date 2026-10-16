@@ -8,11 +8,12 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ArrowLeft, BarChart3, ChevronLeft, ChevronRight, Info, RefreshCw, X } from "lucide-react";
 import UsageEventList from "@/components/UsageEventList";
+import UsageDashboard from "@/components/UsageDashboard";
 import { usageFeatureLabel, usageFeaturePrimaryMetric, usageSystemLabel, usageDurationText, usageTime } from "@/lib/usagePresentation";
 import "./usage-analytics.css";
 
 type View = "customers" | "features";
-type Section = "overview" | "systems" | "timeline" | "errors";
+type Section = "dashboard" | "overview" | "systems" | "timeline" | "errors";
 type Detail = { type: "customer" | "feature"; id: string; label: string; category?: string };
 type Sort = "recent" | "usage" | "errors";
 const selectClass = "h-10 min-w-0 max-w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -51,7 +52,7 @@ export default function UsageAnalytics() {
   const [draft, setDraft] = useState<UsageFilters>(filters);
   const [range, setRange] = useState("30");
   const [view, setView] = useState<View>("customers");
-  const [section, setSection] = useState<Section>("overview");
+  const [section, setSection] = useState<Section>("dashboard");
   const [trail, setTrail] = useState<Detail[]>([]);
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<Sort>("recent");
@@ -65,6 +66,7 @@ export default function UsageAnalytics() {
   const activeList: View = trail.length ? trail[trail.length - 1].type === "feature" ? "customers" : "features" : view;
   const customers = trpc.usage.customers.useQuery(undefined, { enabled });
   const summary = trpc.usage.summary.useQuery(effective, { enabled, refetchInterval: 60000 });
+  const dashboard = trpc.usage.dashboard.useQuery(effective, { enabled: enabled && section === "dashboard", refetchInterval: 60000 });
   const customerUsage = trpc.usage.customerUsage.useQuery({ filters: effective, page, sort }, { enabled: enabled && section === "overview" && activeList === "customers", refetchInterval: 60000 });
   const featureUsage = trpc.usage.featureUsage.useQuery({ filters: effective, page, sort, category }, { enabled: enabled && section === "overview" && activeList === "features", refetchInterval: 60000 });
   const systems = trpc.usage.systems.useQuery(effective, { enabled: enabled && section === "systems", refetchInterval: 60000 });
@@ -75,7 +77,7 @@ export default function UsageAnalytics() {
   const scopeLabel = filters.identityScope === "unbound" ? "来源" : filters.identityScope === "all" ? "客户 / 来源" : "客户";
   const selectedFeature = trail.find(item => item.type === "feature");
 
-  function clearDetail() { setTrail([]); setSection("overview"); setPage(1); setModule(""); setModuleDraft(""); setSystem(undefined); }
+  function clearDetail() { setTrail([]); setSection("dashboard"); setPage(1); setModule(""); setModuleDraft(""); setSystem(undefined); }
   function apply(next: UsageFilters) { setFilters(next); setDraft(next); clearDetail(); }
   function openDetail(item: Detail) {
     if (trail.some(entry => entry.type === item.type)) { setSection("timeline"); return; }
@@ -87,11 +89,12 @@ export default function UsageAnalytics() {
     void summary.refetch(); void customers.refetch();
     if (section === "overview") { if (activeList === "customers") void customerUsage.refetch(); else void featureUsage.refetch(); }
     if (section === "systems") void systems.refetch();
+    if (section === "dashboard") void dashboard.refetch();
     setRefreshKey(value => value + 1);
   }
   if (!enabled) return <p role="alert" className="p-6 text-sm text-muted-foreground">需要启用中的超级管理员账号查看客户使用情况。</p>;
 
-  return <div className="usage-analytics min-w-0 space-y-5 p-4 md:p-6">
+  return <div className="usage-analytics min-w-0 space-y-5">
     <header className="flex flex-wrap items-center justify-between gap-3"><h1 className="flex items-center gap-2 text-2xl font-semibold"><BarChart3 aria-hidden="true" className="size-6" /><span>客户使用分析</span></h1><Button variant="outline" size="sm" onClick={refresh} disabled={summary.isFetching}><RefreshCw aria-hidden="true" className="size-4" /><span>刷新</span></Button></header>
     <form className="space-y-3 border-b pb-4" onSubmit={event => { event.preventDefault(); if (valid) apply(draft); }}>
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-[120px_minmax(0,1fr)_minmax(0,1fr)_140px_auto]">
@@ -104,7 +107,7 @@ export default function UsageAnalytics() {
       <details className="text-sm" open={range === "custom" || undefined}><summary className="w-fit cursor-pointer py-1 text-xs text-muted-foreground">日期与版本</summary><div className="mt-2 grid gap-3 sm:grid-cols-3"><Field label="开始日期（UTC）"><Input type="date" required value={draft.from} onChange={event => { setRange("custom"); setDraft({ ...draft, from: event.target.value }); }} /></Field><Field label="结束日期（UTC）"><Input type="date" required value={draft.to} onChange={event => { setRange("custom"); setDraft({ ...draft, to: event.target.value }); }} /></Field><Field label="软件版本"><Input maxLength={80} value={draft.appVersion || ""} placeholder="全部版本" onChange={event => setDraft({ ...draft, appVersion: event.target.value || undefined })} /></Field></div></details>
       {!valid && <p role="alert" className="text-xs text-destructive">请选择有效日期，查询范围不能超过 93 天。</p>}
     </form>
-    <div className="flex flex-wrap items-center justify-between gap-3"><Tabs value={view} onValueChange={value => { setView(value as View); clearDetail(); setSort(value === "features" ? "usage" : "recent"); }}><TabsList aria-label="分析视角"><TabsTrigger id="usage-view-customers" aria-controls="usage-view-content" value="customers">按客户看</TabsTrigger><TabsTrigger id="usage-view-features" aria-controls="usage-view-content" value="features">按功能看</TabsTrigger></TabsList></Tabs><p className="text-xs text-muted-foreground">{filters.from} 至 {filters.to} · UTC · {scopeLabel}</p></div>
+    <div className="flex flex-wrap items-center justify-between gap-3"><Tabs value={view} onValueChange={value => { setView(value as View); clearDetail(); setSection("overview"); setSort(value === "features" ? "usage" : "recent"); }}><TabsList className="h-11" aria-label="分析视角"><TabsTrigger id="usage-view-customers" aria-controls="usage-view-content" value="customers">按客户看</TabsTrigger><TabsTrigger id="usage-view-features" aria-controls="usage-view-content" value="features">按功能看</TabsTrigger></TabsList></Tabs><p className="text-xs text-muted-foreground">{filters.from} 至 {filters.to} · UTC · {scopeLabel}</p></div>
     <div id="usage-view-content" role="tabpanel" aria-labelledby={`usage-view-${view}`} className="space-y-5">
     {trail.length > 0 && <nav aria-label="分析路径" className="flex flex-wrap items-center gap-2 text-sm"><Button variant="ghost" size="sm" onClick={clearDetail}><ArrowLeft className="size-4" aria-hidden="true" /><span>{view === "customers" ? "全部客户" : "全部功能"}</span></Button>{trail.map((item, index) => <span key={`${item.type}:${item.id}`} className="flex min-w-0 items-center gap-2"><span aria-hidden="true" className="text-muted-foreground">/</span><button type="button" className="break-words rounded px-1 py-2 text-left font-medium hover:text-primary focus-visible:ring-2 focus-visible:ring-ring" onClick={() => { setTrail(trail.slice(0, index + 1)); setSection("overview"); setPage(1); setSystem(undefined); }}>{item.label}</button></span>)}</nav>}
     <QueryState loading={summary.isPending} error={summary.isError} empty={false}>
@@ -115,8 +118,9 @@ export default function UsageAnalytics() {
         <div><p>异常影响{scopeLabel}</p><strong>{summary.data.errorCustomers}<small>{filters.identityScope === "company" ? "家" : "个"}</small></strong><span>错误上报 {summary.data.errors} 次</span></div>
       </section>}
     </QueryState>
-    <Tabs value={section} onValueChange={changeSection}><TabsList className="h-auto flex-wrap" aria-label="明细视图"><TabsTrigger id="usage-section-overview" aria-controls="usage-section-content" value="overview">{trail.length ? "使用明细" : "使用概览"}</TabsTrigger><TabsTrigger id="usage-section-systems" aria-controls="usage-section-content" value="systems">展示系统</TabsTrigger><TabsTrigger id="usage-section-timeline" aria-controls="usage-section-content" value="timeline">操作记录</TabsTrigger><TabsTrigger id="usage-section-errors" aria-controls="usage-section-content" value="errors">异常排查</TabsTrigger></TabsList></Tabs>
+    <Tabs value={section} onValueChange={changeSection}><TabsList className="h-auto flex-wrap" aria-label="明细视图"><TabsTrigger id="usage-section-dashboard" aria-controls="usage-section-content" value="dashboard" className="min-h-11">使用看板</TabsTrigger><TabsTrigger id="usage-section-overview" aria-controls="usage-section-content" value="overview" className="min-h-11">{activeList === "customers" ? "客户明细" : "功能明细"}</TabsTrigger><TabsTrigger id="usage-section-systems" aria-controls="usage-section-content" value="systems" className="min-h-11">展示系统</TabsTrigger><TabsTrigger id="usage-section-timeline" aria-controls="usage-section-content" value="timeline" className="min-h-11">操作记录</TabsTrigger><TabsTrigger id="usage-section-errors" aria-controls="usage-section-content" value="errors" className="min-h-11">异常排查</TabsTrigger></TabsList></Tabs>
     <div id="usage-section-content" role="tabpanel" aria-labelledby={`usage-section-${section}`} className="space-y-4">
+    {section === "dashboard" && <UsageDashboard data={dashboard.data} loading={dashboard.isPending} error={dashboard.error?.message} retry={() => void dashboard.refetch()} from={filters.from} to={filters.to} countsUses={Boolean(effective.featureId && effective.featureId !== "monitoring")} onFeature={id => openDetail({ type: "feature", id, label: usageFeatureLabel(id) })} onCustomer={(id, label) => openDetail({ type: "customer", id, label })} />}
     {section === "overview" && <section className="min-w-0 space-y-4" aria-label={activeList === "features" ? "功能使用分析" : "客户使用情况"}>
       <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-base font-semibold">{activeList === "features" ? "功能使用情况" : effective.featureId ? "此功能的客户使用情况" : "客户使用情况"}</h2><div className="flex flex-wrap gap-2">
         {activeList === "features" && <select className={selectClass} aria-label="功能分类" value={category} onChange={event => { setCategory(event.target.value as typeof category); setPage(1); }}><option value="business">业务功能</option><option value="diagnostic">运行诊断</option><option value="all">全部功能与诊断</option></select>}

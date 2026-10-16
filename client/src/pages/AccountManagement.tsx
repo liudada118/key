@@ -1,4 +1,5 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import { OrganizationExportButton } from "@/components/OrganizationExportButton";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -259,7 +260,7 @@ export default function AccountManagement() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">账号管理</h1>
           <p className="text-muted-foreground mt-1">
@@ -270,10 +271,12 @@ export default function AccountManagement() {
                 : "查看并管理个人账号"}
           </p>
         </div>
+        <div className="flex shrink-0 flex-wrap gap-2">
+        <OrganizationExportButton />
         {user?.role !== "user" && (
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus className="h-4 w-4 mr-2" />
+          <Button className="h-11" onClick={() => setCreateOpen(true)}>
+            <Plus key="icon" aria-hidden="true" className="h-4 w-4 mr-2" />
             创建账号
           </Button>
           <DialogContent className="bg-card border-border">
@@ -382,6 +385,7 @@ export default function AccountManagement() {
           </DialogContent>
         </Dialog>
         )}
+        </div>
       </div>
 
       {/* 个人账号 */}
