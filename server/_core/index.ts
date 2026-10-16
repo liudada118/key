@@ -7,8 +7,7 @@ import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { ensureDefaultSuperAdmin, ensureDefaultSensorTypes, ensureRsaKeyPair, ensureDeviceCodeRecordsTable, ensureFeedbackTable, createFeedback, ensureSdkRequestsTable, createSdkRequest, getLicenseKeyByString, markLicenseKeyActivated, markLicenseKeyExpired, recordClientTimeAndDetectTamper, getSensorTypesGrouped } from "../db";
-import { decodeLicenseKey } from "../../shared/crypto";
+import { ensureDefaultSuperAdmin, ensureDefaultSensorTypes, ensureRsaKeyPair, ensureDeviceCodeRecordsTable, ensureFeedbackTable, createFeedback, ensureSdkRequestsTable, createSdkRequest, getSensorTypesGrouped } from "../db";
 import {
   LICENSE_GROUP_META,
   SENSOR_LABELS,
@@ -20,8 +19,9 @@ import { registerFeishuKeyRequestCardCallback } from "../feishuKeyRequestCardCal
 import { registerAgentSync } from "../agentSync";
 import { registerSystemPackages } from "../systemPackages";
 import { registerUsage } from "../usage";
-import { authorizeLicenseDevice, registerOfflineDeviceChecks } from "../licenseDevices";
+import { registerOfflineDeviceChecks } from "../licenseDevices";
 import { registerFrontendUpdates } from "../frontendUpdates";
+import { registerOnlineLicenseCheck } from "../onlineLicenseCheck";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -87,116 +87,7 @@ async function startServer() {
   // 请求: POST /licenseCheck  body: { key: string }
   // 返回: { time, valid, status, reason?, expireTimestamp, remainingDays, sensorTypes, isAllTypes }
   //   status: ISSUED/ACTIVATED/SUSPENDED/EXPIRED/REVOKED/UNKNOWN(库里无此密钥)/DB_ERROR/INVALID
-  app.post("/licenseCheck", async (req, res) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Cache-Control", "no-store");
-    const now = Date.now();
-    const key = (req.body && req.body.key ? String(req.body.key) : "").trim();
-    if (!key) {
-      return res.status(400).json({ time: now, valid: false, status: "INVALID", reason: "缺少 key" });
-    }
-    // 客户端可选上报：本机时间（防回拨高水位）与自检篡改标记
-    const clientTime = req.body && req.body.clientTime != null ? Number(req.body.clientTime) : undefined;
-    const tamperReported = !!(req.body && req.body.tamper);
-
-    // 用服务器时间判过期
-    const decoded = decodeLicenseKey(key, now);
-    // 解密失败/格式错误（无到期时间即视为无法解析），或授权范围无法展开
-    //（v3 未知 `@group:` 分类 / 空范围：有到期时间但拿不到 sensorTypes）——
-    // 一律判 INVALID，不能降级成"授权 0 个系统但 valid"。
-    if (!decoded.valid && decoded.error && (!decoded.expireTimestamp || !decoded.sensorTypes)) {
-      return res.json({ time: now, valid: false, status: "INVALID", reason: decoded.error });
-    }
-
-    let status: string = "UNKNOWN";
-    let reason: string | undefined = decoded.valid ? undefined : "密钥已过期";
-    let valid = decoded.valid;
-    // 在线密钥到期以数据库 expireTimestamp 为权威（支持后台续期延长当前密钥）；
-    // 无数据库记录或数据库异常时，退回密钥串里编码的日期（离线兜底）
-    let effectiveExpire: number | null = decoded.expireTimestamp ?? null;
-    let deviceLimit = 0;
-    let deviceLease: Awaited<ReturnType<typeof authorizeLicenseDevice>>["deviceLease"];
-
-    try {
-      const rec = await getLicenseKeyByString(key);
-      if (rec) {
-        status = rec.status;
-        // 到期改以数据库为准（续期会更新这个字段）
-        effectiveExpire = rec.expireTimestamp;
-        const notExpired = now < rec.expireTimestamp;
-        valid = notExpired;
-        reason = notExpired ? undefined : "密钥已过期";
-        // 防回拨/篡改检测：维护可信时间高水位；检测到回拨或客户端上报篡改 → 标记 TAMPERED（持久化）
-        const tamperResult = await recordClientTimeAndDetectTamper({
-          keyId: rec.id,
-          clientTime,
-          tamperReported,
-          serverNow: now,
-        });
-        if (tamperResult) status = tamperResult.status;
-
-        if (status === "REVOKED") {
-          valid = false;
-          reason = rec.revokeReason || "密钥已吊销";
-        } else if (status === "SUSPENDED") {
-          valid = false;
-          reason = rec.suspendReason || "密钥已暂停";
-        } else if (status === "TAMPERED") {
-          valid = false;
-          reason = rec.tamperReason || "密钥异常：检测到时间回拨或客户端篡改";
-        } else if (!notExpired) {
-          // 已过期（按数据库到期判定）：统一返回 EXPIRED 并持久化
-          valid = false;
-          status = "EXPIRED";
-          reason = "密钥已过期";
-          await markLicenseKeyExpired(rec.id);
-        } else if (!rec.isActivated) {
-          // 首次有效校验 → 标记为已激活（在线版"使用即激活"）
-          await markLicenseKeyActivated(key);
-          status = "ACTIVATED";
-        }
-        if (valid) {
-          const device = await authorizeLicenseDevice(rec, req.body?.deviceId, now);
-          deviceLimit = device.deviceLimit;
-          deviceLease = device.deviceLease;
-          if (!device.allowed) {
-            valid = false;
-            status = device.code;
-            reason = device.code === "DEVICE_LIMIT_REACHED" ? "此密钥的电脑数量已达上限，请联系管理员解绑旧电脑或增加名额。"
-              : device.code === "DEVICE_REVOKED" ? "这台电脑已被解绑，请联系管理员恢复授权。"
-                : "此密钥已限定电脑数量，请更新客户端后重新激活。";
-            // Old clients ignore cached valid=false; an expired result prevents their cache from granting access.
-            effectiveExpire = now - 1;
-          }
-        }
-      }
-    } catch (e) {
-      // Missing policy storage or signing keys cannot silently turn a limited key into an unlimited key.
-      return res.status(503).json({ error: "LICENSE_SERVICE_UNAVAILABLE" });
-    }
-
-    const effectiveRemainingDays = effectiveExpire != null
-      ? Math.ceil((effectiveExpire - now) / (1000 * 60 * 60 * 24))
-      : null;
-
-    res.json({
-      time: now,
-      valid,
-      status,
-      reason,
-      expireTimestamp: effectiveExpire,
-      remainingDays: effectiveRemainingDays,
-      deviceLimit,
-      ...(deviceLease ? { deviceLease } : {}),
-      // sensorTypes 已按当前注册表展开：分类密钥在这里自动拿到新增系统
-      sensorTypes: decoded.sensorTypes ?? null,
-      isAllTypes: decoded.isAllTypes ?? false,
-      // v3：命中的分类 key（无分类授权为空数组），仅供客户端展示/排查
-      groupKeys: decoded.groupKeys ?? [],
-      // 密钥里原样保存的授权范围（含 `@group:` 令牌），便于对账
-      scope: decoded.scope ?? null,
-    });
-  });
+  registerOnlineLicenseCheck(app);
 
   // 传感器类型清单接口（桌面端拉取动态传感器类型；后台可在"传感器类型管理"里增删，客户端自动同步）
   // 与 /serverTime、/licenseCheck 同款：纯 REST + CORS，桌面端一次 fetch 即可用，无需走 tRPC/superjson
