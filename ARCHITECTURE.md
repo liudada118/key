@@ -1,6 +1,6 @@
 # 架构文档
 
-> 本文档由 Manus 自动生成和维护。最后更新于：2026-10-16
+> 本文档由 Manus 自动生成和维护。最后更新于：2026-10-19
 
 ## 1. 项目概述
 
@@ -334,7 +334,7 @@ graph TD
 
 **做法**：分类密钥在 payload 的 `file` 里保存**稳定的 `@group:<groupKey>` 令牌**，而不是签发当时展开的系统数组；展开发生在**解码/校验时**。于是往分类里新增系统后，未过期的旧分类密钥在新版客户端就自动获得新增系统，无需重新发证；而用固定数组签发的老密钥不会越权拿到新增系统。
 
-**唯一数据源**：`config/licenseSensorGroups.json`（5 个分类 / 26 个系统），由桌面端 `E:\shroom1` 同步过来，SHA-256 与桌面端一致。服务端**不得**再维护第二份手写分类数组——需要新增/移动系统时改注册表并重新同步：
+**唯一数据源**：`config/licenseSensorGroups.json`（5 个分类 / 27 个系统），与桌面端使用相同的稳定系统 key。服务端不得再维护第二份手写分类数组；新增/移动系统时应核对两仓库的历史类型差异，再同步对应注册项及自包含快照：
 
 ```bash
 cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSensorGroups.json
@@ -347,6 +347,8 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 3. **fail-fast**：文件存在但 JSON 非法、分类 key 重复、系统 value 重复、分类为空 → 抛错终止启动，绝不退回空列表继续签发。文件缺失只 warn 并沿用内联快照。
 
 **模块分工**：`shared/licenseScopes.ts` 是纯逻辑（不碰 `fs`），前端也直接 import；`server/licenseRegistry.ts` 只负责磁盘加载与 SHA-256。DB 的 `sensor_types` 表只保留中文显示名，分类归属一律读注册表（`buildDefaultSensorTypes()` 从注册表派生默认清单）。`LICENSE_GROUP_META[key].dbGroupName` 必须与 `sensor_types.groupName` 逐字一致——`departments.sensorGroup` 就是按这个字符串绑定部门的。
+
+**压力传感背心**：`precision` 精密分类新增 `pressureVest`（`labelKey: sensorPressureVest`），`SENSOR_LABELS` 显示为“压力传感背心”，`shared/crypto-lib.cjs` 通过注册表快照脚本同步。在线、批量及离线生成页面统一读取 `sensors.groups` 的数据库清单，分类授权通过 `sensors.licenseGroups` 读取注册表，无需新增前端手写选项。启动或调用 `ensureDefaultSensorTypes()` 后补齐数据库类型；不改变既有固定数组密钥，未过期精密分类密钥按当前注册表展开时可包含背心。
 
 **兼容矩阵**：
 
@@ -961,3 +963,21 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 | 日期 | 工作 | 状态 |
 | --- | --- | --- |
 | 2026-10-16 | 客户、合同与使用看板 | 前后端、权限、统计口径、隔离MySQL及桌面/手机检查完成；未提交或部署。 |
+
+## 2026-10-19 压力传感背心授权类型
+
+- 本地注册表的精密分类加入 `pressureVest`，显示名为“压力传感背心”；沿用现有在线、批量及离线签发流程，不增加第二套分类或前端类型表。
+- 重新生成 `shared/crypto-lib.cjs` 的内联注册表并通过快照检查，TS 与自包含 CJS 使用同一授权范围。当前为5类27项，注册表 SHA-256 为 `1d8c9cc285aa4ea75ac81a2559df396b790c9c1c049de7e70aaacf0b7fbc6f77`。
+- 87项授权范围、加密及跨实现互通测试通过。确认数据库指向回环地址后，使用既有类型同步函数在本机增补1项，修正本地附加项排序1项，未停用其他类型；未改客户、合同或已签发密钥。仅处理本地项目与本地数据库，未执行远程发布。
+
+### 更新日志（追加）
+
+| 日期 | 类型 | 说明 |
+| --- | --- | --- |
+| 2026-10-19 | 新增功能 | 本地密钥管理项目的精密分类增加压力传感背心pressureVest，补齐中文名称、授权快照及数据库选项。 |
+
+### 项目进度（追加）
+
+| 日期 | 工作 | 状态 |
+| --- | --- | --- |
+| 2026-10-19 | 压力传感背心授权类型 | 完成注册、名称、快照、87项回归及本地类型同步，沿用在线/离线发证页面，无远程发布。 |

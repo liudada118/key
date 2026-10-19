@@ -135,6 +135,10 @@
       {
         "labelKey": "sensorHumanBodyOptimized",
         "value": "humanBodyOptimized"
+      },
+      {
+        "labelKey": "sensorPressureVest",
+        "value": "pressureVest"
       }
     ]
   }

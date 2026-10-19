@@ -400,6 +400,7 @@ export const SENSOR_LABELS: Record<string, string> = {
   fast256: "16x16高速",
   fast1024: "32x32高速",
   humanBodyOptimized: "人体全身传感",
+  pressureVest: "压力传感背心",
   // 注册表外的本地附加项
   normal: "正常测试",
 };
