@@ -6,7 +6,7 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
-import { serveStatic, setupVite } from "./vite";
+import { serveStatic } from "./static";
 import { ensureDefaultSuperAdmin, ensureDefaultSensorTypes, ensureRsaKeyPair, ensureDeviceCodeRecordsTable, ensureFeedbackTable, createFeedback, ensureSdkRequestsTable, createSdkRequest, getSensorTypesGrouped } from "../db";
 import {
   LICENSE_GROUP_META,
@@ -50,6 +50,10 @@ async function startServer() {
 
   const app = express();
   const server = createServer(app);
+  app.get("/healthz", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ ok: true, commit: process.env.KEY_MANAGER_BUILD_SHA || null });
+  });
   // 飞书验签需要原始请求体，因此必须在全局 JSON 解析器之前注册。
   registerFeishuKeyRequestCardCallback(app);
   registerAgentSync(app);
@@ -272,7 +276,7 @@ async function startServer() {
   );
   // development mode uses Vite, production mode uses static files
   if (process.env.NODE_ENV === "development") {
-    await setupVite(app, server);
+    await (await import("./vite")).setupVite(app, server);
   } else {
     serveStatic(app);
   }

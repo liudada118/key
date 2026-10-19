@@ -34,6 +34,41 @@ export function dependencyFingerprint(directory, nodeVersion = process.versions.
   return hash.digest("hex");
 }
 
+function releaseFiles(directory, relative = "") {
+  const files = [];
+  for (const name of readdirSync(path.join(directory, relative))) {
+    const resource = relative ? `${relative}/${name}` : name;
+    if (resource === "release.json") continue;
+    if (name === "node_modules" || name.startsWith(".") || /[\\:\x00-\x1f]/.test(name)) throw new Error("Unexpected release resource");
+    const target = path.join(directory, resource), stat = lstatSync(target);
+    if (stat.isSymbolicLink()) throw new Error("Release resources cannot be symlinks");
+    if (stat.isDirectory()) files.push(...releaseFiles(directory, resource));
+    else if (stat.isFile()) files.push({ path: resource, bytes: stat.size,
+      sha256: createHash("sha256").update(readFileSync(target)).digest("hex") });
+    else throw new Error("Unexpected release resource");
+  }
+  return files.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+export function writeReleaseManifest(directory, commit) {
+  if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error("Invalid commit SHA");
+  const manifest = { schemaVersion: 1, commit, nodeMajor: 22, files: releaseFiles(directory) };
+  writeFileSync(path.join(directory, "release.json"), JSON.stringify(manifest));
+  return { commit, files: manifest.files.length, bytes: manifest.files.reduce((sum, row) => sum + row.bytes, 0) };
+}
+
+export function verifyRelease(directory, commit) {
+  if (!/^[a-f0-9]{40}$/.test(commit || "")) throw new Error("Expected an exact commit SHA");
+  const manifest = JSON.parse(readFileSync(path.join(directory, "release.json"), "utf8"));
+  if (manifest.schemaVersion !== 1 || manifest.commit !== commit || manifest.nodeMajor !== 22
+    || Number(process.versions.node.split(".")[0]) < manifest.nodeMajor) throw new Error("Release identity or Node version mismatch");
+  const files = releaseFiles(directory);
+  if (JSON.stringify(files) !== JSON.stringify(manifest.files)) throw new Error("Release resource checksum mismatch");
+  const required = ["index.js", "migrate.js", "package.json", "public/index.html", "config/licenseSensorGroups.json", "drizzle/meta/_journal.json"];
+  if (required.some(name => !files.some(row => row.path === name && row.bytes > 0))) throw new Error("Incomplete release");
+  return { files: files.length, bytes: files.reduce((sum, row) => sum + row.bytes, 0) };
+}
+
 export function recordDeployment(root, directory, state, now = Date.now()) {
   if (!STATES.has(state)) throw new Error("Invalid deployment state");
   const target = deploymentDirectory(root, directory);
@@ -74,7 +109,7 @@ export function cleanupDeployments(root, currentDirectory, now = Date.now()) {
   const bootstrap = path.join(current, "bootstrap.env");
   if (existsSync(bootstrap) && !lstatSync(bootstrap).isSymbolicLink()) rmSync(bootstrap);
   if (active?.state === "success") {
-    for (const name of ["key-manager-build.tgz", "key-manager-build.tgz.sha256", "staging", "health-index.html"]) {
+    for (const name of ["key-manager-build.tgz", "key-manager-build.tgz.sha256", "staging", "health-index.html", "health.json"]) {
       const target = path.join(deploymentDirectory(base, current), name);
       if (existsSync(target) && !lstatSync(target).isSymbolicLink()) rmSync(target, { recursive: true });
     }
@@ -85,6 +120,11 @@ export function cleanupDeployments(root, currentDirectory, now = Date.now()) {
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const [command, root, directory, state] = process.argv.slice(2);
   if (command === "fingerprint") console.log(dependencyFingerprint(root));
+  else if (command === "verify") console.log(JSON.stringify(verifyRelease(root, directory)));
+  else if (command === "health") {
+    const response = JSON.parse(readFileSync(root, "utf8"));
+    if (response.ok !== true || response.commit !== directory) throw new Error("Running release mismatch");
+  }
   else if (command === "record") recordDeployment(root, directory, state);
   else if (command === "cleanup") console.log(JSON.stringify(cleanupDeployments(root, directory)));
   else throw new Error("Expected fingerprint, record or cleanup");

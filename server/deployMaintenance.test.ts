@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanupDeployments, dependencyFingerprint, recordDeployment } from "../scripts/deploy-maintenance.mjs";
+import { cleanupDeployments, dependencyFingerprint, recordDeployment, verifyRelease, writeReleaseManifest } from "../scripts/deploy-maintenance.mjs";
 
 const temporary: string[] = [];
 afterEach(() => { for (const root of temporary.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -73,5 +73,28 @@ describe("deployment retention and dependency reuse", () => {
     const patched = dependencyFingerprint(f.root, "22.22.0"); expect(patched).not.toBe(initial);
     writeFileSync(path.join(f.root, "package.json"), '{"version":"2.0.0"}');
     expect(dependencyFingerprint(f.root, "22.22.0")).not.toBe(patched);
+  });
+  it("verifies all release bytes and rejects a different commit, missing or extra files", () => {
+    const f = fixture(), commit = "a".repeat(40);
+    for (const name of ["index.js", "migrate.js", "package.json", "public/index.html", "config/licenseSensorGroups.json", "drizzle/meta/_journal.json"]) {
+      const target = path.join(f.root, name); mkdirSync(path.dirname(target), { recursive: true }); writeFileSync(target, "fixture");
+    }
+    expect(writeReleaseManifest(f.root, commit)).toMatchObject({ files: 6 });
+    expect(verifyRelease(f.root, commit)).toMatchObject({ files: 6 });
+    expect(() => verifyRelease(f.root, "b".repeat(40))).toThrow(/identity/);
+    writeFileSync(path.join(f.root, "extra.txt"), "unexpected");
+    expect(() => verifyRelease(f.root, commit)).toThrow(/checksum/);
+    rmSync(path.join(f.root, "extra.txt"));
+    writeFileSync(path.join(f.root, "index.js"), "tampered");
+    expect(() => verifyRelease(f.root, commit)).toThrow(/checksum/);
+  });
+  it("refuses a dependency directory, hidden credentials or symlinks in the release", () => {
+    for (const name of ["node_modules", ".env"]) {
+      const f = fixture(); writeFileSync(path.join(f.root, name), "fixture");
+      expect(() => writeReleaseManifest(f.root, "a".repeat(40))).toThrow(/Unexpected/);
+    }
+    const f = fixture(), outside = fixture();
+    symlinkSync(outside.root, path.join(f.root, "linked"), process.platform === "win32" ? "junction" : "dir");
+    expect(() => writeReleaseManifest(f.root, "a".repeat(40))).toThrow(/symlinks/);
   });
 });

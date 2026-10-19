@@ -45,6 +45,8 @@ export function getLicenseRegistryInfo() {
 function resolveRegistryPath(): string {
   const fromEnv = process.env.LICENSE_REGISTRY_PATH?.trim();
   if (fromEnv) return path.resolve(fromEnv);
+  const packaged = path.resolve(import.meta.dirname, DEFAULT_REGISTRY_RELATIVE_PATH);
+  if (fs.existsSync(packaged)) return packaged;
   return path.resolve(process.cwd(), DEFAULT_REGISTRY_RELATIVE_PATH);
 }
 

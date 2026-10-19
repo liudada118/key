@@ -78,6 +78,7 @@ key-manager/
 ├── server/                     # 后端逻辑
 │   ├── _core/                  # 框架核心（OAuth、上下文、Vite 桥接）
 │   │   ├── trpc.ts             # tRPC 初始化 + 三级权限中间件
+│   │   ├── static.ts           # 独立静态资源服务，生产包不加载Vite
 │   │   └── ...                 # 其他核心模块
 │   ├── db.ts                   # 数据库查询 helpers（账号 + 密钥 CRUD）
 │   ├── licenseDeviceMode.ts    # 电脑授权分类 SQL、当前上限与离线签名格式判断
@@ -136,6 +137,11 @@ key-manager/
 │       └── scripts/save_markdown.py # UTF-8 原子保存与编码校验
 ├── obsidian-note-skill.zip     # Obsidian skill 上传包
 ├── scripts/listFeishuChats.ts  # 安全列出应用机器人可见群及 chat_id
+├── scripts/build-deploy.mjs    # 自包含生产包、运行依赖闭包检查与白名单资源复制
+├── scripts/migrate-production.ts # 随包迁移器、目标绑定的成功摘要及强制检查
+├── scripts/deploy-server.sh    # 低优先级发布、迁移、版本校验与dist回退
+├── scripts/deploy-maintenance.mjs # 发布清单校验及有边界的历史清理
+├── docs/low-io-deployment.md   # 新CI路径、运维边界和验证说明
 ├── docs/feishu-key-approval-setup.md # 飞书群内审批配置说明
 ├── package.json
 ├── todo.md                     # 功能追踪
@@ -272,6 +278,7 @@ graph TD
 | `tRPC` | `sensors.licenseGroups` | **公开** | 分类授权清单（`@group:` 令牌 + 各分类当前成员 + 注册表 SHA-256） |
 | `POST` | `/licenseCheck` | **公开** | 纯 REST 在线校验：状态 + 展开后的 `sensorTypes` + `groupKeys` + 原始 `scope` |
 | `GET` | `/sensorTypes` | **公开** | 纯 REST 传感器清单 + `licenseGroups` + `registrySha256`；DB 异常时回退注册表派生清单 |
+| `GET` | `/healthz` | **公开** | 禁止缓存的进程/构建检查，返回ok和运行提交SHA，不返回配置或凭据；不代表数据库或飞书健康 |
 | `tRPC` | `offline.*` | 登录 | 离线密钥生成与管理 |
 | `tRPC` | `contracts.list` | 登录 | 读取按合同编号去重的飞书合同，按发起人系统所属部门补全缺失事业部，可选 businessUnit 与状态组合筛选后计数和分页，并返回已生成密钥数量 |
 | `tRPC` | `contracts.businessUnits` | 启用中的登录账号 | 汇总全部可见合同的已解析事业部，名称去重排序；子账号不暴露其他提交人的选项，来源异常明确报错 |
@@ -343,7 +350,7 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 **加载顺序**（`shared/licenseScopes.ts` + `server/licenseRegistry.ts`）：
 
 1. 构建内联：`shared/licenseScopes.ts` 静态 `import` 该 JSON 作为兜底，导入即校验（校验失败进程起不来）。
-2. 运行时磁盘优先：`startServer()` 一开始调用 `loadLicenseRegistry()`，读 `LICENSE_REGISTRY_PATH ?? <cwd>/config/licenseSensorGroups.json`，存在就覆盖内联快照，并打印 `分类数 / 系统数 / sha256`。
+2. 运行时磁盘优先：`startServer()` 一开始调用 `loadLicenseRegistry()`，先读显式 `LICENSE_REGISTRY_PATH`，否则优先随生产包的 `dist/config/licenseSensorGroups.json`，再使用 `<cwd>/config/licenseSensorGroups.json`；存在就覆盖内联快照，并打印 `分类数 / 系统数 / sha256`。外部路径仍需单独同步，自包含CI默认注册表与dist共同发布和回退。
 3. **fail-fast**：文件存在但 JSON 非法、分类 key 重复、系统 value 重复、分类为空 → 抛错终止启动，绝不退回空列表继续签发。文件缺失只 warn 并沿用内联快照。
 
 **模块分工**：`shared/licenseScopes.ts` 是纯逻辑（不碰 `fs`），前端也直接 import；`server/licenseRegistry.ts` 只负责磁盘加载与 SHA-256。DB 的 `sensor_types` 表只保留中文显示名，分类归属一律读注册表（`buildDefaultSensorTypes()` 从注册表派生默认清单）。`LICENSE_GROUP_META[key].dbGroupName` 必须与 `sensor_types.groupName` 逐字一致——`departments.sensorGroup` 就是按这个字符串绑定部门的。
@@ -981,3 +988,25 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 | 日期 | 工作 | 状态 |
 | --- | --- | --- |
 | 2026-10-19 | 压力传感背心授权类型 | 完成注册、名称、快照、87项回归及本地类型同步，沿用在线/离线发证页面，无远程发布。 |
+
+## 2026-10-19 自包含低I/O部署
+
+- 根据本次CI检查：2026-10-19部署在服务器GitHub443连接失败后退出，上传及解压正常，可用磁盘约74.3GiB、内存437MiB。此记录说明当次明确失败点，不冒充磁盘吞吐采样。为降低后续部署I/O和服务器联网依赖，将构建与运行依赖打包全部移到runner。
+- `build:deploy` 调用 `scripts/build-deploy.mjs`，esbuild为Node22生成自包含ESM服务和迁移器；只允许Node内置模块外部引用，禁止Vite/TypeScript/drizzle-kit进入生产闭包。开发Vite动态加载，静态服务独立为 `_core/static.ts`。发布目录附带模块类型、配套注册表、22份SQL及journal、静态文件和每文件SHA-256清单，不复制.env、Git、node_modules或迁移快照。当前真实构建32项校验资源，另加清单共33个文件，约7MiB未压缩、1.8MiB压缩。
+- workflow保留runner检查测试、SCP、资源预检和配置保留；生产机不再Git fetch/reset、不安装依赖、不构建。上传即包含prepared管理标记，完整上传后SSH未执行的目录可在超过24小时后回收。Node22+在预检中确认，应用与发布目录要求同一文件系统，dist使用重命名切换。旧Git和node_modules保持不动，避免自动删除的大量I/O及破坏历史回退；服务器Git HEAD不再代表运行版本，改查 `dist/release.json`。
+- `scripts/deploy-server.sh` 在flock内应用首次配置和发布。校验、解包、迁移、退出清理以nice10、可用时ionice best-effort7执行；只在退出清理一次，不扫全盘。该调度策略不是IOPS/带宽硬限额。迁移/重启/健康失败场景保留或恢复旧dist和配套配置，数据库不自动回退；保留2份成功、1份失败及当前任务的既有边界不变，不删除业务库、日志、私钥或/data/html。
+- `migrate-production.ts` 沿用Drizzle MySQL迁移表及SQL断点，把SQL历史与数据库目标哈希写入只包含摘要的成功标记；未变化时不连接数据库，失败不覆盖标记，恢复/重建数据库后可用--force强制检查。执行超时120秒、Node堆192MiB，不是总RSS硬限制。显式LICENSE_REGISTRY_PATH继续优先，否则使用包内注册表，防止未更新的服务器源码配置覆盖新包。
+- `/healthz` 在生产包构建时固定运行提交SHA，重启后连续3次核对该SHA和首页字节，避免只有首页相同就误认后台已更新。此接口只报告进程与版本，不返回环境变量，也不保证外部依赖健康。标准开发构建SHA可为空。
+- 验证：新增13项测试，完整48个文件、419项全部通过，类型检查、生产构建、Bash语法及workflow YAML解析通过。生产包在仓库外无node_modules的临时目录启动并通过静态、注册表、真实隔离MySQL登录与完整22份迁移测试；覆盖迁移跳过/目标变化/失败不写标记。真实Shell配合隔离命令桩验证配置保留、首启、SHA拒绝、无Git/包管理器、单次低优先级清理及失败回退。临时进程和随机测试库均关闭清理；没有生产压力实测，无新增依赖或运行时环境变量，未提交、推送或部署。
+
+### 更新日志（追加）
+
+| 日期 | 类型 | 说明 |
+| --- | --- | --- |
+| 2026-10-19 | 优化重构 | CI改为自包含低I/O发布，服务器免Git拉取/依赖安装，迁移按目标摘要复用，保留版本校验及回退。 |
+
+### 项目进度（追加）
+
+| 日期 | 工作 | 状态 |
+| --- | --- | --- |
+| 2026-10-19 | 自包含低I/O部署 | 完成419项回归、独立运行、真实MySQL迁移与登录及Shell回退验证；生产降幅待发布后采样，未提交或部署。 |
