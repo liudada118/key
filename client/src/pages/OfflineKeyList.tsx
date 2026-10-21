@@ -33,6 +33,7 @@ import {
 import { useState, useMemo } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import LicenseDevicesDialog from "@/components/LicenseDevicesDialog";
+import { LICENSE_PRODUCT_LABELS, normalizeLicenseProduct } from "@shared/licenseProducts";
 import { toast } from "sonner";
 import { copyText } from "@/lib/clipboard";
 import { formatScopeEntry, isGroupScopeToken } from "@shared/licenseScopes";
@@ -229,7 +230,10 @@ export default function OfflineKeyList({ deviceMode = "unlimited", embedded = fa
                           </TableCell>
                           <TableCell>
                             <div className="flex flex-wrap gap-1">
-                              {item.sensorTypes === "all" ? (
+                              <Badge variant="secondary">{LICENSE_PRODUCT_LABELS[normalizeLicenseProduct(item.productType)]}</Badge>
+                              {normalizeLicenseProduct(item.productType) === "shroom-sdk" ? (
+                                <Badge variant="default" className="text-[10px]">不限制设备型号</Badge>
+                              ) : item.sensorTypes === "all" ? (
                                 <Badge variant="default" className="text-[10px]">全部授权</Badge>
                               ) : (
                                 <>

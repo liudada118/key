@@ -21,7 +21,10 @@ import { registerSystemPackages } from "../systemPackages";
 import { registerUsage } from "../usage";
 import { registerOfflineDeviceChecks } from "../licenseDevices";
 import { registerFrontendUpdates } from "../frontendUpdates";
+import { registerAgentModelCatalog } from "../agentModelCatalog";
+import { registerAlgorithmPlatform } from "../algorithmPlatform";
 import { registerOnlineLicenseCheck } from "../onlineLicenseCheck";
+import { startUploadRetentionWorker } from "../uploadRetention";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -60,7 +63,10 @@ async function startServer() {
   registerSystemPackages(app);
   registerUsage(app);
   registerFrontendUpdates(app);
+  registerAgentModelCatalog(app);
+  registerAlgorithmPlatform(app);
   registerOfflineDeviceChecks(app);
+  startUploadRetentionWorker();
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));

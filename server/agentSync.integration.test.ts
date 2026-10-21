@@ -42,6 +42,8 @@ describe.skipIf(!adminUrl)("Agent sync MySQL transactions", () => {
     for (const statement of sourceMigration.split("--> statement-breakpoint")) await pool.query(statement);
     const offlineSourceMigration = await readFile(new URL("../drizzle/0021_agent_chat_offline_sources.sql", import.meta.url), "utf8");
     for (const statement of offlineSourceMigration.split("--> statement-breakpoint")) await pool.query(statement);
+    const retentionMigration = await readFile(new URL("../drizzle/0022_upload_retention.sql", import.meta.url), "utf8");
+    for (const statement of retentionMigration.split("--> statement-breakpoint").filter(statement => !statement.includes("usage_retention_received"))) await pool.query(statement);
     await pool.query("CREATE TABLE rsaKeyPairs (id int PRIMARY KEY, publicKey text)");
     await pool.query("CREATE TABLE offlineKeys (id int PRIMARY KEY, activationCode text, status varchar(32), isDeleted boolean DEFAULT 0, customerId int, customerName varchar(256), expireDate bigint, rsaKeyPairId int)");
   });

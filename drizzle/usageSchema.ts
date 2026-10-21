@@ -24,4 +24,5 @@ export const usageEvents = mysqlTable("usage_events", {
   index("usage_source_period").on(table.sourceId, table.occurredMs),
   index("usage_session").on(table.sourceId, table.installationId, table.sessionId, table.occurredMs),
   index("usage_errors").on(table.eventName, table.occurredMs),
+  index("usage_retention_received").on(table.receivedAt),
 ]);

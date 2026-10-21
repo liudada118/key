@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { LICENSE_PRODUCT_LABELS, type LicenseProductType } from "@shared/licenseProducts";
 
 export type GenerationContract = {
   id: number;
@@ -44,6 +45,7 @@ type KeyGenerationGateDialogProps = {
   contractsLoading: boolean;
   contractsError?: string;
   mode: "single" | "batch";
+  productType?: LicenseProductType;
   sensorTypes: string | string[];
   sensorSummary: string;
   days: number;
@@ -69,6 +71,7 @@ export default function KeyGenerationGateDialog({
   contractsLoading,
   contractsError,
   mode,
+  productType = "shroom-desktop",
   sensorTypes,
   sensorSummary,
   days,
@@ -156,6 +159,7 @@ export default function KeyGenerationGateDialog({
     }
     requestMutation.mutate({
       mode,
+      productType,
       sensorTypes,
       days,
       category,
@@ -174,7 +178,7 @@ export default function KeyGenerationGateDialog({
     >
       <DialogContent className="grid max-h-[92vh] grid-rows-[auto_auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-3xl">
         <DialogHeader className="border-b px-6 py-5 pr-12">
-          <DialogTitle>确认生成方式</DialogTitle>
+          <DialogTitle>确认生成方式 · {LICENSE_PRODUCT_LABELS[productType]}</DialogTitle>
           <DialogDescription className="sr-only">
             绑定飞书合同后生成密钥，或处理无合同生成。
           </DialogDescription>

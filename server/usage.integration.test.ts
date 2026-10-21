@@ -37,7 +37,7 @@ describe.skipIf(!adminUrl)("usage MySQL transaction and attribution", () => {
     await pool.query("INSERT INTO customers VALUES (1,1,'Company A'),(2,1,'Company B'),(3,0,'Inactive')");
     await pool.query("CREATE TABLE licenseKeys (id int AUTO_INCREMENT PRIMARY KEY, keyString text, status varchar(32), expireTimestamp bigint, isDeleted boolean DEFAULT 0, customerId int, customerName varchar(256))");
     await pool.query("CREATE TABLE offlineKeys (id int PRIMARY KEY, customerId int, customerName varchar(256))");
-    for (const file of ["0013_agent_chat_sync.sql", "0014_agent_chat_license_auth.sql", "0015_usage_analytics.sql", "0021_agent_chat_offline_sources.sql"]) {
+    for (const file of ["0013_agent_chat_sync.sql", "0014_agent_chat_license_auth.sql", "0015_usage_analytics.sql", "0021_agent_chat_offline_sources.sql", "0022_upload_retention.sql"]) {
       const migration = await readFile(new URL(`../drizzle/${file}`, import.meta.url), "utf8");
       for (const statement of migration.split("--> statement-breakpoint")) await pool.query(statement);
     }

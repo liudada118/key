@@ -27,7 +27,8 @@ export const agentConversations = mysqlTable("agent_conversations", {
   revision: bigint("revision", { mode: "number", unsigned: true }).notNull(),
   snapshotJson: longtext("snapshot_json").notNull(),
   receivedAt: timestamp("received_at").defaultNow().notNull(),
-}, table => [primaryKey({ columns: [table.tenantId, table.installationId, table.conversationId] })]);
+}, table => [primaryKey({ columns: [table.tenantId, table.installationId, table.conversationId] }),
+  index("agent_retention_received").on(table.receivedAt)]);
 
 export const agentSyncEvents = mysqlTable("agent_sync_events", {
   tenantId: int("tenant_id").notNull(),

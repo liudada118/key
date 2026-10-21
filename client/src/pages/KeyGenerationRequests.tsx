@@ -26,12 +26,14 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 import { formatLicenseScope } from "@shared/licenseScopes";
+import { LICENSE_PRODUCT_LABELS, type LicenseProductType } from "@shared/licenseProducts";
 
 type RequestStatus = "PENDING" | "APPROVED" | "REJECTED";
 type StatusFilter = "ALL" | RequestStatus;
 type ReviewDecision = "APPROVE" | "REJECT";
 
 type GenerationRequestItem = {
+  productType?: LicenseProductType;
   id: number;
   requestNo: string;
   mode: "single" | "batch";
@@ -258,6 +260,7 @@ export default function KeyGenerationRequests() {
                       <p className="whitespace-nowrap font-mono text-sm font-medium">
                         {request.requestNo}
                       </p>
+                      <Badge variant="outline">{LICENSE_PRODUCT_LABELS[request.productType ?? "shroom-desktop"]}</Badge>
                       <p className="mt-1 text-xs text-muted-foreground">
                         {request.mode === "single"
                           ? "单个生成"
@@ -410,6 +413,7 @@ export default function KeyGenerationRequests() {
                   <p className="mt-1 font-mono font-medium">
                     {reviewTarget.requestNo}
                   </p>
+                  <Badge variant="outline">{LICENSE_PRODUCT_LABELS[reviewTarget.productType ?? "shroom-desktop"]}</Badge>
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">申请人</p>

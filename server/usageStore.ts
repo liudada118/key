@@ -6,6 +6,7 @@ import { AgentSyncError, authenticateLicenseUpload } from "./agentSyncStore";
 import { sanitizeUsageEvent, type UsageEvent, type UsageFilters } from "./usageSchema";
 import { usageAnalysisColumns, usageCustomerKey, usageFeatureCategory,
   usageFeatureId, usageSystemType } from "./usageAnalyticsSql";
+import { registerUsageGuard } from "./uploadRetention";
 
 export type UsagePrincipal = { sourceId: number; customerId: number | null; customerName: string };
 
@@ -47,6 +48,10 @@ export async function persistUsageBatch(principal: UsagePrincipal, events: Usage
       const properties = event.properties;
       const payloadHash = digest({ ...raw, eventId: event.eventId, installationId: event.installationId,
         sessionId: event.sessionId, occurredAt: event.occurredAt });
+      const guard = await registerUsageGuard(tx, { kind: "usage", sourceId: principal.sourceId,
+        installationId: event.installationId, objectId: event.eventId }, payloadHash);
+      if (guard.conflict) throw new AgentSyncError(409, "EVENT_CONTENT_CONFLICT");
+      if (guard.blocked) continue;
       await tx.insert(usageEvents).values({
         sourceId: principal.sourceId, installationId: event.installationId, eventId: event.eventId,
         sessionId: event.sessionId, occurredMs: Date.parse(event.occurredAt),

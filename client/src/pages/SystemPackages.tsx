@@ -7,7 +7,8 @@ import { Link } from "wouter";
 
 type Submission = { id: number; systemId: string; name: string; sha256: string; status: string;
   baseVersion: number | null; reviewNote: string | null; audienceJson: string | null; createdAt: string };
-type Detail = { id: number; systemId: string; status: string; manifest: Record<string, unknown>;
+type WithdrawalMode = "stop-distribution" | "stop-new-acquisition";
+type Detail = { withdrawal?: { mode: WithdrawalMode; reason: string } | null; id: number; systemId: string; status: string; manifest: Record<string, unknown>;
   baseVersion: number | null; currentPublished: { id: number; name: string } | null;
   diff: { dataContractChanged: boolean; protocolChanged: boolean; lineOrderChanged: boolean;
     dataContract: { before: unknown; after: unknown } | null; protocol: { before: unknown; after: unknown } | null;
@@ -24,12 +25,12 @@ export default function SystemPackages() {
   const customers = trpc.customers.all.useQuery(undefined, { enabled: admin });
   const [items, setItems] = useState<Submission[]>([]);
   const [detail, setDetail] = useState<Detail | null>(null);
-  const [audience, setAudience] = useState<"all" | "selected">("selected");
-  const [selectedCustomers, setSelectedCustomers] = useState<number[]>([]);
   const [releaseVersion, setReleaseVersion] = useState<number | null>(null);
   const [releaseAudience, setReleaseAudience] = useState<"all" | "selected">("selected");
   const [releaseCustomers, setReleaseCustomers] = useState<number[]>([]);
   const [note, setNote] = useState("");
+  const [withdrawalMode, setWithdrawalMode] = useState<WithdrawalMode>("stop-distribution");
+  const [withdrawalReason, setWithdrawalReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [publishFailure, setPublishFailure] = useState("");
@@ -97,21 +98,21 @@ export default function SystemPackages() {
   /** Review actions are explicit and update the list only after server confirmation. */
   const act = async (action: "publish" | "reject" | "revoke") => {
     if (!detail) return;
-    if (action === "publish" && audience === "all" && !window.confirm(`将“${detail.systemId}”版本 #${detail.id} 发布给全部客户，并清除已有客户级版本覆盖。确认继续？`)) return;
-    if (action === "revoke" && !window.confirm(`撤回版本 #${detail.id}？指向该版本的客户会在下次同步后看不到此系统；已打开的会话不会即时断开。请优先考虑按客户回退。`)) return;
+    if (action === "revoke" && !window.confirm(`处理 ${detail.systemId} 版本 #${detail.id}：${withdrawalMode === "stop-distribution" ? "停止新下载；已安装客户端在取得有效版本状态后继续使用。" : "停止新采集，正在采集的数据有序收尾，历史保留。"}离线客户端要在下次成功检查或凭证失效后才受影响。确认继续？`)) return;
     setBusy(true); setMessage(""); setPublishFailure("");
     let actionCompleted = false;
     try {
-      const body = action === "publish" ? { audience: audience === "all" ? "all" : selectedCustomers,
+      const body = action === "publish" ? {
         ...(detail.baseVersion ? { confirmBaseVersion: detail.baseVersion } : {}) }
-        : action === "reject" ? { note } : {};
+        : action === "reject" ? { note } : { withdrawalMode, reason: withdrawalReason };
       await api(`/admin/submissions/${detail.id}/${action}`, { method: "POST", body: JSON.stringify(body) });
       actionCompleted = true;
-      setMessage(action === "publish" ? `系统 ${detail.systemId} 已发布，客户下次同步后可用。`
-        : action === "reject" ? "已退回，原包保留供审计。" : "版本已撤回，受影响客户下次同步后不再看到该版本；已打开的会话不会即时断开。");
+      setMessage(action === "publish" ? (detail.currentPublished ? `系统 ${detail.systemId} 已审核为候选版本；请在下方选择范围后推广，客户当前版本不变。` : `系统 ${detail.systemId} 已首次发布为默认版本，持相应授权密钥的客户可获取。`)
+        : action === "reject" ? "已退回，原包保留供审计。" : `已保存撤回策略：${withdrawalMode === "stop-distribution" ? "停止新下载，已安装新版客户端可继续使用" : "停止新采集并有序收尾，历史保留"}。下次有效检查生效，断网电脑不能即时触达。`);
       if (action === "publish") {
         setDetail(await api(`/admin/submissions/${detail.id}`)); setReleaseVersion(detail.id);
-      } else setDetail(null);
+      } else if (action === "revoke") { setDetail(await api(`/admin/submissions/${detail.id}`)); }
+      else setDetail(null);
       await refresh();
     } catch (error) {
       const explanation = (error as Error).message;
@@ -146,7 +147,7 @@ export default function SystemPackages() {
   return <main className="mx-auto max-w-5xl space-y-6 p-4" translate="no">
     <header className="flex items-center gap-3"><ShieldCheck className="size-6 text-primary" /><div>
       <h1 className="text-2xl font-semibold">公司系统库</h1>
-      <p className="text-sm text-muted-foreground">员工提交只进入审核队列；发布后，软件凭密钥中已授权的系统自动获取，无需额外关联客户。</p>
+      <p className="text-sm text-muted-foreground">员工提交进入审核；首次发布建立默认版本，后续更新审核成候选，显式推广后客户才切换。软件仍凭密钥授权获取系统。</p>
     </div></header>
     <section className="space-y-3 rounded-xl border bg-card p-5">
       <h2 className="font-medium">软件直接提交凭证</h2>
@@ -176,8 +177,8 @@ export default function SystemPackages() {
         className="flex w-full items-center justify-between gap-3 rounded-lg border p-3 text-left hover:bg-muted"
         onClick={async () => { try { const opened = await api(`/admin/submissions/${item.id}`) as Detail;
           setDetail(opened); setPublishFailure(""); setReleaseVersion(opened.status === "published" ? opened.id : opened.currentPublished?.id || null);
-          setReleaseAudience("selected"); setReleaseCustomers([]); setAudience("selected"); setSelectedCustomers([]);
-          setNote(""); } catch (error) { setMessage((error as Error).message); } }}>
+          setReleaseAudience("selected"); setReleaseCustomers([]);
+          setNote(""); setWithdrawalMode(opened.withdrawal?.mode ?? "stop-distribution"); setWithdrawalReason(opened.withdrawal?.reason ?? ""); } catch (error) { setMessage((error as Error).message); } }}>
         <span><strong>{item.name}</strong><small className="ml-2 text-muted-foreground">#{item.id} · {item.systemId}{item.baseVersion ? ` · 更新 #${item.baseVersion}` : " · 新系统"}</small></span>
         <span className="text-sm">{item.status === "pending" ? "待审核" : item.status === "published" ? "已发布" : item.status === "revoked" ? "已撤回" : "已退回"}</span>
       </button>)}{!items.length && <p className="text-sm text-muted-foreground">暂无提交</p>}</div>
@@ -207,17 +208,14 @@ export default function SystemPackages() {
           {detail.algorithms.map((algorithm) => <p key={algorithm.id}>算法：{algorithm.name} ({algorithm.id})</p>)}
         </div></div></div>
       {detail.status === "pending" && <>
-        <fieldset className="space-y-2"><legend className="font-medium">版本投放范围</legend>
-          <p className="text-sm text-muted-foreground">这里选择哪些客户使用此版本；系统使用权限由密钥决定，开密钥时无需再选择客户。</p>
-          <label className="mr-5"><input type="radio" checked={audience === "all"} onChange={() => setAudience("all")} /> 全部客户</label>
-          <label><input type="radio" checked={audience === "selected"} onChange={() => setAudience("selected")} /> 指定客户</label>
-          {audience === "selected" && <div className="max-h-40 overflow-auto rounded border p-3">{customers.data?.map((item) => <label key={item.id} className="mr-5 block py-1">
-            <input type="checkbox" checked={selectedCustomers.includes(item.id)} onChange={(event) => setSelectedCustomers((current) => event.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id))} /> {item.name} (#{item.id})
-          </label>)}</div>}
-        </fieldset>
-        <div className="flex flex-wrap items-center gap-3"><button type="button" disabled={busy || Boolean(detail.diff?.dataContractChanged) || (audience === "selected" && !selectedCustomers.length)
+        <div className="rounded-lg border bg-muted p-3 text-sm" role="note">
+          {detail.currentPublished ? <><strong>审核通过后仅形成候选版本</strong><p>本次不会切换任何客户的版本。发布后请使用“版本推广与客户回退”指定客户或全体范围。</p></>
+            : <><strong>首次发布建立默认版本</strong><p>影响范围：所有密钥已授权此系统且没有专属版本指针的客户；本次不需要额外选择客户。</p></>}
+          <p>已有客户专属指针：{detail.rollouts.filter(item => item.customerId !== 0).length} 位；当前默认：{defaultVersion ? `#${defaultVersion}` : detail.currentPublished ? `发布时固定为 #${detail.currentPublished.id}` : "本次首次发布版本"}。</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3"><button type="button" disabled={busy || Boolean(detail.diff?.dataContractChanged)
           || (detail.currentPublished?.id ?? null) !== detail.baseVersion}
-          className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50" onClick={() => void act("publish")}>{detail.baseVersion ? `确认作为 #${detail.baseVersion} 的更新发布` : "确认发布新系统"}</button>
+          className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50" onClick={() => void act("publish")}>{detail.baseVersion ? `审核为 #${detail.baseVersion} 的候选更新` : "确认发布新系统"}</button>
           <input className="rounded-md border px-3 py-2" value={note} onChange={(event) => setNote(event.target.value)} placeholder="退回原因（可选）" />
           <button type="button" disabled={busy} className="rounded-md border px-4 py-2" onClick={() => void act("reject")}>退回</button></div>
         {publishFailure && <div role="alert" className="rounded-lg border border-destructive bg-destructive/10 p-3 text-sm text-destructive">
@@ -225,12 +223,21 @@ export default function SystemPackages() {
           <p className="mt-1">{publishFailure}</p>
         </div>}
       </>}
+      {["published", "revoked"].includes(detail.status) && <fieldset className="space-y-3 rounded-lg border p-4">
+        <legend className="font-medium">撤回此确切版本（{detail.systemId} · #{detail.id}）</legend>
+        <label className="block text-sm"><input type="radio" name="withdrawal-mode" checked={withdrawalMode === "stop-distribution"} onChange={() => setWithdrawalMode("stop-distribution")} /> 停止交付：禁止新下载，已安装客户端取得有效版本状态后继续使用（默认）。</label>
+        <label className="block text-sm"><input type="radio" name="withdrawal-mode" checked={withdrawalMode === "stop-new-acquisition"} onChange={() => setWithdrawalMode("stop-new-acquisition")} /> 停止采集：禁止新采集，当前采集有序收尾；历史查看和回放保留。</label>
+        <label className="block text-sm">撤回原因（可选）<input maxLength={400} className="mt-1 block w-full rounded border p-2" value={withdrawalReason} onChange={event => setWithdrawalReason(event.target.value)} /></label>
+        <p className="text-xs text-muted-foreground">不改变同系统其他版本；不会自动切旧版。离线电脑不能即时触达。旧客户端仍按原目录规则保守限制，应先验证目标安装包支持所选策略。</p>
+        <button type="button" disabled={busy} className="rounded-md border px-4 py-2" onClick={() => void act("revoke")}>{detail.status === "revoked" ? "确认调整此版本撤回策略" : "确认撤回此版本"}</button>
+      </fieldset>}
       {detail.status === "published" && <>
         <div className="flex flex-wrap items-center gap-3"><Link href={`/generate?system=${encodeURIComponent(detail.systemId)}`} className="rounded-md bg-primary px-4 py-2 text-primary-foreground">开密钥时选择此系统</Link>
-          <button type="button" disabled={busy} className="rounded-md border px-4 py-2" onClick={() => void act("revoke")}>紧急撤回此版本</button></div>
+</div>
         <section className="space-y-3 rounded-lg border p-4" aria-label="系统版本发布范围">
           <h3 className="font-medium">版本推广与客户回退</h3>
-          <p className="text-sm text-muted-foreground">客户关联仅用于版本推广和回退。软件凭有效密钥中的系统授权获取；未关联客户时，使用全体默认版本，未设置默认版本则使用最新已发布版本。</p>
+          <p className="text-sm font-medium">本版本状态：{detail.rollouts.some(item => item.versionId === detail.id) ? "已用于交付" : "候选版本，尚未显式推广"}</p>
+          <p className="text-sm text-muted-foreground">客户关联仅用于版本推广和回退。软件凭有效密钥中的系统授权获取；未关联客户时，使用全体默认版本，历史系统未设置默认时仍沿用旧兼容规则；升级前应运行默认基线回填，后续审核不会自动推广。</p>
           <p className="text-sm">全体默认版本：{defaultVersion ? `#${defaultVersion}` : "最新已发布版本"}；单独指定客户：{detail.rollouts.filter((item) => item.customerId !== 0).length} 位</p>
           <label className="block text-sm">目标版本
             <select className="ml-2 rounded border bg-background p-2" value={releaseVersion ?? ""} onChange={(event) => setReleaseVersion(Number(event.target.value))}>

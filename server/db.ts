@@ -38,15 +38,15 @@ import {
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { generateLicenseKey, decodeLicenseKey } from "../shared/crypto";
+import { normalizeLicenseProduct, type LicenseProductType } from "../shared/licenseProducts";
+import { createOfflineLicensePayload } from "./offlineLicensePayload";
 import { deviceModeCondition, effectiveDeviceLimit, restrictedDeviceFormat, type LicenseDeviceMode } from "./licenseDeviceMode";
 import {
   GROUP_SCOPE_PREFIX,
   LICENSE_GROUP_META,
   SENSOR_LABELS,
-  containsGroupScopeToken,
   getLicenseSensorGroups,
   groupKeyByDbGroupName,
-  normalizeLicenseFile,
 } from "../shared/licenseScopes";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -1584,12 +1584,9 @@ export async function generateUnlockCode() {
 
 // ===== Offline Key Helpers =====
 
-/** 离线激活码的默认版本；含 `@group:` 分类令牌时提升为 3 */
-const LICENSE_VERSION = 2;
-const LICENSE_VERSION_WITH_GROUPS = 3;
-
 /** 生成离线激活码（RSA-SHA256 签名） */
 export async function generateOfflineActivationCode(params: {
+  productType?: LicenseProductType;
   sensorTypes: string[] | "all";
   days: number;
   deviceLimit?: number;
@@ -1602,6 +1599,7 @@ export async function generateOfflineActivationCode(params: {
   createdByName: string;
   remark?: string | null;
 }) {
+  const productType = normalizeLicenseProduct(params.productType);
   const deviceLimit = params.deviceLimit ?? 0;
   if (!Number.isInteger(deviceLimit) || deviceLimit < 0 || deviceLimit > 10000) throw new Error("DEVICE_LIMIT_INVALID");
   const db = await getDb();
@@ -1615,16 +1613,9 @@ export async function generateOfflineActivationCode(params: {
   const expireDate = params.expireDate || (Date.now() + params.days * 24 * 60 * 60 * 1000);
 
   // 授权范围归一化 + 校验（未知分类 / 空范围直接 throw）；分类令牌原样保存，不在此展开
-  const scope = normalizeLicenseFile(params.sensorTypes);
-  const licenseVersion = deviceLimit ? 4 : containsGroupScopeToken(scope) ? LICENSE_VERSION_WITH_GROUPS : LICENSE_VERSION;
-
-  // 构造 payload（已去掉机器码绑定：离线版不再绑定具体机器）
-  const payload = {
-    ...(deviceLimit ? { boundSensorTypes: scope, deviceLimit } : { sensorTypes: scope }),
-    expireDate,
-    issuedAt: Date.now(),
-    version: licenseVersion,
-  };
+  const { scope, payload, licenseVersion } = createOfflineLicensePayload({
+    productType, sensorTypes: params.sensorTypes, deviceLimit, expireDate, issuedAt: Date.now(),
+  });
 
   const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64");
 
@@ -1642,6 +1633,7 @@ export async function generateOfflineActivationCode(params: {
   const sensorTypeStr = Array.isArray(scope) ? scope.join(",") : scope;
 
   const record = {
+    productType,
     machineId: "", // 已弃用：离线版不再绑定机器码，占位空串（列仍为 notNull，避免 DB 迁移）
     sensorTypes: sensorTypeStr,
     expireDate,
@@ -1668,6 +1660,7 @@ export async function generateOfflineActivationCode(params: {
 
   return {
     activationCode,
+    productType,
     sensorTypes: scope,
     expireDate,
     days: params.days,
@@ -2077,7 +2070,7 @@ export async function reissueLicenseKey(keyId: number, actorId: number, actorNam
   // sensorType 列存的是原始范围（可能含 `@group:precision` 令牌），split 后令牌被原样带回
   // generateLicenseKey —— 分类语义得以保留，重签的密钥仍会随分类更新。
   const sensorsArg: string | string[] = old.sensorType === "all" ? "all" : old.sensorType.split(",");
-  const newKeyString = generateLicenseKey(sensorsArg, old.days, old.category as "production" | "rental");
+  const newKeyString = generateLicenseKey(sensorsArg, old.days, old.category as "production" | "rental", normalizeLicenseProduct(old.productType));
   const decoded = decodeLicenseKey(newKeyString);
   const expireTimestamp = decoded.expireTimestamp ?? (Date.now() + old.days * 24 * 60 * 60 * 1000);
   const keyHash = crypto.createHash("sha256").update(newKeyString).digest("hex");
@@ -2091,8 +2084,9 @@ export async function reissueLicenseKey(keyId: number, actorId: number, actorNam
     if (policy.maxDevices > 0 && opts?.issuerRole !== "super_admin") throw new Error("仅超级管理员可以重新签发限制电脑数量的密钥");
     const [result] = await tx.insert(licenseKeys).values({
       keyString: newKeyString,
+      productType: normalizeLicenseProduct(old.productType),
       keyHash,
-      sensorType: old.sensorType,
+      sensorType: normalizeLicenseProduct(old.productType) === "shroom-sdk" ? "all" : old.sensorType,
       category: old.category,
       days: old.days,
       expireTimestamp,

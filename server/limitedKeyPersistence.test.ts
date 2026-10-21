@@ -7,6 +7,7 @@ import { licenseDevicePolicies, licenseKeys, offlineKeys, rsaKeyPairs } from "..
 const fake = vi.hoisted(() => ({ db: undefined as unknown }));
 vi.mock("drizzle-orm/mysql2", () => ({ drizzle: () => fake.db }));
 import { generateOfflineActivationCode, insertLicenseKeys, reissueLicenseKey } from "./db";
+import { decodeLicenseKey } from "../shared/crypto";
 
 type StoredRow = Record<string, unknown>;
 const rows = new Map<string, StoredRow[]>();
@@ -62,6 +63,27 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("limited key atomic persistence", () => {
+  it.each([0, 2])("signs and persists an SDK offline key with its product and computer limit (%s)", async deviceLimit => {
+    const result = await generateOfflineActivationCode({ productType: "shroom-sdk", sensorTypes: ["hand"],
+      days: 30, deviceLimit, createdById: 1, createdByName: "issuer" });
+    const envelope = JSON.parse(Buffer.from(result.activationCode, "base64").toString("utf8"));
+    const payload = JSON.parse(Buffer.from(envelope.payload, "base64").toString("utf8"));
+    expect(payload).toMatchObject({ productType: "shroom-sdk", boundSensorTypes: "all", version: 5, deviceLimit,
+      sdkFeatures: ["serial", "stream", "recording", "serial.raw"] });
+    expect(payload.sensorTypes).toBeUndefined();
+    const verifier = createVerify("RSA-SHA256"); verifier.update(envelope.payload); verifier.end();
+    expect(verifier.verify(rows.get(getTableName(rsaKeyPairs))![0].publicKey as string, envelope.signature, "base64")).toBe(true);
+    expect(rows.get(getTableName(offlineKeys))?.[0]).toMatchObject({ productType: "shroom-sdk", sensorTypes: "all" });
+    expect(policyAttempts).toBe(deviceLimit ? 1 : 0);
+  });
+
+  it("retains the SDK product identity during reissue", async () => {
+    rows.set(getTableName(licenseKeys), [{ ...onlineRecord(1), id: 1, productType: "shroom-sdk" }]);
+    const result = await reissueLicenseKey(1, 7, "issuer", { revokeOld: false, issuerRole: "admin" });
+    expect(result.newKey.productType).toBe("shroom-sdk");
+    expect(result.newKey.sensorType).toBe("all");
+    expect(decodeLicenseKey(result.newKey.keyString).productType).toBe("shroom-sdk");
+  });
   it("commits a computer policy for every generated online key", async () => {
     await insertLicenseKeys([onlineRecord(1), onlineRecord(2)], 3);
     expect(rows.get(getTableName(licenseKeys))).toHaveLength(2);

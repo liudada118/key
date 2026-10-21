@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { activeReleases, checkSystemPackageIdentity, rolloutToken, systemPackageDiff, validateSystemPackage, visibleReleases } from "./systemPackages";
+import { activeReleases, checkSystemPackageIdentity, publicationBaseline, readWithdrawalPolicy, rolloutToken, systemPackageDiff, validateSystemPackage, visibleReleases } from "./systemPackages";
 
 /** Build a small immutable export to exercise the same hash contract as the desktop client. */
 function sample() {
@@ -13,6 +13,20 @@ function sample() {
 }
 
 describe("system package publishing contract", () => {
+  it("keeps legacy withdrawal semantics but fails closed on corrupt explicit policy", () => {
+    expect(readWithdrawalPolicy().mode).toBe("stop-distribution");
+    expect(readWithdrawalPolicy({ detailsJson: '{"effect":"hide-on-next-sync"}' }).mode).toBe("stop-distribution");
+    expect(readWithdrawalPolicy({ detailsJson: '{"withdrawal":{"schemaVersion":99,"mode":"stop-distribution"}}' }).mode).toBe("stop-new-acquisition");
+    expect(readWithdrawalPolicy({ detailsJson: "corrupt" }).mode).toBe("stop-new-acquisition");
+  });
+  it("freezes a first or legacy default without promoting later candidates or undoing withdrawal", () => {
+    expect(publicationBaseline([{ id: 9, status: "pending" }], [], 9)).toBe(9);
+    const revisions = [{ id: 9, status: "pending" }, { id: 8, status: "published" }, { id: 7, status: "published" }];
+    expect(publicationBaseline(revisions, [], 9)).toBe(8);
+    expect(publicationBaseline(revisions, [{ customerId: 7 }], 9)).toBe(8);
+    expect(publicationBaseline(revisions, [{ customerId: 0 }], 9)).toBeNull();
+    expect(publicationBaseline([{ id: 9, status: "pending" }, { id: 8, status: "revoked" }], [], 9)).toBe(8);
+  });
   it("accepts a complete hashed export and rejects tampering or traversal", () => {
     const value = sample();
     expect(validateSystemPackage(value).name).toBe("坐垫");

@@ -9,6 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { ArrowLeft, BarChart3, ChevronLeft, ChevronRight, Info, RefreshCw, X } from "lucide-react";
 import UsageEventList from "@/components/UsageEventList";
 import UsageDashboard from "@/components/UsageDashboard";
+import UploadRetentionPanel from "@/components/UploadRetentionPanel";
 import { usageFeatureLabel, usageFeaturePrimaryMetric, usageSystemLabel, usageDurationText, usageTime } from "@/lib/usagePresentation";
 import "./usage-analytics.css";
 
@@ -95,6 +96,7 @@ export default function UsageAnalytics() {
   if (!enabled) return <p role="alert" className="p-6 text-sm text-muted-foreground">需要启用中的超级管理员账号查看客户使用情况。</p>;
 
   return <div className="usage-analytics min-w-0 space-y-5">
+    <UploadRetentionPanel />
     <header className="flex flex-wrap items-center justify-between gap-3"><h1 className="flex items-center gap-2 text-2xl font-semibold"><BarChart3 aria-hidden="true" className="size-6" /><span>客户使用分析</span></h1><Button variant="outline" size="sm" onClick={refresh} disabled={summary.isFetching}><RefreshCw aria-hidden="true" className="size-4" /><span>刷新</span></Button></header>
     <form className="space-y-3 border-b pb-4" onSubmit={event => { event.preventDefault(); if (valid) apply(draft); }}>
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-[120px_minmax(0,1fr)_minmax(0,1fr)_140px_auto]">

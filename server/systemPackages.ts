@@ -1,17 +1,56 @@
 import express, { type Express, type Request, type Response } from "express";
 import { createHash, randomBytes, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { customers, licenseKeys, offlineKeys, rsaKeyPairs, systemPackageEvents, systemPackageRollouts, systemPackageSubmissions, systemPackageSubmitTokens, users } from "../drizzle/schema";
 import { getRegistrySensorTypes } from "../shared/licenseScopes";
 import { getDb } from "./db";
 import { sdk } from "./_core/sdk";
 import { type ClientLicenseResult, verifyOfflineClientKey, verifyOnlineClientKey } from "./systemPackageClientLicense";
+import { uploadRetentionPolicy } from "./uploadRetention";
 
 const MAX_BODY = "18mb";
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 type Audience = "all" | number[];
 type Rollout = { systemId: string; customerId: number; versionId: number };
+type WithdrawalMode = "stop-distribution" | "stop-new-acquisition";
+
+/** Read only declared installed identities, with bounded cardinality and no ambiguous duplicates. */
+export function parseInstalledSystems(input: any): { id: string; version: number }[] | null {
+  if (!input || typeof input !== "object" || Object.keys(input).some(key => key !== "systems")
+    || !Array.isArray(input.systems) || input.systems.length < 1 || input.systems.length > 32) return null;
+  const seen = new Set<string>();
+  for (const item of input.systems) {
+    if (!item || typeof item !== "object" || Object.keys(item).some(key => !["id", "version"].includes(key))
+      || typeof item.id !== "string" || !SAFE_ID.test(item.id) || !Number.isSafeInteger(item.version) || item.version <= 0
+      || seen.has(`${item.id}:${item.version}`)) return null;
+    seen.add(`${item.id}:${item.version}`);
+  }
+  return input.systems.map((item: any) => ({ id: item.id as string, version: item.version as number }));
+}
+
+/** Old revocations stop distribution; malformed explicit policies conservatively stop new acquisition. */
+export function readWithdrawalPolicy(event?: { detailsJson: string; createdAt?: Date }) {
+  const fallback = { schemaVersion: 1, mode: "stop-distribution" as WithdrawalMode,
+    effectiveAt: event?.createdAt?.getTime() ?? 0, reason: "" };
+  if (!event) return fallback;
+  try {
+    const details = JSON.parse(event.detailsJson);
+    if (!details.withdrawal) return fallback;
+    const policy = details.withdrawal;
+    if (policy.schemaVersion !== 1 || !["stop-distribution", "stop-new-acquisition"].includes(policy.mode)) throw new Error("INVALID_WITHDRAWAL_POLICY");
+    return { schemaVersion: 1, mode: policy.mode as WithdrawalMode,
+      effectiveAt: Number.isSafeInteger(policy.effectiveAt) ? policy.effectiveAt : fallback.effectiveAt,
+      reason: typeof policy.reason === "string" ? policy.reason.slice(0, 400) : "" };
+  } catch { return { ...fallback, mode: "stop-new-acquisition" as WithdrawalMode, reason: "withdrawal-policy-unreadable" }; }
+}
+
+/** Freeze the previous default before approving a candidate; never replace an explicit pointer. */
+export function publicationBaseline(revisions: { id: number; status: string }[], rollouts: { customerId: number }[], candidateId: number) {
+  if (rollouts.some(row => row.customerId === 0)) return null;
+  return revisions.find(row => row.status === "published")?.id
+    ?? revisions.find(row => row.status === "revoked")?.id ?? candidateId;
+}
 
 /** Return a stable token for comparing the active rollout state before an admin changes it. */
 export function rolloutToken(rows: Rollout[]) {
@@ -73,14 +112,14 @@ async function clientLicense(req: Request): Promise<ClientLicenseResult> {
   const db = await getDb();
   if (!db) return { error: "STORAGE_UNAVAILABLE" };
   if (/^[a-fA-F0-9]{32,8192}$/.test(key)) {
-    const [row] = await db.select({ keyString: licenseKeys.keyString, status: licenseKeys.status,
+    const [row] = await db.select({ productType: licenseKeys.productType, keyString: licenseKeys.keyString, status: licenseKeys.status,
       expireTimestamp: licenseKeys.expireTimestamp, customerId: licenseKeys.customerId, isDeleted: licenseKeys.isDeleted })
       .from(licenseKeys)
       .where(eq(licenseKeys.keyString, key)).limit(1);
     return row ? verifyOnlineClientKey(key, row) : { error: "LICENSE_INACTIVE" };
   }
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(key)) return { error: "LICENSE_INVALID" };
-  const [row] = await db.select({ activationCode: offlineKeys.activationCode, status: offlineKeys.status,
+  const [row] = await db.select({ productType: offlineKeys.productType, activationCode: offlineKeys.activationCode, status: offlineKeys.status,
     isDeleted: offlineKeys.isDeleted, customerId: offlineKeys.customerId,
     expireDate: offlineKeys.expireDate,
     publicKey: rsaKeyPairs.publicKey })
@@ -291,7 +330,7 @@ export function registerSystemPackages(app: Express) {
         const existing = revisions.find((item) => item.sha256 === metadata.sha256 && item.submittedById === user.id
           && ["pending", "published"].includes(item.status));
         if (existing) return { status: 200, body: { id: existing.id, status: existing.status, ...metadata } };
-        const current = revisions.find((item) => item.status === "published");
+        const current = revisions.find((item) => item.status === "published") ?? revisions.find((item) => item.status === "revoked");
         const conflict = checkSystemPackageIdentity(req.body.package, req.body?.baseVersion, current);
         if (conflict) return { status: 409, body: conflict };
         const pending = revisions.find((item) => item.status === "pending");
@@ -396,9 +435,13 @@ export function registerSystemPackages(app: Express) {
     const [row] = await db.select().from(systemPackageSubmissions).where(eq(systemPackageSubmissions.id, Number(req.params.id))).limit(1);
     if (!row) { res.status(404).json({ error: "NOT_FOUND" }); return; }
     const value = JSON.parse(row.packageJson);
-    const [current] = await db.select({ id: systemPackageSubmissions.id, name: systemPackageSubmissions.name,
+    let [current] = await db.select({ id: systemPackageSubmissions.id, name: systemPackageSubmissions.name,
       packageJson: systemPackageSubmissions.packageJson }).from(systemPackageSubmissions)
       .where(and(eq(systemPackageSubmissions.systemId, row.systemId), eq(systemPackageSubmissions.status, "published")))
+      .orderBy(desc(systemPackageSubmissions.id)).limit(1);
+    if (!current) [current] = await db.select({ id: systemPackageSubmissions.id, name: systemPackageSubmissions.name,
+      packageJson: systemPackageSubmissions.packageJson }).from(systemPackageSubmissions)
+      .where(and(eq(systemPackageSubmissions.systemId, row.systemId), eq(systemPackageSubmissions.status, "revoked")))
       .orderBy(desc(systemPackageSubmissions.id)).limit(1);
     const [base] = row.baseVersion ? await db.select({ packageJson: systemPackageSubmissions.packageJson })
       .from(systemPackageSubmissions).where(eq(systemPackageSubmissions.id, row.baseVersion)).limit(1) : [];
@@ -408,10 +451,18 @@ export function registerSystemPackages(app: Express) {
       .orderBy(desc(systemPackageSubmissions.id));
     const rollouts = await db.select().from(systemPackageRollouts)
       .where(eq(systemPackageRollouts.systemId, row.systemId));
+    const [withdrawalEvent] = row.status === "revoked" ? await db.select().from(systemPackageEvents)
+      .where(and(eq(systemPackageEvents.submissionId, row.id), inArray(systemPackageEvents.action, ["revoked", "withdrawal-policy"])))
+      .orderBy(desc(systemPackageEvents.id)).limit(1) : [];
     res.json({ id: row.id, systemId: row.systemId, status: row.status, kind: value.kind,
+      withdrawal: row.status === "revoked" ? readWithdrawalPolicy(withdrawalEvent) : null,
       baseVersion: row.baseVersion, currentPublished: current ? { id: current.id, name: current.name } : null,
       diff: base ? systemPackageDiff(JSON.parse(base.packageJson), value) : null,
       versions, rollouts: rollouts.map((item) => ({ customerId: item.customerId, versionId: item.versionId })),
+      publication: { mode: "candidate-then-promote", firstPublication: !current,
+        defaultVersion: rollouts.find((item) => item.customerId === 0)?.versionId ?? current?.id ?? null,
+        affectedOnApproval: current ? "none" : "all-authorized-without-customer-override",
+        customerOverrides: rollouts.filter((item) => item.customerId !== 0).length },
       rolloutToken: rolloutToken(rollouts),
       files: (value.files || []).map((file: any) => ({ path: file.path, size: file.size, sha256: file.sha256 })),
       algorithms: value.algorithms.map((item: any) => ({ id: item.id, name: item.name, report: item.report })), bindings: value.bindings,
@@ -432,14 +483,7 @@ export function registerSystemPackages(app: Express) {
   router.post("/admin/submissions/:id/publish", async (req, res) => {
     try {
       const user = await staff(req, res, true); if (!user) return;
-      const audience = req.body?.audience as Audience;
-      if (audience !== "all" && (!Array.isArray(audience) || !audience.length || audience.length > 1000
-        || audience.some((id) => !Number.isInteger(id) || id <= 0))) { res.status(400).json({ error: "INVALID_AUDIENCE" }); return; }
       const db = await getDb(); if (!db) throw new Error("STORAGE_UNAVAILABLE");
-      if (audience !== "all") {
-        const existing = await db.select({ id: customers.id }).from(customers).where(eq(customers.isActive, true));
-        if (audience.some((id) => !existing.some((row) => row.id === id))) { res.status(400).json({ error: "CUSTOMER_UNAVAILABLE" }); return; }
-      }
       const id = Number(req.params.id);
       const [row] = await db.select().from(systemPackageSubmissions).where(eq(systemPackageSubmissions.id, id)).limit(1);
       if (!row || row.status !== "pending") { res.status(409).json({ error: "STATUS_CHANGED" }); return; }
@@ -452,31 +496,29 @@ export function registerSystemPackages(app: Express) {
           .where(eq(systemPackageSubmissions.systemId, row.systemId)).orderBy(desc(systemPackageSubmissions.id)).for("update");
         const pending = revisions.find((item) => item.id === id);
         if (!pending || pending.status !== "pending") return { error: "STATUS_CHANGED" };
-        const current = revisions.find((item) => item.status === "published");
+        const current = revisions.find((item) => item.status === "published") ?? revisions.find((item) => item.status === "revoked");
         const conflict = checkSystemPackageIdentity(JSON.parse(pending.packageJson), pending.baseVersion, current);
         if (conflict) return conflict;
         if (current && req.body?.confirmBaseVersion !== current.id) {
           return { error: "SYSTEM_UPDATE_CONFIRMATION_REQUIRED", currentVersion: current.id };
         }
+        const pointers = await tx.select().from(systemPackageRollouts)
+          .where(eq(systemPackageRollouts.systemId, row.systemId)).for("update");
+        const baseline = publicationBaseline(revisions, pointers, id);
         await tx.update(systemPackageSubmissions).set({ status: "published", reviewedById: user.id,
-          audienceJson: JSON.stringify(audience), signature, publishedAt: new Date() })
+          audienceJson: JSON.stringify("candidate"), signature, publishedAt: new Date() })
           .where(and(eq(systemPackageSubmissions.id, id), eq(systemPackageSubmissions.status, "pending")));
-        if (audience === "all") {
-          // ⚠️ A global promotion replaces old customer overrides; otherwise some customers stay on stale releases.
-          await tx.delete(systemPackageRollouts).where(eq(systemPackageRollouts.systemId, row.systemId));
+        if (baseline !== null) {
           await tx.insert(systemPackageRollouts).values({ systemId: row.systemId, customerId: 0,
-            versionId: id, updatedById: user.id });
-        } else {
-          await tx.insert(systemPackageRollouts).values(audience.map((customerId) => ({ systemId: row.systemId,
-            customerId, versionId: id, updatedById: user.id })))
-            .onDuplicateKeyUpdate({ set: { versionId: id, updatedById: user.id, updatedAt: new Date() } });
+            versionId: baseline, updatedById: user.id });
         }
         await tx.insert(systemPackageEvents).values({ submissionId: id, actorId: user.id, action: "published",
-          detailsJson: JSON.stringify({ audience, baseVersion: current?.id || null }) });
+          detailsJson: JSON.stringify({ publicationMode: "candidate-then-promote", defaultBaseline: baseline,
+            firstPublication: !current, baseVersion: current?.id || null, legacyAudienceIgnored: req.body?.audience !== undefined }) });
         return null;
       });
       if (result) { res.status(409).json(result); return; }
-      res.json({ id, version: id, status: "published" });
+      res.json({ id, version: id, status: "published", publicationMode: "candidate-then-promote" });
     } catch { res.status(503).json({ error: "PUBLISH_FAILED" }); }
   });
 
@@ -540,6 +582,12 @@ export function registerSystemPackages(app: Express) {
   router.post("/admin/submissions/:id/revoke", async (req, res) => {
     try {
       const user = await staff(req, res, true); if (!user) return;
+      const mode = req.body?.withdrawalMode ?? "stop-distribution";
+      if (!["stop-distribution", "stop-new-acquisition"].includes(mode)
+        || (req.body?.reason !== undefined && (typeof req.body.reason !== "string" || req.body.reason.length > 400))) {
+        res.status(400).json({ error: "INVALID_WITHDRAWAL_POLICY" }); return;
+      }
+      const withdrawal = { schemaVersion: 1, mode, effectiveAt: Date.now(), reason: req.body?.reason ?? "" };
       const id = Number(req.params.id);
       if (!Number.isSafeInteger(id) || id <= 0) { res.status(400).json({ error: "INVALID_RELEASE" }); return; }
       const db = await getDb(); if (!db) { res.status(503).json({ error: "STORAGE_UNAVAILABLE" }); return; }
@@ -550,20 +598,76 @@ export function registerSystemPackages(app: Express) {
         const revisions = await tx.select({ id: systemPackageSubmissions.id, status: systemPackageSubmissions.status })
           .from(systemPackageSubmissions).where(eq(systemPackageSubmissions.systemId, target.systemId))
           .orderBy(desc(systemPackageSubmissions.id)).for("update");
-        if (!revisions.some((item) => item.id === id && item.status === "published")) return false;
+        const targetRevision = revisions.find((item) => item.id === id && ["published", "revoked"].includes(item.status));
+        if (!targetRevision) return false;
+        if (targetRevision.status === "revoked" && req.body?.withdrawalMode === undefined) return false;
         const pointers = await tx.select({ customerId: systemPackageRollouts.customerId })
           .from(systemPackageRollouts).where(and(eq(systemPackageRollouts.systemId, target.systemId),
             eq(systemPackageRollouts.versionId, id)));
         await tx.update(systemPackageSubmissions).set({ status: "revoked" })
           .where(and(eq(systemPackageSubmissions.id, id), eq(systemPackageSubmissions.status, "published")));
-        // ⚠️ Keep pointers to the revoked version: affected customers lose it on next sync instead of silently falling back.
-        await tx.insert(systemPackageEvents).values({ submissionId: id, actorId: user.id, action: "revoked",
-          detailsJson: JSON.stringify({ effect: "hide-on-next-sync", pointedCustomerIds: pointers.map((item) => item.customerId) }) });
+        // ⚠️ Preserve pointers: new downloads stop; installed behavior follows the separately signed version status.
+        await tx.insert(systemPackageEvents).values({ submissionId: id, actorId: user.id,
+          action: targetRevision.status === "revoked" ? "withdrawal-policy" : "revoked",
+          detailsJson: JSON.stringify({ effect: "hide-on-next-sync", withdrawal,
+            pointedCustomerIds: pointers.map((item) => item.customerId) }) });
         return true;
       });
       if (!result) { res.status(409).json({ error: "STATUS_CHANGED" }); return; }
-      res.json({ id, status: "revoked" });
+      res.json({ id, status: "revoked", withdrawal });
     } catch { res.status(503).json({ error: "REVOKE_FAILED" }); }
+  });
+
+  router.get("/client/policy", async (req, res) => {
+    try {
+      const auth = await clientLicense(req);
+      if (!auth.grant) { res.status(auth.error === "STORAGE_UNAVAILABLE" ? 503 : 403).json({ error: auth.error }); return; }
+      const policy = { schemaVersion: 1, diagnosticOnly: true, policyVersion: 1,
+        issuedAt: Date.now(), expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+        keyHash: createHash("sha256").update((req.get("authorization") || "").slice("License ".length)).digest("hex"),
+        serverVersion: /^[a-f0-9]{7,64}$/i.test(process.env.KEY_MANAGER_BUILD_SHA || "") ? process.env.KEY_MANAGER_BUILD_SHA : "unknown", publicationMode: "candidate-then-promote",
+        withdrawal: { mode: "per-release", defaultMode: "stop-distribution", policyVersion: 1,
+          supportedModes: ["stop-distribution", "stop-new-acquisition"] }, catalogTtlHours: 24, deviceLeaseMaxDays: 7,
+        retention: uploadRetentionPolicy() };
+      res.setHeader("Cache-Control", "no-store");
+      res.json({ policy, signature: signEnvelope(policy) });
+    } catch { res.status(503).json({ error: "POLICY_UNAVAILABLE" }); }
+  });
+
+  router.post("/client/installed-status", async (req, res) => {
+    try {
+      const auth = await clientLicense(req);
+      if (!auth.grant) { res.status(auth.error === "STORAGE_UNAVAILABLE" ? 503 : 403).json({ error: auth.error }); return; }
+      const requested = parseInstalledSystems(req.body);
+      if (!requested) { res.status(400).json({ error: "INVALID_INSTALLED_SYSTEMS" }); return; }
+      const db = await getDb(); if (!db) throw new Error("STORAGE_UNAVAILABLE");
+      const systems = await db.transaction(async tx => {
+        const result = [];
+        for (const item of requested) {
+          if (auth.grant.scope !== "all" && !auth.grant.scope.includes(item.id)) {
+            result.push({ ...item, status: "unauthorized", sha256: null, withdrawal: null }); continue;
+          }
+          const [release] = await tx.select({ id: systemPackageSubmissions.id, status: systemPackageSubmissions.status,
+            sha256: systemPackageSubmissions.sha256 }).from(systemPackageSubmissions)
+            .where(and(eq(systemPackageSubmissions.systemId, item.id), eq(systemPackageSubmissions.id, item.version))).limit(1);
+          if (!release || !["published", "revoked"].includes(release.status)) {
+            result.push({ ...item, status: "unavailable", sha256: null, withdrawal: null }); continue;
+          }
+          const [event] = release.status === "revoked" ? await tx.select({ detailsJson: systemPackageEvents.detailsJson,
+            createdAt: systemPackageEvents.createdAt }).from(systemPackageEvents)
+            .where(and(eq(systemPackageEvents.submissionId, item.version), inArray(systemPackageEvents.action, ["revoked", "withdrawal-policy"])))
+            .orderBy(desc(systemPackageEvents.id)).limit(1) : [];
+          result.push({ ...item, status: release.status, sha256: release.sha256,
+            withdrawal: release.status === "revoked" ? readWithdrawalPolicy(event) : null });
+        }
+        return result;
+      });
+      const issuedAt = Date.now();
+      const grant = { schemaVersion: 1, type: "installed-system-status", issuedAt,
+        expiresAt: Math.min(issuedAt + 24 * 60 * 60 * 1000, auth.grant.expiresAt),
+        keyHash: createHash("sha256").update((req.get("authorization") || "").slice("License ".length)).digest("hex"), systems };
+      res.setHeader("Cache-Control", "no-store"); res.json({ grant, signature: signEnvelope(grant) });
+    } catch { res.status(503).json({ error: "INSTALLED_STATUS_UNAVAILABLE" }); }
   });
 
   router.get("/client/catalog", async (req, res) => {

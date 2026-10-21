@@ -43,6 +43,7 @@ export async function buildDeployRelease(destination, commit, sourceRoot = proje
   }
   copy(publicDirectory, path.join(dist, "public"));
   copy(path.join(sourceRoot, "config/licenseSensorGroups.json"), path.join(dist, "config/licenseSensorGroups.json"));
+  copy(path.join(sourceRoot, "config/agent-model-catalog.json"), path.join(dist, "config/agent-model-catalog.json"));
   const journalPath = path.join(sourceRoot, "drizzle/meta/_journal.json");
   const journal = JSON.parse(readFileSync(journalPath, "utf8"));
   copy(journalPath, path.join(dist, "drizzle/meta/_journal.json"));

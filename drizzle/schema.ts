@@ -14,7 +14,9 @@ import {
 export * from "./agentSyncSchema";
 export * from "./usageSchema";
 export * from "./systemPackageSchema";
+export * from "./uploadRetentionSchema";
 export * from "./licenseDeviceSchema";
+export * from "./algorithmPlatformSchema";
 
 /**
  * 用户表 - 三级权限体系
@@ -159,6 +161,7 @@ export type KeyStatus = typeof KEY_STATUS[number];
  */
 export const licenseKeys = mysqlTable("licenseKeys", {
   id: int("id").autoincrement().primaryKey(),
+  productType: mysqlEnum("productType", ["shroom-desktop", "shroom-sdk"]).default("shroom-desktop").notNull(),
   /** 加密后的密钥字符串 (hex) */
   keyString: text("keyString").notNull(),
   /** 密钥哈希（SHA-256），用于激活时比对 */
@@ -242,6 +245,7 @@ export type InsertLicenseKey = typeof licenseKeys.$inferInsert;
  */
 export const keyGenerationRequests = mysqlTable("keyGenerationRequests", {
   id: int("id").autoincrement().primaryKey(),
+  productType: mysqlEnum("productType", ["shroom-desktop", "shroom-sdk"]).default("shroom-desktop").notNull(),
   /** 便于人工沟通和审计的申请编号 */
   requestNo: varchar("requestNo", { length: 64 }).notNull().unique(),
   /** 单个生成 / 批量生成 */
@@ -353,6 +357,7 @@ export type InsertRsaKeyPair = typeof rsaKeyPairs.$inferInsert;
  */
 export const offlineKeys = mysqlTable("offlineKeys", {
   id: int("id").autoincrement().primaryKey(),
+  productType: mysqlEnum("productType", ["shroom-desktop", "shroom-sdk"]).default("shroom-desktop").notNull(),
   /** 机器码（16位十六进制） */
   machineId: varchar("machineId", { length: 32 }).notNull(),
   /** 授权的传感器类型（逗号分隔，或 "all"） */

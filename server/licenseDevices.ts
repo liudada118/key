@@ -1,9 +1,11 @@
 import { createHash, createVerify, sign } from "node:crypto";
-import { type Express } from "express";
+import express, { type Express } from "express";
 import { readFileSync } from "node:fs";
 import { and, eq, sql } from "drizzle-orm";
 import { licenseDevicePolicies, licenseDevices, licenseKeys, offlineKeys, rsaKeyPairs } from "../drizzle/schema";
 import { getDb } from "./db";
+import { normalizeLicenseProduct, licenseSdkFeatures } from "../shared/licenseProducts";
+import { expandLicenseFile } from "../shared/licenseScopes";
 
 export const DEVICE_LEASE_MS = 7 * 86400000;
 export const DEVICE_ID_PATTERN = /^[a-f0-9]{64}$/;
@@ -117,7 +119,12 @@ export async function changeLicenseDevice(keyId: number, deviceId: string, statu
 
 /** Check a limited RSA key online once, then issue a signed allowance for local offline use. */
 export function registerOfflineDeviceChecks(app: Express) {
-  app.post("/api/license/devices/check", async (req, res) => {
+  app.options("/api/license/devices/check", (_req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*"); res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type"); res.sendStatus(204);
+  });
+  app.post("/api/license/devices/check", express.json({ limit: "16kb" }), async (req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Cache-Control", "no-store");
     try {
       const code = typeof req.body?.key === "string" ? req.body.key.trim() : "", now = Date.now();
@@ -131,9 +138,22 @@ export function registerOfflineDeviceChecks(app: Express) {
       const envelope = JSON.parse(Buffer.from(code, "base64").toString("utf8"));
       const verifier = createVerify("RSA-SHA256"); verifier.update(envelope.payload); verifier.end();
       if (!verifier.verify(row.publicKey, envelope.signature, "base64")) throw new Error("invalid");
+      const payload = JSON.parse(Buffer.from(envelope.payload, "base64").toString("utf8"));
+      const productType = normalizeLicenseProduct(payload.productType);
+      const requestedProduct = normalizeLicenseProduct(req.body?.productType);
+      if (productType !== requestedProduct || normalizeLicenseProduct(row.key.productType) !== requestedProduct) {
+        res.json({ time: now, valid: false, status: "PRODUCT_MISMATCH", productType,
+          expireTimestamp: now - 1, reason: "密钥所属产品与当前客户端不一致。" }); return;
+      }
+      const expanded = productType === "shroom-sdk"
+        ? { sensorTypes: ["all"], isAllTypes: true }
+        : expandLicenseFile(payload.boundSensorTypes ?? payload.sensorTypes);
       const device = await authorizeLicenseDevice({ id: row.key.id, keyString: code, expireTimestamp: row.key.expireDate,
         keyType: "offline", defaultLimit: offlineLimit(code) }, req.body?.deviceId, now);
       res.json({ time: now, valid: device.allowed, status: device.code, expireTimestamp: row.key.expireDate,
+        productType, sensorTypes: expanded.sensorTypes, isAllTypes: expanded.isAllTypes,
+        sdkFeatures: licenseSdkFeatures(productType),
+        leaseExpiresAt: device.allowed ? Math.min(row.key.expireDate, now + 60000) : now,
         reason: device.allowed ? undefined : "此离线密钥的电脑授权不可用，请管理员检查设备数量或解绑状态。",
         deviceLimit: device.deviceLimit, deviceLease: device.deviceLease });
     } catch { res.status(503).json({ error: "LICENSE_SERVICE_UNAVAILABLE" }); }

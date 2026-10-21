@@ -18,6 +18,45 @@
 
 员工可在桌面端公司系统库从已发布的签名包创建独立本机草稿，修改后带原 `systemId` 和 `baseVersion` 重新提交；正式受管系统始终只读。服务端拒绝同 ID 更新中传感器 ID、类型、输出通道或矩阵尺寸的破坏性变化，审核详情展示串口协议、线序文件及其他文件差异。需要改变这些输入身份时应新建系统 ID，不在已有客户采集记录上重新解释点位。
 
-超级管理员审核发布后，`system_package_rollouts` 记录该系统的当前版本：`customer_id=0` 是全体默认版本，已关联客户的专属指针优先。管理页可选择任一仍已发布的版本，向指定客户推广，或把指定客户指回旧版；“全部客户”操作会清除客户专属覆盖并要求二次确认。目录和下载先按密钥系统范围筛选，再解析版本。未关联客户时使用全体默认版本；没有适用指针时选择最新已发布版本，忽略历史 `audienceJson` 客户名单，不能再要求给密钥额外分配客户。已有明确指针指向撤回或缺失版本时仍停止交付，不自动选择其他版本。
+超级管理员审核首次发布时建立默认基线；后续审核只形成候选版本，不切换任何客户。`system_package_rollouts` 记录该系统的交付版本：`customer_id=0` 是全体默认版本，已关联客户的专属指针优先。管理页可选择任一仍已发布的版本，向指定客户推广，或把指定客户指回旧版；“全部客户”操作会清除客户专属覆盖并要求二次确认。目录和下载先按密钥系统范围筛选，再解析版本。未关联客户时使用全体默认版本；历史系统没有适用指针时保留最新已发布版本的读取兼容；部署前用下述幂等回填冻结默认基线，后续 publish 事务也会在审核新候选前补齐旧默认。忽略历史 `audienceJson` 客户名单，不能再要求给密钥额外分配客户。已有明确指针指向撤回或缺失版本时仍停止交付，不自动选择其他版本。
 
-“按客户回退”与“紧急撤回”是不同操作：回退让指定客户在下次同步时安装已签名旧版；撤回将目标版本停用，仍指向它的客户在下次同步后暂时看不到该系统，不会自动选择别的版本。目录缓存最长 24 小时，桌面通常每 6 小时复查，也可在系统列表手动刷新；管理页操作不能保证立即断开离线客户。生产上线须先完成 `0019` 迁移与签名服务部署，再用真实 MySQL 和客户密钥验收推广、回退及撤回事务。
+“按客户回退”与“紧急撤回”是不同操作：回退让指定客户在下次同步时安装已签名旧版；撤回将目标版本移出目录并停止新下载；已安装版本按下文明确的撤回模式与签名状态处理，不会自动选择别的版本。目录缓存最长 24 小时，桌面通常每 6 小时复查，也可在系统列表手动刷新；管理页操作不能保证立即断开离线客户。生产上线须先完成 `0019` 迁移与签名服务部署，再用真实 MySQL 和客户密钥验收推广、回退及撤回事务。
+
+
+## 2026-10-19 候选发布与策略诊断
+
+- `POST /admin/submissions/:id/publish` 仍由启用中的 `super_admin` 审核，状态仍为 `published`，包的 schema、摘要与签名保持不变。首次发布建立 `customer_id=0` 默认；后续只审核为候选，保留全体及客户指针。旧请求的 `audience` 字段接受但不执行投放；只有显式 `POST /admin/releases/:id/activate` 改变客户目标版本。
+- publish 和 activate 使用同一系统的修订行锁顺序。publish 在缺默认指针时先冻结发布前的最新有效版，只有无历史发布才以本次版本建立默认；显式指向撤回版本的默认绝不覆盖。审核仍检查 baseVersion，推广仍检查 expectedRolloutToken。
+- 管理页区分“审核为候选”和“首次默认发布”，审核时不选择客户。首次影响持相应授权且没有专属覆盖的密钥；候选审核影响零个现有目标版本；推广时才选择客户或全体，后者继续清除客户覆盖并要求确认。
+- 部署前先执行 `pnpm exec tsx scripts/backfill-system-baselines.ts --admin-id=<启用中的超级管理员ID>` 预览；核对后加 `--apply`。只补缺失的全体指针，不改客户覆盖、不覆盖撤回指针，重复执行不改已完成系统；有界最多1000个系统，达到上限停止扩大推广并制定分页计划。普通 catalog 请求只读，不偷偷改生产状态。
+- `GET /api/system-packages/client/policy` 使用原 License 鉴权，返回 `{ policy, signature }`。签名对 `JSON.stringify(policy)` 的 UTF-8 字节使用同一 Ed25519 私钥，客户端必须验签、核对 keyHash 和 issuedAt/expiresAt；policy 只能用于诊断，`diagnosticOnly:true` 不授予采集、导出或额外系统权限。字段包括 schemaVersion、policyVersion、serverVersion、publicationMode、withdrawal、catalogTtlHours、deviceLeaseMaxDays 和 retention。服务端提交标识来自 KEY_MANAGER_BUILD_SHA，不暴露部署路径和凭据。旧 catalog 签名结构不变。
+
+### 迁移与回退
+
+1. 备份数据库、确认当前默认与客户指针，保留旧服务端部署和配对私钥。
+2. 先部署迁移与新版服务，再执行默认指针预览/回填；publish 自带事务补齐作为后备，但不能把 catalog 读取当迁移。
+3. 用真实目标密钥验证首次默认、候选零投放、指定客户/全体推广、回退、撤回、无客户关联与旧客户端读取。
+4. 回退服务端代码可保留已补齐的默认指针（它们就是回填时原本交付的版本）；不要删除默认以恢复“跟随最新”，也不要回退签名包字节。旧版 publish 会重新自动推广，回退期间暂停审核发布。
+5. 清理迁移及数据删除的不可逆边界见 `upload-data-retention.md`。本轮只验证本机隔离MySQL，未部署生产。
+
+
+### 按确切版本选择撤回效果
+
+`POST /admin/submissions/:id/revoke` 新增可选 `withdrawalMode`（默认 `stop-distribution`）、`reason`（最多400字符）：
+
+- `stop-distribution`：目录与新下载停用；支持新版契约且已安装、包hash一致的客户端可凭有效已安装状态继续使用。
+- `stop-new-acquisition`：目录与新下载同样停用；客户端下次取得此确切版本状态时禁止新采集，当前采集停止新增接收并有序提交原库，历史查看/回放保留。
+
+不改变同一systemId的其他版本，不自动切旧版。已撤回版本可显式选择模式再提交，追加 `withdrawal-policy` 审计；无mode的旧重复请求不会把强限制降回默认。管理页明确两种效果并默认选停止交付。离线和未支持新契约的旧客户端不能据此承诺即时生效；旧客户端沿用原保守目录规则。
+
+`POST /api/system-packages/client/installed-status` 使用原License鉴权，请求 `{systems:[{id,version}]}`，1～32项、身份去重、严格字段。响应 `{grant,signature}`，签名是 JSON.stringify(grant) 的UTF-8字节，仍用同一Ed25519公钥：
+
+```json
+{"schemaVersion":1,"type":"installed-system-status","issuedAt":1792370000000,"expiresAt":1792456400000,"keyHash":"64位sha256","systems":[{"id":"seatpad","version":42,"status":"revoked","sha256":"包摘要","withdrawal":{"schemaVersion":1,"mode":"stop-distribution","effectiveAt":1792370000000,"reason":"维护"}}]}
+```
+
+- expiresAt最多24小时且不超过当前密钥到期；客户端还必须核对keyHash、时间、请求身份及本机已安装签名包hash，不能用它授权未安装包。设备凭证及密钥范围仍独立生效。
+- status为published/revoked/unavailable/unauthorized。未授权只回显请求身份，不查询或泄露该版本信息；不存在或待审为unavailable，两者sha256和withdrawal均null。
+- 已撤回旧记录缺少新版withdrawal对象时按既有停止交付解释；损坏的显式策略保守返回停止采集，不能静默放宽。
+- 本grant是已安装版本状态证据；`/client/policy` 的diagnosticOnly仍只用于诊断。普通catalog仍只列可下载版本，缺项本身不能证明已安装版需要停机。
+- 旧服务404、接口失败或验签失败不产生新许可；客户端保持原保守逻辑，不能把失败当作停止交付继续使用的证明。缓存只在其签名、密钥/包身份和期限均有效时使用，明确拒绝须撤销对应缓存。

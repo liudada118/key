@@ -115,7 +115,7 @@ export async function reviewKeyGenerationRequest(params: {
   // 提交与批准之间分类可能被删（注册表同步过），批准时必须重新校验一次授权范围
   let scope: string | string[];
   try {
-    scope = normalizeLicenseFile(parsedSensorTypes.data);
+    scope = request.productType === "shroom-sdk" ? "all" : normalizeLicenseFile(parsedSensorTypes.data);
   } catch (error) {
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -125,6 +125,7 @@ export async function reviewKeyGenerationRequest(params: {
 
   const prepared = prepareOnlineKeyGeneration({
     mode: request.mode,
+    productType: request.productType,
     sensorTypes: scope,
     days: request.days,
     category: request.category,

@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
+import UploadRetentionPanel, { DeleteUploadedButton } from "@/components/UploadRetentionPanel";
 
 type Selection = { customerId: number; installationId: string; conversationId: string };
 const customerLabel = (id: number, name?: string | null) => name || `客户 #${id}（已删除）`;
@@ -56,6 +57,8 @@ export default function AgentChats() {
       <Button variant="outline" size="icon" className="size-11" onClick={refresh} disabled={isRefreshing} title="刷新聊天" aria-label="刷新聊天"><RefreshCw className={isRefreshing ? "animate-spin" : ""} /></Button>
     </header>
 
+    <UploadRetentionPanel />
+
     <div className="flex flex-wrap items-center gap-3 border-b pb-4">
       <Label htmlFor="chat-customer">客户</Label>
       <select id="chat-customer" value={customer} onChange={event => { setCustomer(event.target.value); setPage(1); setSelection(null); }}
@@ -97,6 +100,8 @@ export default function AgentChats() {
             <header className="space-y-2 border-b pb-3">
               <h2 className="text-lg font-semibold [overflow-wrap:anywhere]">{customerLabel(selected.customerId, selected.customerName)}</h2>
               <p className="text-xs text-muted-foreground [overflow-wrap:anywhere]">会话：{selected.conversationId}</p>
+              <DeleteUploadedButton kind="chat" sourceId={selected.customerId} installationId={selected.installationId}
+                objectId={selected.conversationId} onDeleted={() => { setSelection(null); refresh(); }} />
               <details className="text-xs text-muted-foreground"><summary className="w-fit cursor-pointer py-1">同步信息</summary>
                 <dl className="mt-2 grid gap-1 [overflow-wrap:anywhere]"><div>安装标识：{selected.installationId}</div><div>软件版本：{selected.appVersion || "未提供"}</div><div>快照版本：{selected.revision}</div><div>最近同步：{time(selected.receivedAt)}</div></dl>
               </details>

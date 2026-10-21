@@ -13,6 +13,7 @@ export async function registerLegacyOnlineLicense(options: ImportOptions, now = 
   if (reason.length < 5 || reason.length > 500) throw new Error("REVIEW_REASON_REQUIRED");
   if (keyString.length > 8192 || !/^[a-fA-F0-9]+$/.test(keyString)) throw new Error("LICENSE_INVALID");
   const decoded = decodeLicenseKey(keyString, now);
+  if (decoded.productType !== "shroom-desktop") throw new Error("LICENSE_PRODUCT_INVALID");
   if (!decoded.valid || !decoded.sensorType || decoded.sensorType.length > 512
     || !Number.isSafeInteger(decoded.expireTimestamp) || decoded.expireTimestamp! <= now
     || !["production", "rental"].includes(decoded.category || "")) throw new Error("LICENSE_INVALID_OR_EXPIRED");

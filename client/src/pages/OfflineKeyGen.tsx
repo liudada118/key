@@ -38,6 +38,8 @@ import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { formatLicenseScope } from "@shared/licenseScopes";
 import { parseDeviceLimit, type LicenseDeviceMode } from "@/lib/licenseDeviceMode";
+import LicenseProductSelect, { SdkDevicePolicyNotice } from "@/components/LicenseProductSelect";
+import { LICENSE_PRODUCT_LABELS, type LicenseProductType } from "@shared/licenseProducts";
 
 type SensorGroup = {
   group: string;
@@ -62,11 +64,12 @@ type LicenseGroupOption = {
  * 所以这里不能收窄成 `string[] | "all"`。
  */
 type OfflineKeyResult = {
+  productType?: LicenseProductType;
   activationCode: string;
   sensorTypes: string | string[];
   expireDate: number;
   days: number;
-  /** 含分类令牌时为 3，否则 2 */
+  /** 上位机保留 v2/v3/v4 格式，SDK 使用 v5 */
   licenseVersion?: number;
 };
 
@@ -129,6 +132,7 @@ function ResultDialog({
               <span className="ml-1">{new Date(result.expireDate).toLocaleDateString("zh-CN")}</span>
             </div>
             <div className="col-span-2">
+              <p className="mb-2">授权产品：{LICENSE_PRODUCT_LABELS[result.productType ?? "shroom-desktop"]}</p>
               <span className="text-muted-foreground">授权范围：</span>
               {/* 分类令牌渲染成「精密全部」而不是 @group:precision */}
               <span className="ml-1">
@@ -212,6 +216,7 @@ function SelectedSensorTags({
 /** Keep unlimited offline codes on the original schema and issue device-bound codes only in the restricted workflow. */
 export default function OfflineKeyGen({ deviceMode = "unlimited", embedded = false }: { deviceMode?: LicenseDeviceMode; embedded?: boolean }) {
   const { user } = useAuth();
+  const [productType, setProductType] = useState<LicenseProductType>("shroom-desktop");
   const utils = trpc.useUtils();
 
   // 传感器数据
@@ -228,7 +233,7 @@ export default function OfflineKeyGen({ deviceMode = "unlimited", embedded = fal
     }).catch((error) => { if (active) setCompanySystemsError(error.message); });
     return () => { active = false; };
   }, []);
-  const availableGroups = useMemo(() => {
+  const availableGroups = useMemo<SensorGroup[]>(() => {
     const existing = new Set(sensorGroups.flatMap((group) => group.items.map((item) => item.value)));
     const published = companySystems.filter((item) => !existing.has(item.systemId));
     return published.length ? [...sensorGroups, { group: "公司发布系统", icon: "📦",
@@ -330,7 +335,7 @@ export default function OfflineKeyGen({ deviceMode = "unlimited", embedded = fal
   const selectedCount = isAll
     ? allSensors.length
     : selectedGroupKeys.length + selectedTypes.length;
-  const hasSelection = isAll || selectedGroupKeys.length > 0 || selectedTypes.length > 0;
+  const hasSelection = productType === "shroom-sdk" || isAll || selectedGroupKeys.length > 0 || selectedTypes.length > 0;
 
   const handleToggleAll = useCallback((checked: boolean) => {
     setIsAll(checked);
@@ -387,14 +392,14 @@ export default function OfflineKeyGen({ deviceMode = "unlimited", embedded = fal
   // 授权范围入参：分类令牌在前，单系统在后。
   // 离线接口的 schema 只收 "all" 或数组，所以单条目也保持数组（服务端 normalizeLicenseFile 会归一化）。
   const getSensorTypesParam = useCallback((): "all" | string[] => {
-    if (isAll) return "all";
+    if (productType === "shroom-sdk" || isAll) return "all";
     return [
       ...selectedGroupKeys.map(
         (key) => licenseGroupByKey.get(key)?.token || `@group:${key}`
       ),
       ...selectedTypes,
     ];
-  }, [isAll, selectedGroupKeys, selectedTypes, licenseGroupByKey]);
+  }, [productType, isAll, selectedGroupKeys, selectedTypes, licenseGroupByKey]);
 
   const handleGenerate = () => {
     if (parsedDeviceLimit === null) { toast.error("请输入 1–10000 的整数作为电脑数量上限"); return; }
@@ -403,6 +408,7 @@ export default function OfflineKeyGen({ deviceMode = "unlimited", embedded = fal
       return;
     }
     generateMutation.mutate({
+      productType,
       sensorTypes: getSensorTypesParam(),
       days,
       deviceLimit: parsedDeviceLimit ?? 0,
@@ -445,10 +451,10 @@ export default function OfflineKeyGen({ deviceMode = "unlimited", embedded = fal
               <div className="flex items-center justify-between">
                 <CardTitle className="text-base flex items-center gap-2">
                   <KeyRound className="h-4 w-4 text-primary" />
-                  选择授权传感器类型
-                  <Badge variant="outline" className="ml-1">{selectedCount}/{allSensors.length}</Badge>
+                  {productType === "shroom-sdk" ? "SDK 授权" : "选择授权传感器类型"}
+                  {productType === "shroom-desktop" && <Badge variant="outline" className="ml-1">{selectedCount}/{allSensors.length}</Badge>}
                 </CardTitle>
-                <div className="flex items-center gap-3">
+                {productType === "shroom-desktop" && <div className="flex items-center gap-3">
                   <div className="flex items-center gap-2">
                     <Switch
                       id="offline-all-auth"
@@ -465,11 +471,14 @@ export default function OfflineKeyGen({ deviceMode = "unlimited", embedded = fal
                   >
                     清空
                   </Button>
-                </div>
+                </div>}
               </div>
             </CardHeader>
             <CardContent className="pt-0">
-              <ScrollArea className="h-[340px] pr-3">
+              <div className="mb-4"><LicenseProductSelect value={productType} onChange={value => {
+                setProductType(value); setSelectedTypes([]); setSelectedGroupKeys([]); setIsAll(false); setResult(null);
+              }} /></div>
+              {productType === "shroom-sdk" ? <SdkDevicePolicyNotice /> : <ScrollArea className="h-[340px] pr-3">
                 <div className="space-y-4">
                   {availableGroups.map((group) => {
                     const groupValues = group.items.map((i) => i.value);
@@ -558,7 +567,7 @@ export default function OfflineKeyGen({ deviceMode = "unlimited", embedded = fal
                     );
                   })}
                 </div>
-              </ScrollArea>
+              </ScrollArea>}
             </CardContent>
           </Card>
         </div>
@@ -691,7 +700,9 @@ export default function OfflineKeyGen({ deviceMode = "unlimited", embedded = fal
                 <Input id="offline-device-limit" type="number" inputMode="numeric" min={1} max={10000} step={1} value={deviceLimit} onChange={event => setDeviceLimit(event.target.value)}
                   aria-invalid={parsedDeviceLimit === null} aria-describedby="offline-device-limit-hint" />
                 <p id="offline-device-limit-hint" className={`text-sm ${parsedDeviceLimit === null ? "text-destructive" : "text-muted-foreground"}`}>
-                  {parsedDeviceLimit === null ? "请输入 1–10000 的整数。" : "客户需使用新版软件首次联网登记，之后凭本机授权最多离线使用 7 天，且不能超过密钥到期时间。"}
+                  {parsedDeviceLimit === null ? "请输入 1–10000 的整数。" : productType === "shroom-sdk"
+                    ? "SDK 需持续联网复核电脑授权，有效期和电脑名额同时生效。"
+                    : "客户需使用新版软件首次联网登记，之后凭本机授权最多离线使用 7 天，且不能超过密钥到期时间。"}
                 </p>
               </div>}
               {/* 备注 */}
@@ -711,7 +722,9 @@ export default function OfflineKeyGen({ deviceMode = "unlimited", embedded = fal
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">授权模式：</span>
                   <span>
-                    {isAll
+                    {productType === "shroom-sdk"
+                      ? "不限制设备型号"
+                      : isAll
                       ? "全部授权"
                       : selectedGroupKeys.length > 0 && selectedTypes.length === 0
                         ? `分类授权 (${selectedGroupKeys.length})`

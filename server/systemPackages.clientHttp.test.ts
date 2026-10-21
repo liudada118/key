@@ -61,6 +61,14 @@ describe("company package client HTTP authorization without customer selection",
     return { response, body: await response.json() };
   }
 
+  /** Query signed status only for the installed identities declared by this synthetic client. */
+  async function installed(systems: unknown[], batches: unknown[][], key = onlineKey) {
+    fixture.batches = batches;
+    const response = await fetch(`${base}/installed-status`, { method: "POST",
+      headers: { Authorization: `License ${key}`, "Content-Type": "application/json" }, body: JSON.stringify({ systems }) });
+    return { response, body: await response.json() };
+  }
+
   it("returns a signed catalog and downloads a customer-only release for an unlinked authorized online key", async () => {
     const catalog = await request("/catalog", [[onlineRow], [release], []]);
     expect(catalog.response.status).toBe(200);
@@ -71,6 +79,46 @@ describe("company package client HTTP authorization without customer selection",
       [{ ...release, packageJson: JSON.stringify({ systemId: "seatpad" }) }]]);
     expect(downloaded.response.status).toBe(200);
     expect(downloaded.body).toEqual({ package: { systemId: "seatpad" }, version: 3, signature: "fixture-signature" });
+  });
+
+  it("returns a signed key-bound diagnostic policy without extending the catalog schema", async () => {
+    const result = await request("/policy", [[onlineRow]]);
+    expect(result.response.status).toBe(200);
+    expect(result.body.policy).toMatchObject({ schemaVersion: 1, diagnosticOnly: true,
+      publicationMode: "candidate-then-promote", retention: { chatDays: 180, usageDays: 90 } });
+    expect(verify(null, Buffer.from(JSON.stringify(result.body.policy)), packageSigning.publicKey,
+      Buffer.from(result.body.signature, "base64"))).toBe(true);
+    expect(JSON.stringify(result.body)).not.toContain(onlineKey);
+  });
+
+  it("signs exact installed-version status and caps validity at the license expiry", async () => {
+    const result = await installed([{ id: "seatpad", version: 3 }], [[onlineRow], [release]]);
+    expect(result.response.status).toBe(200);
+    expect(result.body.grant).toMatchObject({ schemaVersion: 1, type: "installed-system-status",
+      systems: [{ id: "seatpad", version: 3, status: "published", sha256: release.sha256, withdrawal: null }] });
+    expect(result.body.grant.expiresAt).toBeLessThanOrEqual(onlineRow.expireTimestamp);
+    expect(verify(null, Buffer.from(JSON.stringify(result.body.grant)), packageSigning.publicKey,
+      Buffer.from(result.body.signature, "base64"))).toBe(true);
+  });
+
+  it("reports version-specific withdrawal and discloses no unauthorized release metadata", async () => {
+    const event = { detailsJson: JSON.stringify({ withdrawal: { schemaVersion: 1, mode: "stop-new-acquisition",
+      effectiveAt: 100, reason: "test" } }), createdAt: new Date(100) };
+    const result = await installed([{ id: "seatpad", version: 3 }, { id: "private-system", version: 55 }],
+      [[onlineRow], [{ ...release, status: "revoked" }], [event]]);
+    expect(result.body.grant.systems[0].withdrawal.mode).toBe("stop-new-acquisition");
+    expect(result.body.grant.systems[1]).toEqual({ id: "private-system", version: 55, status: "unauthorized", sha256: null, withdrawal: null });
+    const legacy = await installed([{ id: "seatpad", version: 3 }], [[onlineRow], [{ ...release, status: "revoked" }], []]);
+    expect(legacy.body.grant.systems[0].withdrawal.mode).toBe("stop-distribution");
+  });
+
+  it("rejects duplicate, oversized, malformed installed requests and expired keys", async () => {
+    const one = { id: "seatpad", version: 3 };
+    for (const systems of [[one, one], Array.from({ length: 33 }, (_, version) => ({ id: "seatpad", version: version + 1 })),
+      [{ id: 123, version: 3 }], [{ id: "../escape", version: 3 }], [{ ...one, extra: true }]]) {
+      expect((await installed(systems, [[onlineRow]])).response.status).toBe(400);
+    }
+    expect((await installed([one], [[{ ...onlineRow, expireTimestamp: Date.now() - 1 }]])).response.status).toBe(403);
   });
 
   it("accepts an RSA-signed unlinked offline key for both catalog and direct package download", async () => {

@@ -41,6 +41,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { formatScopeEntry, isGroupScopeToken } from "@shared/licenseScopes";
 import { useAuth } from "@/_core/hooks/useAuth";
 import LicenseDevicesDialog from "@/components/LicenseDevicesDialog";
+import { LICENSE_PRODUCT_LABELS, normalizeLicenseProduct } from "@shared/licenseProducts";
 import { deviceLimitLabel, type LicenseDeviceMode } from "@/lib/licenseDeviceMode";
 
 /** 状态 Badge 配置 */
@@ -648,9 +649,12 @@ export default function KeyList({ deviceMode = "unlimited", embedded = false }: 
                           >
                             {key.batchId ? "批量" : "单个"}
                           </Badge>
+                          <Badge variant="secondary" className="mt-1 block w-fit">{LICENSE_PRODUCT_LABELS[normalizeLicenseProduct(key.productType)]}</Badge>
                         </TableCell>
                         <TableCell>
-                          {renderSensorTypes(key.sensorType)}
+                          {normalizeLicenseProduct(key.productType) === "shroom-sdk"
+                            ? <Badge variant="default" className="text-[10px]">不限制设备型号</Badge>
+                            : renderSensorTypes(key.sensorType)}
                         </TableCell>
                         <TableCell className="text-sm text-foreground">{key.days}天</TableCell>
                         <TableCell className="whitespace-nowrap text-sm">{deviceLimitLabel(key.deviceLimit, key.deviceRestricted)}</TableCell>

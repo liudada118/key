@@ -31,6 +31,7 @@ import KeyGenerationRequests from "./pages/KeyGenerationRequests";
 import Login from "./pages/Login";
 import AgentChats from "./pages/AgentChats";
 import SystemPackages from "./pages/SystemPackages";
+import AlgorithmPlatform from "./pages/AlgorithmPlatform";
 import UsageAnalytics from "./pages/UsageAnalytics";
 import { LimitedKeyGeneration, LimitedKeyManagement } from "./pages/LimitedKeys";
 import { useAuth } from "./_core/hooks/useAuth";
@@ -67,6 +68,7 @@ function AuthenticatedRouter() {
         <Route path={"/sdk-requests"} component={SdkRequestManagement} />
         <Route path={"/agent-chats"} component={AgentChats} />
         <Route path={"/system-packages"} component={SystemPackages} />
+        <Route path={"/algorithm-platform"}><AlgorithmPlatform /></Route>
         <Route path={"/usage-analytics"} component={UsageAnalytics} />
         <Route path={"/404"} component={NotFound} />
         <Route component={NotFound} />

@@ -2,14 +2,22 @@ import type { Express } from "express";
 import { decodeLicenseKey } from "../shared/crypto";
 import { getDb, getLicenseKeyByString, markLicenseKeyActivated, markLicenseKeyExpired, recordClientTimeAndDetectTamper } from "./db";
 import { authorizeLicenseDevice } from "./licenseDevices";
+import { normalizeLicenseProduct, licenseSdkFeatures } from "../shared/licenseProducts";
 
 /** Keep older unlimited requests compatible while modern clients require a registered computer allowance. */
 export function registerOnlineLicenseCheck(app: Express) {
+  app.options("/licenseCheck", (_req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*"); res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type"); res.sendStatus(204);
+  });
   app.post("/licenseCheck", async (req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Cache-Control", "no-store");
     const now = Date.now();
-    const key = (req.body && req.body.key ? String(req.body.key) : "").trim();
+    let requestedProduct;
+    try { requestedProduct = normalizeLicenseProduct(req.body?.productType); }
+    catch { return res.status(400).json({ time: now, valid: false, status: "PRODUCT_INVALID" }); }
+    const key = (req.body && req.body.key ? String(req.body.key) : "").trim().toLowerCase();
     if (!key) {
       return res.status(400).json({ time: now, valid: false, status: "INVALID", reason: "缺少 key" });
     }
@@ -25,6 +33,10 @@ export function registerOnlineLicenseCheck(app: Express) {
     if (!decoded.valid && decoded.error && (!decoded.expireTimestamp || !decoded.sensorTypes)) {
       return res.json({ time: now, valid: false, status: "INVALID", reason: decoded.error });
     }
+    if (normalizeLicenseProduct(decoded.productType) !== requestedProduct) {
+      return res.json({ time: now, valid: false, status: "PRODUCT_MISMATCH", productType: decoded.productType,
+        expireTimestamp: now - 1, reason: "密钥所属产品与当前客户端不一致。" });
+    }
 
     let status: string = "UNKNOWN";
     let reason: string | undefined = decoded.valid ? undefined : "密钥已过期";
@@ -38,9 +50,13 @@ export function registerOnlineLicenseCheck(app: Express) {
     try {
       if (!await getDb()) throw new Error("DEVICE_STORAGE_UNAVAILABLE");
       const rec = await getLicenseKeyByString(key);
-      if (!rec && req.body?.deviceId != null) {
+      if (rec && normalizeLicenseProduct(rec.productType) !== requestedProduct) {
+        return res.json({ time: now, valid: false, status: "PRODUCT_MISMATCH", productType: normalizeLicenseProduct(rec.productType),
+          expireTimestamp: now - 1, reason: "密钥所属产品与当前客户端不一致。" });
+      }
+      if (!rec && (req.body?.deviceId != null || requestedProduct === "shroom-sdk")) {
         return res.json({ time: now, valid: false, status: "LICENSE_NOT_REGISTERED",
-          reason: "此旧密钥尚未在当前授权服务器登记，请联系管理员补录原密钥，无需更换密钥。",
+          reason: "原密钥需要同步登记。请管理员在授权网站“密钥验证”中核对并登记原密钥，然后联网重试，无需更换密钥。",
           expireTimestamp: effectiveExpire, remainingDays: decoded.remainingDays ?? null,
           deviceLimit: 0 });
       }
@@ -60,8 +76,9 @@ export function registerOnlineLicenseCheck(app: Express) {
         });
         if (tamperResult) status = tamperResult.status;
 
-        if (status === "REVOKED") {
+        if (rec.isDeleted || status === "REVOKED") {
           valid = false;
+          status = "REVOKED";
           reason = rec.revokeReason || "密钥已吊销";
         } else if (status === "SUSPENDED") {
           valid = false;
@@ -81,7 +98,8 @@ export function registerOnlineLicenseCheck(app: Express) {
           status = "ACTIVATED";
         }
         if (valid) {
-          const device = await authorizeLicenseDevice(rec, req.body?.deviceId, now);
+          // Bind the allowance to the canonical request: older rows may store uppercase hex.
+          const device = await authorizeLicenseDevice({ ...rec, keyString: key }, req.body?.deviceId, now);
           deviceLimit = device.deviceLimit;
           deviceLease = device.deviceLease;
           if (!device.allowed) {
@@ -106,6 +124,9 @@ export function registerOnlineLicenseCheck(app: Express) {
 
     res.json({
       time: now,
+      productType: requestedProduct,
+      sdkFeatures: licenseSdkFeatures(requestedProduct),
+      leaseExpiresAt: valid && effectiveExpire != null ? Math.min(effectiveExpire, now + 60000) : now,
       valid,
       status,
       reason,
@@ -114,12 +135,12 @@ export function registerOnlineLicenseCheck(app: Express) {
       deviceLimit,
       ...(deviceLease ? { deviceLease } : {}),
       // sensorTypes 已按当前注册表展开：分类密钥在这里自动拿到新增系统
-      sensorTypes: decoded.sensorTypes ?? null,
-      isAllTypes: decoded.isAllTypes ?? false,
+      sensorTypes: requestedProduct === "shroom-sdk" ? ["all"] : decoded.sensorTypes ?? null,
+      isAllTypes: requestedProduct === "shroom-sdk" || (decoded.isAllTypes ?? false),
       // v3：命中的分类 key（无分类授权为空数组），仅供客户端展示/排查
-      groupKeys: decoded.groupKeys ?? [],
+      groupKeys: requestedProduct === "shroom-sdk" ? [] : decoded.groupKeys ?? [],
       // 密钥里原样保存的授权范围（含 `@group:` 令牌），便于对账
-      scope: decoded.scope ?? null,
+      scope: requestedProduct === "shroom-sdk" ? "all" : decoded.scope ?? null,
     });
   });
 }

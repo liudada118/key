@@ -9,6 +9,13 @@ export const usageEventNames = [
   "agent_task_result", "usage_session_summary", "error_reported",
 ] as const;
 const identifier = z.string().regex(/^[A-Za-z0-9_.:-]{1,80}$/);
+const runtimeVersions = z.object({
+  frontendReleaseId: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+  frontendBuildId: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+  hostContract: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+  systemPackageVersion: z.string().regex(/^[A-Za-z0-9_.:-]{1,80}$/).optional(),
+  serverContractVersion: z.string().regex(/^[A-Za-z0-9_.:-]{1,80}$/).optional(),
+}).strict();
 const propertiesSchema = z.object({
   featureId: identifier.optional(), systemType: identifier.optional(),
   systemOrigin: z.enum(["builtin", "copy", "custom"]).optional(), operationId: identifier.optional(),
@@ -26,7 +33,7 @@ export const usageEventSchema = z.object({
   schemaVersion: z.literal(1), eventId: z.string().uuid(), installationId: z.string().uuid(),
   sessionId: z.string().uuid(), occurredAt: z.string().datetime({ offset: true }),
   appVersion: z.string().min(1).max(80), environment: z.enum(["production", "development", "test"]),
-  eventName: z.enum(usageEventNames), properties: propertiesSchema,
+  eventName: z.enum(usageEventNames), properties: propertiesSchema, runtimeVersions: runtimeVersions.optional(),
 }).strict().superRefine((event, ctx) => {
   if (event.eventName !== "error_reported" && (event.properties.message !== undefined || event.properties.stack !== undefined)) {
     ctx.addIssue({ code: "custom", message: "Error text requires error_reported" });

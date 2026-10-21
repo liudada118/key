@@ -62,6 +62,35 @@ describe("usage receiver contract", () => {
     expect(await (await response).json()).toEqual({ accepted: true, eventIds: events.map(event => event.eventId) });
   });
 
+  it("accepts mixed legacy and versioned events without changing the persisted payload or receipt IDs", async () => {
+    const { send, persist } = await harness();
+    const runtimeVersions = { frontendReleaseId: 1792395247824, frontendBuildId: 1792116828439,
+      hostContract: 1, systemPackageVersion: "42", serverContractVersion: "policy-v1" };
+    const events = [sampleEvent(), { ...sampleEvent(), runtimeVersions }];
+    const response = await send({ schemaVersion: 1, events });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ accepted: true, eventIds: events.map(event => event.eventId) });
+    expect(persist).toHaveBeenCalledOnce();
+    expect(persist).toHaveBeenCalledWith({ sourceId: 12, customerId: 3, customerName: "Fixture" }, events);
+  });
+
+  it("rejects invalid versions and unknown metadata before persisting any event in the batch", async () => {
+    const { send, persist } = await harness();
+    const invalidVersions = [{ frontendBuildId: -1 }, { frontendReleaseId: Number.MAX_SAFE_INTEGER + 1 },
+      { hostContract: 1.1 }, { systemPackageVersion: "x".repeat(81) },
+      { serverContractVersion: "https://example.com" }, { frontendBuildId: 1, localPath: "/private/fixture" }];
+    for (const runtimeVersions of invalidVersions) {
+      const response = await send({ schemaVersion: 1, events: [sampleEvent(), { ...sampleEvent(), runtimeVersions }] });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ accepted: false, error: "INVALID_EVENT" });
+    }
+    const response = await send({ schemaVersion: 1, events: [{ ...sampleEvent(),
+      runtimeVersions: { hostContract: 1 }, customerName: "client-provided" }] });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ accepted: false, error: "INVALID_EVENT" });
+    expect(persist).not.toHaveBeenCalled();
+  });
+
   it("rejects unavailable license before parsing body and never accepts customer-provided identity", async () => {
     const denied = await harness({ authenticate: async () => { throw new AgentSyncError(403, "LICENSE_UNAVAILABLE"); } });
     expect((await denied.send("{bad")).status).toBe(403);

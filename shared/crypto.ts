@@ -18,6 +18,7 @@
  *      分类与系统归属见 shared/licenseScopes.ts（唯一数据源 config/licenseSensorGroups.json）。
  */
 import CryptoJS from "crypto-js";
+import { normalizeLicenseProduct, type LicenseProductType } from "./licenseProducts";
 import {
   containsGroupScopeToken,
   expandLicenseFile,
@@ -210,18 +211,21 @@ export const KEY_CATEGORIES = [
 export function generateLicenseKey(
   sensorTypes: string | string[],
   days: number,
-  category: KeyCategory = "production"
+  category: KeyCategory = "production",
+  product: LicenseProductType = "shroom-desktop"
 ): string {
+  const productType = normalizeLicenseProduct(product);
   const expireTimestamp = Date.now() + days * 24 * 60 * 60 * 1000;
 
   // file 字段: "all" / 单个 string / string 数组；分类令牌原样保存（禁止在此展开成系统数组，
   // 否则密钥就固化成签发当时的成员，失去"随分类更新"的意义）
   // normalizeLicenseFile 内部会 expandLicenseFile 校验一遍：未知分类 / 空范围直接 throw
-  const file = normalizeLicenseFile(sensorTypes);
+  const file = productType === "shroom-sdk" ? "all" : normalizeLicenseFile(sensorTypes);
 
   const payload = JSON.stringify({
     date: expireTimestamp,
-    file,
+    ...(productType === "shroom-sdk" ? { sdkFile: file } : { file }),
+    productType,
     cat: category,
     // 含分类令牌 → v3；老的单系统 / 固定数组 / all → 保持 v2
     v: containsGroupScopeToken(file) ? 3 : 2,
@@ -235,6 +239,7 @@ export function generateLicenseKey(
 /** 解密密钥返回的信息结构 */
 export interface DecodedKey {
   valid: boolean;
+  productType?: LicenseProductType;
   expireTimestamp?: number;
   sensorType?: string;
   /** 展开后的具体系统 key（分类令牌已按当前注册表展开） */
@@ -264,7 +269,9 @@ export function decodeLicenseKey(hexKey: string, nowMs?: number): DecodedKey {
       return { valid: false, error: "解密失败：无效的密钥或密钥已被篡改" };
     }
     const parsed = JSON.parse(plaintext);
-    if (!parsed.date || !parsed.file) {
+    const productType = normalizeLicenseProduct(parsed.productType);
+    const file = productType === "shroom-sdk" ? parsed.sdkFile : parsed.file;
+    if (!parsed.date || !file) {
       return { valid: false, error: "解密失败：缺少必要字段" };
     }
     const expireTimestamp = parseFloat(parsed.date);
@@ -273,10 +280,19 @@ export function decodeLicenseKey(hexKey: string, nowMs?: number): DecodedKey {
     const remainingDays = Math.ceil(remainingMs / (24 * 60 * 60 * 1000));
     const expireDate = new Date(expireTimestamp).toISOString();
 
-    // 解析 file 字段：分类令牌按当前注册表展开；未知分类一律判无效，不能降级当普通系统 key
+    // SDK 型号范围不再参与授权；旧 sdkFile 仍须具有合法的字段形状。
+    // 上位机分类令牌继续按当前注册表展开，未知分类一律判无效。
     let expanded: ReturnType<typeof expandLicenseFile>;
     try {
-      expanded = expandLicenseFile(parsed.file, { allSensorTypes: allAuthorizedSensorTypes() });
+      if (productType === "shroom-sdk") {
+        if (!(typeof file === "string" && file.trim()) &&
+          !(Array.isArray(file) && file.length > 0 && file.every(value => typeof value === "string" && value.trim()))) {
+          throw new Error("SDK 授权范围字段格式错误");
+        }
+        expanded = { sensorTypes: ["all"], isAllTypes: true, groupKeys: [] };
+      } else {
+        expanded = expandLicenseFile(file, { allSensorTypes: allAuthorizedSensorTypes() });
+      }
     } catch (e) {
       return {
         valid: false,
@@ -284,7 +300,8 @@ export function decodeLicenseKey(hexKey: string, nowMs?: number): DecodedKey {
         expireTimestamp,
         expireDate,
         remainingDays,
-        scope: parsed.file,
+        scope: file,
+        productType,
         category: parsed.cat || "production",
         version: parsed.v || 1,
       };
@@ -293,18 +310,19 @@ export function decodeLicenseKey(hexKey: string, nowMs?: number): DecodedKey {
     // sensorType 保持历史语义（逗号拼接的原始范围），便于老客户端与 DB 列直接使用
     const sensorType = expanded.isAllTypes
       ? "all"
-      : Array.isArray(parsed.file)
-        ? parsed.file.join(",")
-        : String(parsed.file);
+      : Array.isArray(file)
+        ? file.join(",")
+        : String(file);
 
     return {
       valid: remainingDays > 0,
+      productType,
       expireTimestamp,
       sensorType,
       sensorTypes: expanded.sensorTypes,
       isAllTypes: expanded.isAllTypes,
       groupKeys: expanded.groupKeys,
-      scope: parsed.file,
+      scope: productType === "shroom-sdk" ? "all" : file,
       category: parsed.cat || "production",
       expireDate,
       remainingDays,

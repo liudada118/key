@@ -5,6 +5,7 @@ import { getDb } from "./db";
 import { decodeLicenseKey } from "../shared/crypto";
 import { verifyOfflineClientKey } from "./systemPackageClientLicense";
 import type { AgentSyncEvent } from "./agentSyncSchema";
+import { lockUploadGuard } from "./uploadRetention";
 
 export class AgentSyncError extends Error {
   constructor(public status: number, public code: string) { super(code); }
@@ -138,7 +139,7 @@ export async function authenticateLicenseUpload(key: string) {
       const envelope = JSON.parse(Buffer.from(key, 'base64').toString('utf8'));
       if (typeof envelope.payload !== 'string' || typeof envelope.signature !== 'string') throw new Error('invalid');
     } catch { throw new AgentSyncError(401, "INVALID_LICENSE"); }
-    const [row] = await db.select({ id: offlineKeys.id, activationCode: offlineKeys.activationCode, status: offlineKeys.status, isDeleted: offlineKeys.isDeleted,
+    const [row] = await db.select({ productType: offlineKeys.productType, id: offlineKeys.id, activationCode: offlineKeys.activationCode, status: offlineKeys.status, isDeleted: offlineKeys.isDeleted,
       customerId: offlineKeys.customerId, customerActive: customers.isActive, expireDate: offlineKeys.expireDate, publicKey: rsaKeyPairs.publicKey,
     }).from(offlineKeys).innerJoin(rsaKeyPairs, eq(offlineKeys.rsaKeyPairId, rsaKeyPairs.id))
       .leftJoin(customers, eq(offlineKeys.customerId, customers.id)).where(eq(offlineKeys.activationCode, key)).limit(1);
@@ -152,6 +153,7 @@ export async function authenticateLicenseUpload(key: string) {
   }
   key = key.toLowerCase();
   const decoded = decodeLicenseKey(key, now);
+  if (decoded.productType !== "shroom-desktop") throw new AgentSyncError(403, "PRODUCT_MISMATCH");
   if (!decoded.expireTimestamp || !decoded.sensorTypes?.length) throw new AgentSyncError(401, "INVALID_LICENSE");
   const [row] = await db.select({ id: licenseKeys.id, status: licenseKeys.status, expiresAt: licenseKeys.expireTimestamp,
     deleted: licenseKeys.isDeleted, customerId: licenseKeys.customerId, customerActive: customers.isActive,
@@ -183,6 +185,9 @@ export async function persistAgentEvent(tenantId: number, event: AgentSyncEvent,
   const snapshotJson = JSON.stringify(event);
   const payloadHash = hashUploadToken(snapshotJson);
   await db.transaction(async tx => {
+    const guard = await lockUploadGuard(tx, { kind: "chat", sourceId: tenantId, installationId, objectId: event.conversationId });
+    // Deleted conversations keep their identity permanently; acknowledging discards stale offline queues.
+    if (guard.blocked) return;
     // Unique-key insertion locks the receipt even on first upload, including concurrent retries.
     await tx.insert(agentSyncEvents).values({
       tenantId, installationId, eventId, conversationId: event.conversationId,

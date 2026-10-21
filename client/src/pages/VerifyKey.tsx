@@ -21,6 +21,10 @@ import {
 import { useState, useMemo } from "react";
 import { toast } from "sonner";
 import { LICENSE_GROUP_META, expandLicenseFile } from "@shared/licenseScopes";
+import { useAuth } from "@/_core/hooks/useAuth";
+import LegacyLicenseRegistration from "@/components/LegacyLicenseRegistration";
+import { SdkDevicePolicyNotice } from "@/components/LicenseProductSelect";
+import { LICENSE_PRODUCT_LABELS, normalizeLicenseProduct, type LicenseProductType } from "@shared/licenseProducts";
 
 /* ============ 密钥生命周期状态标签 ============ */
 const STATUS_LABELS: Record<string, { label: string; className: string }> = {
@@ -36,6 +40,7 @@ const STATUS_LABELS: Record<string, { label: string; className: string }> = {
 
 /* ============ 在线密钥验证结果字段 ============ */
 type OnlineVerifyResult = {
+  productType?: LicenseProductType;
   valid: boolean;
   status?: string;
   statusReason?: string | null;
@@ -63,6 +68,7 @@ type OnlineVerifyResult = {
 
 /* ============ 离线密钥验证结果字段 ============ */
 type OfflineVerifyResult = {
+  productType?: LicenseProductType;
   valid: boolean;
   /** 展开后的具体系统；`"all"` 表示全部授权 */
   sensorTypes?: string[] | string;
@@ -106,7 +112,9 @@ function detectKeyType(raw: string): "online" | "offline" {
 }
 
 export default function VerifyKey() {
+  const { user } = useAuth();
   const [keyInput, setKeyInput] = useState("");
+  const [verifiedKey, setVerifiedKey] = useState("");
   const [verifying, setVerifying] = useState(false);
   const [result, setResult] = useState<VerifyResult | null>(null);
 
@@ -219,7 +227,10 @@ export default function VerifyKey() {
       ? Math.max(0, Math.ceil((expireTs - now) / (1000 * 60 * 60 * 24)))
       : undefined;
 
-    const scope = payload.sensorTypes || payload.types || [];
+    let productType: LicenseProductType;
+    try { productType = normalizeLicenseProduct(payload.productType); }
+    catch { setResult({ kind: "offline", valid: false, error: "授权产品无效" }); return; }
+    const scope = productType === "shroom-sdk" ? "all" : payload.boundSensorTypes ?? payload.sensorTypes ?? payload.types ?? [];
     const isAllTypes = scope === "all" || (Array.isArray(scope) && scope.includes("all"));
 
     // v3 分类授权：payload 里存的是 `@group:<key>` 令牌，这里按前端打包的注册表展开。
@@ -247,6 +258,7 @@ export default function VerifyKey() {
     setResult({
       kind: "offline",
       valid: !isExpired,
+      productType,
       sensorTypes: isAllTypes ? "all" : expanded,
       isAllTypes,
       groupKeys,
@@ -271,6 +283,7 @@ export default function VerifyKey() {
     if (!raw) return toast.error("请输入密钥");
 
     const kind = detectKeyType(raw);
+    setVerifiedKey(raw);
     setVerifying(true);
     try {
       if (kind === "offline") {
@@ -367,6 +380,7 @@ export default function VerifyKey() {
           <CardContent>
             {result ? (
               <div className="space-y-5">
+                {result.kind !== "invalid" && <Badge variant="outline">{LICENSE_PRODUCT_LABELS[result.productType ?? "shroom-desktop"]}</Badge>}
                 <StatusBanner
                   valid={result.valid}
                   error={result.error}
@@ -374,9 +388,13 @@ export default function VerifyKey() {
                 />
 
                 {result.kind === "online" && <OnlineResultGrid result={result} />}
+                {result.kind === "online" && result.valid && result.status === "UNKNOWN" && user?.role === "super_admin"
+                  && keyInput.trim() === verifiedKey && <LegacyLicenseRegistration keyString={verifiedKey}
+                    onRegistered={() => verifyOnline(verifiedKey)} />}
                 {result.kind === "offline" && <OfflineResultGrid result={result} />}
 
-                {sensorDisplay && result.kind !== "invalid" && (
+                {result.kind !== "invalid" && result.productType === "shroom-sdk" && <SdkDevicePolicyNotice />}
+                {sensorDisplay && result.kind !== "invalid" && result.productType !== "shroom-sdk" && (
                   <SensorTypesDisplay
                     isAllTypes={result.isAllTypes}
                     mode={sensorDisplay.mode}

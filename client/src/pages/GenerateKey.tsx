@@ -28,6 +28,8 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import { toast } from "sonner";
 import { copyText } from "@/lib/clipboard";
 import { parseDeviceLimit, type LicenseDeviceMode } from "@/lib/licenseDeviceMode";
+import LicenseProductSelect, { SdkDevicePolicyNotice } from "@/components/LicenseProductSelect";
+import { LICENSE_PRODUCT_LABELS, type LicenseProductType } from "@shared/licenseProducts";
 
 /** 传感器分组类型 */
 type SensorGroup = {
@@ -150,6 +152,8 @@ function KeyGenerator({
   deviceMode: LicenseDeviceMode;
 }) {
   const { user } = useAuth();
+  const [productType, setProductType] = useState<LicenseProductType>("shroom-desktop");
+  const visibleSensorGroups: SensorGroup[] = sensorGroups;
 
   // 传感器选择状态
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
@@ -158,10 +162,10 @@ function KeyGenerator({
   const [isAll, setIsAll] = useState(false);
   /** Select a just-published system once it reaches the available list. */
   useEffect(() => {
-    if (preselectedSystemId && sensorGroups.some((group) => group.items.some((item) => item.value === preselectedSystemId))) {
+    if (productType === "shroom-desktop" && preselectedSystemId && sensorGroups.some((group) => group.items.some((item) => item.value === preselectedSystemId))) {
       setSelectedTypes((current) => current.includes(preselectedSystemId) ? current : [...current, preselectedSystemId]);
     }
-  }, [preselectedSystemId, sensorGroups]);
+  }, [preselectedSystemId, sensorGroups, productType]);
 
   // 参数状态
   // 已取消量产/在线租赁区分，所有密钥统一以 production 入库
@@ -189,24 +193,22 @@ function KeyGenerator({
     contractData && "error" in contractData ? contractData.error : undefined;
   const contractsError = contractQueryError?.message || contractSourceError;
 
-  // 强制绑定合同的开关在服务端（KEY_REQUIRE_CONTRACT）；关掉时所有人都能无合同直接生成
-  const { data: contractPolicy } = trpc.contracts.policy.useQuery();
-
   // 结果状态
   const [singleResult, setSingleResult] = useState<{
+    productType: LicenseProductType;
     keyString: string;
     expireTimestamp: number;
   } | null>(null);
   const [batchResults, setBatchResults] = useState<{
     batchId: string;
-    keys: { keyString: string }[];
+    keys: { keyString: string; productType: LicenseProductType }[];
     count: number;
   } | null>(null);
 
   // 所有传感器平铺
   const allSensors = useMemo(
-    () => sensorGroups.flatMap((g) => g.items),
-    [sensorGroups],
+    () => visibleSensorGroups.flatMap((g) => g.items),
+    [visibleSensorGroups],
   );
 
   const sensorLabelMap = useMemo(
@@ -241,13 +243,13 @@ function KeyGenerator({
   const selectedCount = isAll
     ? allSensors.length
     : selectedGroupKeys.length + selectedTypes.length;
-  const sensorSummary = isAll
+  const sensorSummary = productType === "shroom-sdk" ? "SDK 不限制设备型号" : isAll
     ? "全部传感器"
     : [
         ...groupScopeLabels,
         ...selectedTypes.map((value) => sensorLabelMap[value] || value),
       ].join("、");
-  const hasSelection = isAll || selectedGroupKeys.length > 0 || selectedTypes.length > 0;
+  const hasSelection = productType === "shroom-sdk" || isAll || selectedGroupKeys.length > 0 || selectedTypes.length > 0;
 
   // 全选/取消全选
   const handleToggleAll = useCallback((checked: boolean) => {
@@ -314,7 +316,7 @@ function KeyGenerator({
 
   // 获取要发送的 sensorTypes（分类令牌在前，单系统在后）
   const getSensorTypesParam = useCallback((): string | string[] => {
-    if (isAll) return "all";
+    if (productType === "shroom-sdk" || isAll) return "all";
     const entries = [
       ...selectedGroupKeys.map(
         (key) => licenseGroupByKey.get(key)?.token || `@group:${key}`,
@@ -323,7 +325,7 @@ function KeyGenerator({
     ];
     if (entries.length === 1) return entries[0];
     return entries;
-  }, [isAll, selectedGroupKeys, selectedTypes, licenseGroupByKey]);
+  }, [productType, isAll, selectedGroupKeys, selectedTypes, licenseGroupByKey]);
 
   // 单个生成
   const generateMutation = trpc.keys.generate.useMutation({
@@ -358,18 +360,13 @@ function KeyGenerator({
     if (mode === "batch" && (!count || parseInt(count) < 1)) {
       return toast.error("请输入生成数量");
     }
-    // 不强制绑定合同时直接签发，不再弹「确认生成方式」。
-    // policy 还没回来时按需要绑定处理（弹窗），避免这一瞬间绕过服务端策略。
-    if (contractPolicy && !contractPolicy.requireContract) {
-      handleGenerateWithoutContract();
-      return;
-    }
     setGateOpen(true);
   };
 
   const handleGenerateWithContract = (contract: GenerationContract) => {
     if (parsedDeviceLimit === null) return toast.error("请输入 1–10000 的整数作为电脑数量上限");
     const commonInput = {
+      productType,
       sensorTypes: getSensorTypesParam(),
       days: parseInt(days),
       category,
@@ -393,6 +390,7 @@ function KeyGenerator({
     const combinedRemark =
       [remark.trim(), note?.trim()].filter(Boolean).join("；") || undefined;
     const commonInput = {
+      productType,
       sensorTypes: getSensorTypesParam(),
       days: parseInt(days),
       category,
@@ -430,7 +428,7 @@ function KeyGenerator({
 
   const downloadCSV = () => {
     if (!batchResults) return;
-    const typeLabel = isAll
+    const typeLabel = productType === "shroom-sdk" ? "SDK 不限制设备型号" : isAll
       ? "全部类型"
       : [
           ...groupScopeLabels,
@@ -461,12 +459,12 @@ function KeyGenerator({
               <div className="flex items-center justify-between">
                 <CardTitle className="text-base font-medium flex items-center gap-2 text-foreground">
                   <Grid3X3 className="h-4 w-4 text-primary" />
-                  选择授权传感器类型
-                  <Badge variant="secondary" className="ml-1">
+                  {productType === "shroom-sdk" ? "SDK 授权" : "选择授权传感器类型"}
+                  {productType === "shroom-desktop" && <Badge variant="secondary" className="ml-1">
                     {selectedCount} / {allSensors.length}
-                  </Badge>
+                  </Badge>}
                 </CardTitle>
-                <div className="flex items-center gap-3">
+                {productType === "shroom-desktop" && <div className="flex items-center gap-3">
                   <div className="flex items-center gap-2">
                     <Switch
                       checked={isAll}
@@ -489,14 +487,18 @@ function KeyGenerator({
                     <RotateCcw className="h-3 w-3 mr-1" />
                     清空
                   </Button>
-                </div>
+                </div>}
               </div>
             </CardHeader>
             <CardContent className="pt-0">
+              <div className="mb-4"><LicenseProductSelect value={productType} onChange={value => {
+                setProductType(value); setSelectedTypes([]); setSelectedGroupKeys([]); setIsAll(false);
+                setSingleResult(null); setBatchResults(null);
+              }} /></div>
               {/* 分组传感器选择 */}
-              <ScrollArea className="h-[460px] pr-3">
+              {productType === "shroom-sdk" ? <SdkDevicePolicyNotice /> : <ScrollArea className="h-[460px] pr-3">
                 <div className="space-y-4">
-                  {sensorGroups.map((group) => {
+                  {visibleSensorGroups.map((group) => {
                     const groupValues = group.items.map((i) => i.value);
                     const groupOption = group.groupKey
                       ? licenseGroupByKey.get(group.groupKey)
@@ -602,7 +604,7 @@ function KeyGenerator({
                     );
                   })}
                 </div>
-              </ScrollArea>
+              </ScrollArea>}
             </CardContent>
           </Card>
         </div>
@@ -696,7 +698,9 @@ function KeyGenerator({
                 <div className="flex justify-between text-xs">
                   <span className="text-muted-foreground">授权模式：</span>
                   <span className="text-foreground font-medium">
-                    {isAll
+                    {productType === "shroom-sdk"
+                      ? "不限制设备型号"
+                      : isAll
                       ? "全部授权"
                       : !hasSelection
                         ? "未选择"
@@ -707,7 +711,7 @@ function KeyGenerator({
                             : `多类型 (${selectedCount})`}
                   </span>
                 </div>
-                {!isAll && hasSelection && (
+                {productType === "shroom-desktop" && !isAll && hasSelection && (
                   <div className="flex flex-wrap gap-1">
                     {/* 分类令牌用 default 底色区分：它是"随分类更新"的动态授权 */}
                     {selectedGroupKeys.map((key) => (
@@ -753,6 +757,8 @@ function KeyGenerator({
               <Button
                 onClick={handleGenerate}
                 disabled={isPending}
+                aria-haspopup="dialog"
+                aria-expanded={gateOpen}
                 className="w-full"
                 size="lg"
               >
@@ -822,6 +828,7 @@ function KeyGenerator({
                     data-slot="single-generation-result"
                     className={singleResult ? "space-y-3" : "hidden"}
                   >
+                    {singleResult && <Badge variant="outline">{LICENSE_PRODUCT_LABELS[singleResult.productType]}</Badge>}
                     <div className="relative">
                       <div className="p-3 bg-secondary/50 rounded-lg font-mono text-xs break-all text-foreground border border-border/50">
                         {singleResult?.keyString || ""}
@@ -872,6 +879,7 @@ function KeyGenerator({
                     data-slot="batch-generation-result"
                     className={batchResults ? "space-y-2" : "hidden"}
                   >
+                    {batchResults?.keys[0] && <Badge variant="outline">{LICENSE_PRODUCT_LABELS[batchResults.keys[0].productType]}</Badge>}
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <span>批次号: {batchResults?.batchId || ""}</span>
                       <span>共 {batchResults?.count || 0} 个</span>
@@ -920,14 +928,13 @@ function KeyGenerator({
         contractsError={contractsError || undefined}
         mode={mode}
         sensorTypes={getSensorTypesParam()}
+        productType={productType}
         sensorSummary={sensorSummary}
         days={parseInt(days) || 1}
         count={mode === "batch" ? parseInt(count) || 1 : 1}
         category={category}
         generationRemark={remark.trim() || undefined}
-        canGenerateWithoutContract={
-          user?.role === "super_admin" || contractPolicy?.requireContract === false
-        }
+        canGenerateWithoutContract={user?.role === "super_admin"}
         isSuperAdmin={user?.role === "super_admin"}
         directGenerationPending={isPending}
         onGenerateWithContract={handleGenerateWithContract}

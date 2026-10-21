@@ -1,5 +1,6 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { OrganizationExportButton } from "@/components/OrganizationExportButton";
+import AccountPasswordResetDialog, { passwordResetSuccessMessage, type PasswordResetTarget } from "@/components/AccountPasswordResetDialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -76,11 +77,7 @@ export default function AccountManagement() {
     isActive: boolean;
     remark: string | null;
   } | null>(null);
-  const [resetTarget, setResetTarget] = useState<{
-    id: number;
-    name: string | null;
-    username: string;
-  } | null>(null);
+  const [resetTarget, setResetTarget] = useState<PasswordResetTarget | null>(null);
 
   // Create form state
   const [newUsername, setNewUsername] = useState("");
@@ -138,10 +135,11 @@ export default function AccountManagement() {
 
   const resetPwdMutation = trpc.accounts.resetPassword.useMutation({
     onSuccess: () => {
-      toast.success("密码重置成功");
+      toast.success(passwordResetSuccessMessage(resetTarget?.isActive));
       setResetPwdOpen(false);
       setResetTarget(null);
       setResetNewPwd("");
+      utils.accounts.list.invalidate();
     },
     onError: (err) => toast.error(err.message),
   });
@@ -246,11 +244,7 @@ export default function AccountManagement() {
     setEditOpen(true);
   };
 
-  const openResetPwd = (account: {
-    id: number;
-    name: string | null;
-    username: string;
-  }) => {
+  const openResetPwd = (account: PasswordResetTarget) => {
     setResetTarget(account);
     setResetNewPwd("");
     setResetPwdOpen(true);
@@ -612,42 +606,12 @@ export default function AccountManagement() {
       </Dialog>
 
       {/* Reset Password Dialog */}
-      <Dialog open={resetPwdOpen} onOpenChange={setResetPwdOpen}>
-        <DialogContent className="bg-card border-border">
-          <DialogHeader>
-            <DialogTitle className="text-foreground">
-              重置密码 - {resetTarget?.name || resetTarget?.username}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 py-2">
-            <p className="text-sm text-muted-foreground">
-              为用户 <span className="font-mono text-foreground">{resetTarget?.username}</span> 设置新密码
-            </p>
-            <div className="space-y-2">
-              <Label className="text-foreground">新密码</Label>
-              <Input
-                type="password"
-                value={resetNewPwd}
-                onChange={(e) => setResetNewPwd(e.target.value)}
-                placeholder="至少6位"
-                className="bg-secondary/50"
-                autoComplete="new-password"
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setResetPwdOpen(false)}>
-              取消
-            </Button>
-            <Button onClick={handleResetPwd} disabled={resetPwdMutation.isPending}>
-              {resetPwdMutation.isPending && (
-                <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              )}
-              确认重置
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <AccountPasswordResetDialog open={resetPwdOpen} target={resetTarget} password={resetNewPwd}
+        pending={resetPwdMutation.isPending} onPasswordChange={setResetNewPwd} onSubmit={handleResetPwd}
+        onOpenChange={open => {
+          setResetPwdOpen(open);
+          if (!open) { setResetTarget(null); setResetNewPwd(""); }
+        }} />
 
       {/* 删除确认弹窗 */}
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>

@@ -3,6 +3,7 @@ import type { UsageFilters } from "../../../server/usageSchema";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { DeleteUploadedButton } from "@/components/UploadRetentionPanel";
 import { AlertCircle, ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
 import { usageEventLabels, usageFeatureLabel, usageActionLabel, usageErrorLabel,
   usageMetricText, usageSystemLabel, usageTime } from "@/lib/usagePresentation";
@@ -46,6 +47,9 @@ export default function UsageEventList({ filters, errorsOnly, enabled }: { filte
         {row.event.eventName === "error_reported" && <p className="mt-3 whitespace-pre-wrap break-words text-sm">{row.event.properties.message || usageErrorLabel(row.event.properties.errorCode || "") || "客户端未提供错误描述"}</p>}
         <details className="mt-3 text-xs text-muted-foreground"><summary className="w-fit cursor-pointer py-2">{errorsOnly ? "技术详情与调用栈" : "上报详情"}</summary>
           <p className="break-all">安装：{row.installationId} · 接收：{usageTime(row.receivedAt)} UTC</p>
+          {row.event.runtimeVersions && <p className="mt-2 break-words">运行版本：{Object.entries(row.event.runtimeVersions).map(([key, value]) => `${key}=${value}`).join(" · ")}</p>}
+          <div className="mt-2"><DeleteUploadedButton kind="usage" sourceId={row.sourceId} installationId={row.installationId}
+            objectId={row.eventId} onDeleted={() => { setSelected(null); void events.refetch(); }} /></div>
           {row.event.properties.module && <p className="mt-2">模块：{row.event.properties.module} · 级别：{row.event.properties.severity || "未提供"}</p>}
           {row.event.properties.stack && <pre className="mt-2 whitespace-pre-wrap break-all rounded-md bg-muted p-3 leading-6">{row.event.properties.stack}</pre>}
         </details>

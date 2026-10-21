@@ -1,4 +1,5 @@
 import { formatLicenseScope } from "../shared/licenseScopes";
+import { LICENSE_PRODUCT_LABELS, type LicenseProductType } from "../shared/licenseProducts";
 
 type FetchLike = (
   input: string | URL | Request,
@@ -6,6 +7,7 @@ type FetchLike = (
 ) => Promise<Response>;
 
 export type KeyRequestNotificationInput = {
+  productType?: LicenseProductType;
   requestNo: string;
   requestedByName: string;
   mode: "single" | "batch";
@@ -67,6 +69,7 @@ export function buildKeyRequestNotificationText(
     `申请编号：${input.requestNo}`,
     `申请人：${input.requestedByName}`,
     `生成方式：${generationMode}`,
+    `授权产品：${LICENSE_PRODUCT_LABELS[input.productType ?? "shroom-desktop"]}`,
     `授权范围：${formatSensorTypes(input.sensorTypes)}`,
     `有效期：${input.days} 天`,
     `密钥类型：${category}`,

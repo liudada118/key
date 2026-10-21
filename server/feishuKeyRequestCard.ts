@@ -1,5 +1,6 @@
 import type { KeyRequestNotificationInput } from "./feishuKeyRequestWebhook";
 import { formatLicenseScope } from "../shared/licenseScopes";
+import { LICENSE_PRODUCT_LABELS } from "../shared/licenseProducts";
 
 type FetchLike = (
   input: string | URL | Request,
@@ -130,6 +131,7 @@ export function buildFeishuKeyRequestApprovalCard(
   const content = [
     `**申请人：** ${escapeCardMarkdown(input.requestedByName)}`,
     `**生成方式：** ${escapeCardMarkdown(generationMode)}`,
+    `**授权产品：** ${escapeCardMarkdown(LICENSE_PRODUCT_LABELS[input.productType ?? "shroom-desktop"])}`,
     `**授权范围：** ${escapeCardMarkdown(formatSensorTypes(input.sensorTypes))}`,
     `**有效期：** ${escapeCardMarkdown(input.days)} 天`,
     `**密钥类型：** ${escapeCardMarkdown(category)}`,

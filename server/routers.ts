@@ -127,8 +127,11 @@ import {
 } from "@shared/licenseScopes";
 import { getLicenseRegistryInfo } from "./licenseRegistry";
 import { agentSyncRouter } from "./agentSyncRouter";
+import { uploadRetentionRouter } from "./uploadRetentionRouter";
+import { legacyLicenseImportRouter } from "./legacyLicenseImportRouter";
 import { usageRouter } from "./usageRouter";
 import { changeLicenseDevice, listLicenseDevices, readDevicePolicy, setLicenseDeviceLimit } from "./licenseDevices";
+import { LICENSE_PRODUCT_TYPES, normalizeLicenseProduct } from "../shared/licenseProducts";
 
 /**
  * 授权范围入参的公共校验：`"all"` / 单系统 key / 数组（元素可为 `@group:<groupKey>` 分类令牌）。
@@ -221,6 +224,8 @@ async function getAccessibleKeyCustomer(user: { id: number; role: string }, cust
 
 export const appRouter = router({
   agentSync: agentSyncRouter,
+  uploadRetention: uploadRetentionRouter,
+  legacyLicenseImport: legacyLicenseImportRouter,
   usage: usageRouter,
   system: systemRouter,
 
@@ -689,6 +694,7 @@ export const appRouter = router({
     generate: protectedProcedure
       .input(
         z.object({
+          productType: z.enum(LICENSE_PRODUCT_TYPES).default("shroom-desktop"),
           sensorTypes: licenseScopeSchema(
             z.union([z.literal("all"), z.array(z.string().min(1)).min(1)])
           ),
@@ -709,6 +715,7 @@ export const appRouter = router({
           customerName = customer?.name || null;
         }
         return generateOfflineActivationCode({
+          productType: input.productType,
           sensorTypes: input.sensorTypes,
           days: input.days,
           deviceLimit: input.deviceLimit,
@@ -820,6 +827,7 @@ export const appRouter = router({
     generate: protectedProcedure
       .input(
         z.object({
+          productType: z.enum(LICENSE_PRODUCT_TYPES).default("shroom-desktop"),
           sensorTypes: licenseScopeSchema(
             z.union([z.string().min(1), z.array(z.string().min(1)).min(1)])
           ),
@@ -843,6 +851,7 @@ export const appRouter = router({
         const customer = await getAccessibleKeyCustomer(ctx.user, input.customerId);
         const prepared = prepareOnlineKeyGeneration({
           mode: "single",
+          productType: input.productType,
           sensorTypes: input.sensorTypes,
           days: input.days,
           category: input.category,
@@ -878,6 +887,7 @@ export const appRouter = router({
     batchGenerate: protectedProcedure
       .input(
         z.object({
+          productType: z.enum(LICENSE_PRODUCT_TYPES).default("shroom-desktop"),
           sensorTypes: licenseScopeSchema(
             z.union([z.string().min(1), z.array(z.string().min(1)).min(1)])
           ),
@@ -902,6 +912,7 @@ export const appRouter = router({
         const customer = await getAccessibleKeyCustomer(ctx.user, input.customerId);
         const prepared = prepareOnlineKeyGeneration({
           mode: "batch",
+          productType: input.productType,
           sensorTypes: input.sensorTypes,
           days: input.days,
           category: input.category,
@@ -986,7 +997,8 @@ export const appRouter = router({
         const now = Date.now();
         // 在线密钥到期以数据库 expireTimestamp 为权威（支持续期延长当前密钥）；无记录时退回密钥串日期
         const effectiveExpire = dbRecord ? dbRecord.expireTimestamp : (decoded.expireTimestamp ?? null);
-        let valid = effectiveExpire != null ? now < effectiveExpire : decoded.valid;
+        let valid = Boolean(decoded.sensorTypes?.length) && (effectiveExpire != null ? now < effectiveExpire : decoded.valid);
+        if (decoded.productType === "shroom-sdk" && (!dbRecord || normalizeLicenseProduct(dbRecord.productType) !== "shroom-sdk")) valid = false;
         let statusReason: string | null = null;
         if (dbRecord) {
           if (dbStatus === "REVOKED") {
@@ -1035,6 +1047,7 @@ export const appRouter = router({
       .input(
         z.object({
           keyString: z.string().min(1),
+          productType: z.enum(LICENSE_PRODUCT_TYPES).default("shroom-desktop"),
           deviceCode: z.string().optional(),
           deviceName: z.string().optional(),
         })
@@ -1042,6 +1055,11 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         // 1. 解密密钥获取授权信息
         const decoded = decodeLicenseKey(input.keyString);
+        const registered = await getLicenseKeyByString(input.keyString.trim());
+        if (normalizeLicenseProduct(decoded.productType) !== input.productType || (registered && normalizeLicenseProduct(registered.productType) !== input.productType)) {
+          return { success: false, error: "PRODUCT_MISMATCH" };
+        }
+        if (input.productType === "shroom-sdk") return { success: false, error: "SDK_USE_LICENSE_CHECK" };
         // 仅当密钥串完全无法解密（连到期都解不出）才直接拒绝；
         // 能解密但“串里已过期”的情况交给数据库判定（支持续期延长当前密钥）
         if (!decoded.expireTimestamp) {
@@ -1439,6 +1457,7 @@ export const appRouter = router({
     ping: publicProcedure
       .input(z.object({
         keyString: z.string().min(1),
+        productType: z.enum(LICENSE_PRODUCT_TYPES).default("shroom-desktop"),
         deviceCode: z.string().min(1),
         clientVersion: z.string().optional(),
       }))
@@ -1448,6 +1467,8 @@ export const appRouter = router({
         if (!key) {
           throw new TRPCError({ code: "NOT_FOUND", message: "密钥不存在" });
         }
+        if (normalizeLicenseProduct(key.productType) !== input.productType) return { authorized: false, reason: "PRODUCT_MISMATCH", message: "密钥所属产品不匹配" };
+        if (input.productType === "shroom-sdk") return { authorized: false, reason: "SDK_USE_LICENSE_CHECK", message: "SDK 请使用专用在线校验接口" };
         // 检查密钥状态
         if (key.status === "SUSPENDED") {
           return { authorized: false, reason: "KEY_SUSPENDED", message: "密钥已被暂停" };
@@ -1505,6 +1526,7 @@ export const appRouter = router({
       .input(
         z.object({
           mode: z.enum(["single", "batch"]),
+          productType: z.enum(LICENSE_PRODUCT_TYPES).default("shroom-desktop"),
           sensorTypes: licenseScopeSchema(
             z.union([z.string().min(1), z.array(z.string().min(1)).min(1)])
           ),
@@ -1523,7 +1545,8 @@ export const appRouter = router({
         const request = await createKeyGenerationRequest({
           requestNo,
           mode: input.mode,
-          sensorTypes: JSON.stringify(input.sensorTypes),
+          productType: input.productType,
+          sensorTypes: JSON.stringify(input.productType === "shroom-sdk" ? "all" : input.sensorTypes),
           days: input.days,
           category: input.category,
           count,
@@ -1549,7 +1572,8 @@ export const appRouter = router({
           requestNo,
           requestedByName,
           mode: input.mode,
-          sensorTypes: input.sensorTypes,
+          productType: input.productType,
+          sensorTypes: input.productType === "shroom-sdk" ? "all" : input.sensorTypes,
           days: input.days,
           count,
           category: input.category,
