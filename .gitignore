@@ -8,6 +8,7 @@ build/
 *.dist
 
 # Environment variables
+.local/
 .env
 .env.local
 .env.development.local

@@ -145,6 +145,8 @@ key-manager/
 ├── obsidian-note-skill.zip     # Obsidian skill 上传包
 ├── scripts/listFeishuChats.ts  # 安全列出应用机器人可见群及 chat_id
 ├── scripts/build-deploy.mjs    # 自包含生产包、运行依赖闭包检查与白名单资源复制
+├── scripts/ensure-local-mysql.mjs # Windows 本地开发前连接检查及启动兜底
+├── scripts/start-local-mysql.ps1 # 现有 MySQL 数据目录的隐藏启动与并发保护
 ├── scripts/migrate-production.ts # 随包迁移器、目标绑定的成功摘要及强制检查
 ├── scripts/deploy-server.sh    # 低优先级发布、迁移、版本校验与dist回退
 ├── scripts/deploy-maintenance.mjs # 发布清单校验及有边界的历史清理
@@ -1231,3 +1233,37 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 | 2026-10-21 | 算法交易首期代码 | 完成人工交易记录闭环、严格身份与财务边界及0024迁移文件；未迁移/部署，不自动安装运行 |
 
 验证：TypeScript noEmit、全套489项测试通过（52项数据库/发布集成测试未启用）；新增12项服务端测试和4项管理页测试覆盖真实HTTP、正式密钥解析、角色与归属、并发重试、版本与订单状态。临时Vite生产构建和后端esbuild通过，原有大chunk提示保留。真实Chromium在隔离HTTP资料下核验审核→报价→收款→交付、无财务职责按钮隐藏、自审禁用、显著409错误及390px窄屏无横向溢出。未连接线上，未执行0024迁移，MySQL真实并发锁仍待隔离库验证。
+
+## 2026-10-21 Windows 本地数据库持久启动
+
+- 本机 MySQL 未注册 Windows 服务，临时进程在关机后停止，造成 `127.0.0.1:3307` 拒绝连接；已恢复现有 `E:\key_mysql_data\data` 实例，没有初始化或重建数据。
+- 新增 `scripts/start-local-mysql.ps1`：仅使用显式配置的现有 MySQL 二进制和数据目录，校验已有系统文件、监听端口及启动参数，用互斥锁避免并发重复启动，隐藏窗口并将启动输出写到数据目录父目录。不会更改密码、表结构或执行迁移，也不会强制终止恢复中的 MySQL。
+- 新增 `scripts/ensure-local-mysql.mjs`，作为 `pnpm dev` 前置检查及 `pnpm db:local:start` 命令。只对 Windows、机器主动配置且连接目标一致的本地 MySQL生效；认证或数据库名错误不重启，仅连接拒绝时拉起并再次验证。后台子进程不继承输出管道，避免常驻 MySQL 令启动命令一直等待。
+- 本机 `.local/mysql.json` 及整个 `.local/` 被 Git 忽略，无密码内容；继续使用已有 `.env` 验证应用连接。本机注册当前用户登录启动项 `KeyManagerLocalMySQL`，不需要管理员权限；它不是开机前启动的系统服务，未实际注销或重启 Windows 验证。非 Windows 与线上运行流程不变。
+- 回归位于 `server/localMysqlStartup.test.ts`，覆盖未配置/非 Windows/不同目标跳过、已有连接、拒绝后启动、认证失败不重启及失败阻止启动。运行与恢复说明见 `docs/local-mysql-startup.md`。
+
+### 更新日志（追加）
+
+| 日期 | 变更类型 | 内容 |
+| --- | --- | --- |
+| 2026-10-21 | 修复缺陷 | 配置本地 MySQL 登录自启及开发启动前检查，解决关机后数据库未启动导致的连接拒绝 |
+
+### 项目进度（追加）
+
+| 完成日期 | 完成的功能/工作 | 简要说明 |
+| --- | --- | --- |
+| 2026-10-21 | 本地数据库启动兜底 | 已正常关库后自动恢复并核对 45 个账号、5 个部门、6 个在线密钥和 1 个离线密钥；未重建数据或更改线上 |
+
+验证：新增 13 项启动判断回归通过，全套 502 项通过、52 项集成用例按环境跳过；TypeScript 检查、生产构建及 PowerShell 语法检查通过。真实冷启动返回 `started`，重复启动返回 `ready`，3307 与网站 3000 端口正常监听。登录启动项在当前用户 Run 键中已核对，未实际注销/重启 Windows；机器配置不入 Git。
+
+## 2026-10-21：本地算法平台0024迁移补齐
+
+本地开发网站的 `PLATFORM_MIGRATION_REQUIRED` 来自缺少算法平台五表。先核对目标为 `127.0.0.1:3307/key_manager`，逐项确认数据库24条迁移的hash和timestamp与0～23相同、唯一待执行为0024；使用原MySQL工具做单事务完整备份到忽略目录 `.local/backups/`，再以Drizzle标准迁移器执行根 `drizzle/` 的增量，未重放历史或改动线上。
+
+验证：迁移记录增至25条，五张表和四个普通索引存在；原36张表逐表行数保持（迁移表预期新增一条）。实际本地3001端口 `/api/algorithm-platform/catalog` 从503变成200，返回schemaVersion1和空商品目录；未生成测试订单或商品。备份不入Git，不打印连接密码或业务记录。此次只执行本地DDL并补操作文档，未修改运行代码，因此未重复运行全量构建和单测；真实MySQL并发交易仍需隔离库验收。
+
+### 更新日志与项目进度（追加）
+
+| 日期 | 类型 | 说明 |
+| --- | --- | --- |
+| 2026-10-21 | 本地数据库修复 | 备份后补执行0024，算法平台目录接口恢复；历史数据行数及迁移身份核对通过，线上未改动。 |
