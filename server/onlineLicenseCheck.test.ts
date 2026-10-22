@@ -1,23 +1,38 @@
 import express from "express";
 import { createServer, type Server } from "node:http";
+import { createHash, generateKeyPairSync, verify } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aesEncrypt, generateLicenseKey } from "../shared/crypto";
 
 const storage = vi.hoisted(() => ({ getDb: vi.fn(), getLicenseKeyByString: vi.fn(), markLicenseKeyActivated: vi.fn(),
   markLicenseKeyExpired: vi.fn(), recordClientTimeAndDetectTamper: vi.fn(), authorizeLicenseDevice: vi.fn() }));
 vi.mock("./db", () => storage);
-vi.mock("./licenseDevices", () => ({ authorizeLicenseDevice: storage.authorizeLicenseDevice }));
+vi.mock("./licenseDevices", async importOriginal => ({
+  ...await importOriginal<typeof import("./licenseDevices")>(), authorizeLicenseDevice: storage.authorizeLicenseDevice,
+}));
 import { registerOnlineLicenseCheck } from "./onlineLicenseCheck";
 
 const servers: Server[] = [];
+let signingRoot: string, signingPublicKey: string;
 beforeEach(() => {
   vi.resetAllMocks(); storage.getDb.mockResolvedValue({});
   storage.getLicenseKeyByString.mockResolvedValue(undefined);
+  signingRoot = mkdtempSync(path.join(tmpdir(), "key-online-license-signing-"));
+  const pair = generateKeyPairSync("ed25519"), keyPath = path.join(signingRoot, "signing.pem");
+  writeFileSync(keyPath, pair.privateKey.export({ format: "pem", type: "pkcs8" }));
+  signingPublicKey = pair.publicKey.export({ format: "pem", type: "spki" }).toString();
+  vi.stubEnv("SHROOM_SYSTEM_PACKAGE_SIGNING_KEY_PATH", keyPath);
 });
 afterEach(async () => {
   await Promise.all(servers.splice(0).map(server => new Promise<void>((resolve, reject) => {
     server.close(error => error ? reject(error) : resolve()); server.closeAllConnections();
   })));
+  vi.unstubAllEnvs();
+  if (path.dirname(path.resolve(signingRoot)) !== path.resolve(tmpdir()) || !path.basename(signingRoot).startsWith("key-online-license-signing-")) throw new Error("UNEXPECTED_TEST_DIRECTORY");
+  rmSync(signingRoot, { recursive: true, force: true });
 });
 
 /** Exercise the actual REST handler on a private loopback listener using synthetic licenses. */
@@ -95,13 +110,65 @@ describe("online license registration boundary", () => {
     const response = await fetch(`http://127.0.0.1:${(server.address() as { port: number }).port}/licenseCheck`, { method: "OPTIONS" });
     expect(response.status).toBe(204); expect(response.headers.get("access-control-allow-headers")).toBe("Content-Type");
   });
-  it.each(["a".repeat(64), "", "invalid"])("explicitly rejects an unregistered modern client (%s)", async deviceId => {
+  it.each(["", "invalid", "A".repeat(64), 123])("rejects an invalid legacy computer identity (%s)", async deviceId => {
     const response = await send({ key: generateLicenseKey(["hand"], 2), deviceId });
     expect(response.status).toBe(200);
     const data = await response.json();
-    expect(data).toMatchObject({ valid: false, status: "LICENSE_NOT_REGISTERED", deviceLimit: 0 });
-    expect(data.reason).toContain("密钥验证"); expect(data.deviceLease).toBeUndefined();
+    expect(data).toMatchObject({ valid: false, status: "DEVICE_ID_REQUIRED", deviceLimit: 0 });
+    expect(data.deviceLease).toBeUndefined();
     expect(storage.authorizeLicenseDevice).not.toHaveBeenCalled();
+  });
+
+  it.each(["all", "hand", "@group:precision"])("automatically signs an unlimited legacy %s allowance without formal registration", async scope => {
+    const key = generateLicenseKey(scope, 20), deviceId = "a".repeat(64);
+    const response = await send({ key: `  ${key.toUpperCase()}\r\n`, deviceId });
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data).toMatchObject({ valid: true, status: "LEGACY_VALID", deviceLimit: 0, scope,
+      deviceLease: { lease: { schemaVersion: 1, deviceId, deviceLimit: 0, keyHash: createHash("sha256").update(key).digest("hex") } } });
+    expect(data.deviceLease.lease.issuedAt).toBe(data.time);
+    expect(data.deviceLease.lease.expiresAt).toBe(data.time + 7 * 86400000);
+    expect(verify(null, Buffer.from(JSON.stringify(data.deviceLease.lease)), signingPublicKey, Buffer.from(data.deviceLease.signature, "base64"))).toBe(true);
+    expect(storage.getLicenseKeyByString).toHaveBeenCalledWith(key);
+    expect(storage.authorizeLicenseDevice).not.toHaveBeenCalled();
+    expect(storage.markLicenseKeyActivated).not.toHaveBeenCalled();
+    expect(storage.recordClientTimeAndDetectTamper).not.toHaveBeenCalled();
+  });
+
+  it("caps a legacy allowance at the original license expiration", async () => {
+    const expireTimestamp = Date.now() + 60000;
+    const key = aesEncrypt(JSON.stringify({ file: ["hand"], date: expireTimestamp }));
+    const data = await (await send({ key, deviceId: "b".repeat(64) })).json();
+    expect(data).toMatchObject({ valid: true, status: "LEGACY_VALID", expireTimestamp, scope: ["hand"], sensorTypes: ["hand"], isAllTypes: false,
+      deviceLease: { lease: { expiresAt: expireTimestamp, deviceLimit: 0 } } });
+  });
+
+  it("does not sign an expired legacy license or a client reporting tampering", async () => {
+    vi.stubEnv("SHROOM_SYSTEM_PACKAGE_SIGNING_KEY_PATH", "");
+    const expired = await send({ key: generateLicenseKey(["hand"], -1), deviceId: "a".repeat(64) });
+    expect(expired.status).toBe(200);
+    expect(await expired.json()).toMatchObject({ valid: false, status: "EXPIRED" });
+    const tampered = await send({ key: generateLicenseKey(["hand"], 2), deviceId: "a".repeat(64), tamper: true });
+    expect(tampered.status).toBe(200);
+    expect(await tampered.json()).toMatchObject({ valid: false, status: "TAMPERED" });
+    expect(storage.authorizeLicenseDevice).not.toHaveBeenCalled();
+  });
+
+  it.each(["not-a-license", aesEncrypt(JSON.stringify({ file: "@group:unknown-test-category", date: Date.now() + 86400000 }))])("does not sign malformed or invalid-scope ciphertext (%#)", async key => {
+    const response = await send({ key, deviceId: "a".repeat(64) });
+    const data = await response.json();
+    expect(data).toMatchObject({ valid: false, status: "INVALID" });
+    expect(data.deviceLease).toBeUndefined();
+    expect(storage.getDb).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing", "unreadable", "invalid"])("does not fall back to unsigned legacy access when signing is %s", async state => {
+    if (state === "missing") vi.stubEnv("SHROOM_SYSTEM_PACKAGE_SIGNING_KEY_PATH", "");
+    else if (state === "unreadable") vi.stubEnv("SHROOM_SYSTEM_PACKAGE_SIGNING_KEY_PATH", path.join(signingRoot, "missing.pem"));
+    else writeFileSync(path.join(signingRoot, "signing.pem"), "invalid signing key");
+    const response = await send({ key: generateLicenseKey(["hand"], 2), deviceId: "a".repeat(64) });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "LICENSE_SERVICE_UNAVAILABLE" });
   });
 
   it("preserves unknown legacy unlimited requests without a computer identity", async () => {
@@ -127,11 +194,19 @@ describe("online license registration boundary", () => {
       .toMatchObject({ valid: true, status: "ACTIVATED", deviceLimit: 3, deviceLease });
   });
 
-  it("does not mint an allowance for a revoked existing key", async () => {
-    storage.getLicenseKeyByString.mockResolvedValue({ id: 7, status: "REVOKED", expireTimestamp: Date.now() + 86400000 });
+  it.each(["SUSPENDED", "REVOKED", "TAMPERED", "EXPIRED"])("never replaces an existing %s record with legacy authorization", async status => {
+    storage.getLicenseKeyByString.mockResolvedValue({ id: 7, status, expireTimestamp: Date.now() + (status === "EXPIRED" ? -86400000 : 86400000) });
     expect(await (await send({ key: generateLicenseKey(["hand"], 2), deviceId: "a".repeat(64) })).json())
-      .toMatchObject({ valid: false, status: "REVOKED" });
+      .toMatchObject({ valid: false, status });
     expect(storage.authorizeLicenseDevice).not.toHaveBeenCalled();
+  });
+
+  it.each(["DEVICE_LIMIT_REACHED", "DEVICE_REVOKED"])("preserves an existing desktop computer policy denial (%s)", async code => {
+    storage.getLicenseKeyByString.mockResolvedValue({ id: 7, status: "ACTIVATED", isActivated: true, expireTimestamp: Date.now() + 86400000 });
+    storage.authorizeLicenseDevice.mockResolvedValue({ allowed: false, code, deviceLimit: 1 });
+    const data = await (await send({ key: generateLicenseKey(["hand"], 2), deviceId: "a".repeat(64) })).json();
+    expect(data).toMatchObject({ valid: false, status: code, deviceLimit: 1 });
+    expect(data.deviceLease).toBeUndefined();
   });
 
   it("binds the signed allowance to canonical request hex even when the legacy row contains uppercase", async () => {

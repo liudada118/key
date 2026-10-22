@@ -1,4 +1,4 @@
-import { createHash, createVerify, sign } from "node:crypto";
+import { createHash, createPrivateKey, createVerify, sign } from "node:crypto";
 import express, { type Express } from "express";
 import { readFileSync } from "node:fs";
 import { and, eq, sql } from "drizzle-orm";
@@ -31,6 +31,20 @@ export async function readDevicePolicy(keyType: DeviceKeyType, keyId: number) {
   return row?.maxDevices ?? 0;
 }
 
+/** Sign a computer-bound allowance without changing the key, its policy, or its registration. */
+export function signLicenseDeviceLease(input: { keyString: string; deviceId: string; expireTimestamp: number; deviceLimit: number }, now = Date.now()): DeviceLease {
+  if (!input.keyString || !DEVICE_ID_PATTERN.test(input.deviceId) || !Number.isFinite(now)
+    || !Number.isFinite(input.expireTimestamp) || input.expireTimestamp <= now
+    || !Number.isInteger(input.deviceLimit) || input.deviceLimit < 0 || input.deviceLimit > 10000) throw new Error("DEVICE_LEASE_INPUT_INVALID");
+  const keyPath = process.env.SHROOM_SYSTEM_PACKAGE_SIGNING_KEY_PATH;
+  if (!keyPath) throw new Error("SIGNING_KEY_UNCONFIGURED");
+  const signingKey = createPrivateKey(readFileSync(keyPath, "utf8"));
+  if (signingKey.asymmetricKeyType !== "ed25519") throw new Error("SIGNING_KEY_INVALID");
+  const lease = { schemaVersion: 1, keyHash: createHash("sha256").update(input.keyString).digest("hex"), deviceId: input.deviceId,
+    issuedAt: now, expiresAt: Math.min(input.expireTimestamp, now + DEVICE_LEASE_MS), deviceLimit: input.deviceLimit };
+  return { lease, signature: sign(null, Buffer.from(JSON.stringify(lease)), signingKey).toString("base64") };
+}
+
 /** Lock the policy row before counting slots so concurrent activations cannot exceed the limit. */
 export async function authorizeLicenseDevice(key: { id: number; keyString: string; expireTimestamp: number; keyType?: DeviceKeyType; defaultLimit?: number }, deviceId: unknown, now = Date.now()): Promise<DeviceAuthorization> {
   const db = await getDb();
@@ -47,15 +61,12 @@ export async function authorizeLicenseDevice(key: { id: number; keyString: strin
     // Older unlimited clients send no computer ID. New clients always receive a signed, bounded allowance.
     if (decision.code === "UNLIMITED" && !key.defaultLimit) return { allowed: true, code: "UNLIMITED", deviceLimit: 0 };
     if (typeof deviceId !== "string" || !DEVICE_ID_PATTERN.test(deviceId)) return { allowed: false, code: "DEVICE_ID_REQUIRED", deviceLimit: policy.maxDevices };
-    const keyPath = process.env.SHROOM_SYSTEM_PACKAGE_SIGNING_KEY_PATH;
-    if (!keyPath) throw new Error("SIGNING_KEY_UNCONFIGURED");
-    const lease = { schemaVersion: 1, keyHash: createHash("sha256").update(key.keyString).digest("hex"), deviceId: deviceId as string,
-      issuedAt: now, expiresAt: Math.min(key.expireTimestamp, now + DEVICE_LEASE_MS), deviceLimit: policy.maxDevices };
-    const signature = sign(null, Buffer.from(JSON.stringify(lease)), readFileSync(keyPath, "utf8")).toString("base64");
+    const deviceLease = signLicenseDeviceLease({ keyString: key.keyString, deviceId, expireTimestamp: key.expireTimestamp,
+      deviceLimit: policy.maxDevices }, now);
     if (decision.code === "REGISTER") await tx.insert(licenseDevices).values({ keyType, keyId: key.id,
       deviceId: deviceId as string, status: "active", firstSeenAt: now, lastSeenAt: now });
     else await tx.update(licenseDevices).set({ lastSeenAt: now }).where(and(identity, eq(licenseDevices.deviceId, deviceId as string)));
-    return { allowed: true, code: decision.code, deviceLimit: policy.maxDevices, deviceLease: { lease, signature } };
+    return { allowed: true, code: decision.code, deviceLimit: policy.maxDevices, deviceLease };
   });
 }
 

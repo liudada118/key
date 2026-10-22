@@ -1,10 +1,10 @@
 import type { Express } from "express";
 import { decodeLicenseKey } from "../shared/crypto";
 import { getDb, getLicenseKeyByString, markLicenseKeyActivated, markLicenseKeyExpired, recordClientTimeAndDetectTamper } from "./db";
-import { authorizeLicenseDevice } from "./licenseDevices";
+import { authorizeLicenseDevice, DEVICE_ID_PATTERN, signLicenseDeviceLease } from "./licenseDevices";
 import { normalizeLicenseProduct, licenseSdkFeatures } from "../shared/licenseProducts";
 
-/** Keep older unlimited requests compatible while modern clients require a registered computer allowance. */
+/** Preserve legacy desktop keys while issuing signed computer allowances and enforcing registered policies. */
 export function registerOnlineLicenseCheck(app: Express) {
   app.options("/licenseCheck", (_req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*"); res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -42,7 +42,7 @@ export function registerOnlineLicenseCheck(app: Express) {
     let reason: string | undefined = decoded.valid ? undefined : "密钥已过期";
     let valid = decoded.valid;
     // 在线密钥到期以数据库 expireTimestamp 为权威（支持后台续期延长当前密钥）；
-    // 无记录的旧版请求沿用密文日期；新版要求登记，存储不可用返回 503。
+    // 无记录的普通旧码沿用密文日期；电脑凭证不创建正式密钥记录，存储不可用返回 503。
     let effectiveExpire: number | null = decoded.expireTimestamp ?? null;
     let deviceLimit = 0;
     let deviceLease: Awaited<ReturnType<typeof authorizeLicenseDevice>>["deviceLease"];
@@ -54,11 +54,26 @@ export function registerOnlineLicenseCheck(app: Express) {
         return res.json({ time: now, valid: false, status: "PRODUCT_MISMATCH", productType: normalizeLicenseProduct(rec.productType),
           expireTimestamp: now - 1, reason: "密钥所属产品与当前客户端不一致。" });
       }
-      if (!rec && (req.body?.deviceId != null || requestedProduct === "shroom-sdk")) {
+      if (!rec && requestedProduct === "shroom-sdk") {
         return res.json({ time: now, valid: false, status: "LICENSE_NOT_REGISTERED",
           reason: "原密钥需要同步登记。请管理员在授权网站“密钥验证”中核对并登记原密钥，然后联网重试，无需更换密钥。",
           expireTimestamp: effectiveExpire, remainingDays: decoded.remainingDays ?? null,
           deviceLimit: 0 });
+      }
+      if (!rec && req.body?.deviceId != null) {
+        if (typeof req.body.deviceId !== "string" || !DEVICE_ID_PATTERN.test(req.body.deviceId)) {
+          return res.json({ time: now, valid: false, status: "DEVICE_ID_REQUIRED", reason: "电脑授权标识无效，请更新客户端后重试。",
+            expireTimestamp: effectiveExpire, deviceLimit: 0 });
+        }
+        if (tamperReported) {
+          valid = false; status = "TAMPERED"; reason = "密钥异常：客户端报告授权校验异常。";
+        } else if (decoded.valid && Number.isFinite(effectiveExpire) && effectiveExpire! > now) {
+          // ⚠️ 只签原普通密钥的电脑凭证；不能自动创建客户或正式授权记录。
+          deviceLease = signLicenseDeviceLease({ keyString: key, deviceId: req.body.deviceId, expireTimestamp: effectiveExpire!, deviceLimit: 0 }, now);
+          status = "LEGACY_VALID";
+        } else {
+          valid = false; status = "EXPIRED"; reason = "密钥已过期";
+        }
       }
       if (rec) {
         status = rec.status;
