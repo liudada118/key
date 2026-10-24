@@ -1,0 +1,8 @@
+{
+  "hostname": "shroom.jq-industries.com",
+  "tlsPort": 18443,
+  "localPort": 3128,
+  "squidBinary": "/usr/sbin/squid",
+  "stunnelBinary": "/usr/bin/stunnel",
+  "authHelper": "/usr/lib64/squid/basic_ncsa_auth"
+}

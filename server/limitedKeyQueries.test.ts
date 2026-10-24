@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({ db: undefined as unknown }));
 vi.mock("drizzle-orm/mysql2", () => ({ drizzle: () => fixture.db }));
-import { getLicenseKeys, getOfflineKeys, getOfflineKeyStats } from "./db";
+import { getLicenseKeys, getOfflineKeys, getOfflineKeyStats, getKeyCreators } from "./db";
 
 const queries: { sql: string; params: unknown[] }[] = [];
 
@@ -19,6 +19,37 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("license device category SQL boundaries", () => {
+  it.each(["online", "offline"] as const)("ANDs the selected %s creator with visibility in both page and count queries", async keyType => {
+    const input = { userIds: [7, 8], page: 2, pageSize: 10, createdById: 999, search: "customer", deviceMode: "unlimited" as const };
+    if (keyType === "online") await getLicenseKeys({ ...input, visibleSensorValues: ["hand"] });
+    else await getOfflineKeys(input);
+    const selects = queries.filter(query => query.sql.startsWith("select"));
+    expect(selects).toHaveLength(2);
+    const table = keyType === "online" ? "licenseKeys" : "offlineKeys";
+    for (const query of selects) {
+      const where = query.sql.split("where")[1];
+      expect(where).toContain(`\`${table}\`.\`createdById\` in (?, ?)`);
+      expect(where).toContain(`and \`${table}\`.\`createdById\` = ?`);
+      expect(query.params).toEqual(expect.arrayContaining([7, 8, 999, "%customer%"]));
+      expect(where).toContain(`\`${table}\`.\`isDeleted\` = ?`);
+    }
+  });
+
+  it.each(["online", "offline"] as const)("gets %s creator options only from visible keys, not the account directory", async keyType => {
+    await getKeyCreators({ keyType, userIds: [7], visibleSensorValues: ["hand"], deviceMode: "limited" });
+    expect(queries).toHaveLength(1);
+    const query = queries[0], table = keyType === "online" ? "licenseKeys" : "offlineKeys";
+    expect(query.sql).toContain(`from \`${table}\` left join \`users\``);
+    expect(query.sql).toContain(`group by \`${table}\`.\`createdById\``);
+    expect(query.sql).toContain(`\`${table}\`.\`isDeleted\` = ?`);
+    expect(query.sql).toContain("MAX(NULLIF(");
+    expect(query.sql).not.toContain("`password`");
+    expect(query.sql).not.toContain("`isActive`");
+    expect(query.params).toEqual(expect.arrayContaining([keyType, 7, false, 1]));
+    if (keyType === "online") expect(query.sql).toContain("FIND_IN_SET");
+    else expect(query.sql).not.toContain("FIND_IN_SET");
+  });
+
   it.each(["limited", "unlimited"] as const)("keeps online %s filtering inside both page and count queries", async deviceMode => {
     await getLicenseKeys({ userIds: [7, 8], visibleSensorValues: ["hand"], page: 3, pageSize: 10, customerId: 11, deviceMode });
     const selects = queries.filter(query => query.sql.startsWith("select"));

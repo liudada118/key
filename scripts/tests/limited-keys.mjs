@@ -24,6 +24,13 @@ const user = { id: 91, name: "合成验收账号", role: "super_admin", email: "
 const groups = [{ group: "精密", icon: "", items: [{ label: "手部检测", value: "hand" }] }];
 const companySystem = { systemId: "company-seat-fixture", name: "公司坐垫展示" };
 const limits = { online: 3, offline: 3 };
+const creatorsOnly = process.argv.includes("--creators-only");
+const tamperedOnly = process.argv.includes("--tampered-only");
+let restoreFailure = true;
+let tamperedRows = [{ id: 7349, keyString: "SYNTHETIC-NOT-A-LICENSE", customerName: "合成恢复客户", sensorType: "hand", status: "TAMPERED",
+  expireTimestamp: Date.now() + 86400000, tamperedAt: new Date(), reportedClientTime: Date.now() - 13 * 60000,
+  tamperServerTime: Date.now(), tamperReason: "合成时间回拨记录", statusBeforeTamper: "ACTIVATED" }];
+const creators = [{ id: 91, name: "测试人员", username: "issuer-a" }, { id: 92, name: "测试人员", username: "issuer-b" }];
 
 /** Produce populated lists, including a v4 offline code whose allowance was lifted. */
 function records(procedure, input) {
@@ -31,6 +38,14 @@ function records(procedure, input) {
   const current = limits[offline ? "offline" : "online"];
   const base = { keyString: "SYNTHETIC-NOT-A-LICENSE", activationCode: "SYNTHETIC-NOT-AN-ACTIVATION-CODE", sensorType: "hand", sensorTypes: "hand", days: 30,
     expireTimestamp: Date.now() + 86400000, expireDate: Date.now() + 86400000, createdAt: new Date(), status: "ISSUED", createdByName: "合成验收账号", customerName: "合成客户", customerId: 1 };
+  if (creatorsOnly) {
+    const all = Array.from({ length: 45 }, (_, index) => ({ ...base, id: index + 1, createdById: index < 24 ? 91 : 92,
+      customerName: index < 24 ? "客户甲" : "客户乙", createdByName: "测试人员", deviceLimit: input.deviceMode === "limited" ? 3 : 0,
+      deviceRestricted: input.deviceMode === "limited" }));
+    const visible = all.filter(item => input.createdById === undefined || item.createdById === input.createdById);
+    const pageSize = input.pageSize || 20, page = input.page || 1;
+    return { items: visible.slice((page - 1) * pageSize, page * pageSize), total: visible.length, page, pageSize };
+  }
   const all = [{ ...base, id: 101, deviceLimit: 0, deviceRestricted: false }, { ...base, id: 102, deviceLimit: current, deviceRestricted: offline || current > 0 }];
   if (offline) all.push({ ...base, id: 103, deviceLimit: 0, deviceRestricted: true });
   const items = all.filter(item => input?.deviceMode === "limited" ? item.deviceRestricted : !item.deviceRestricted);
@@ -51,6 +66,10 @@ function reply(procedure, input) {
     case "offlineKeys.list": return records(procedure, input);
     case "offlineKeys.stats": return { total: 0 };
     case "keys.statusHistory": return { items: [] };
+    case "keys.creators": return creators;
+    case "keys.tamperedList": return { items: tamperedRows, total: tamperedRows.length };
+    case "keys.tamperedCount": return tamperedRows.length;
+    case "keys.clearTamper": tamperedRows = tamperedRows.filter(row => row.id !== input.keyId); return { success: true, key: { id: input.keyId, status: "ACTIVATED" } };
     case "keys.export": return input.format === "csv" ? "synthetic,not-a-license" : [{ id: 102, synthetic: true }];
     case "keys.devices": return { maxDevices: limits[input.keyType || "online"], devices: [] };
     case "keys.setDeviceLimit": limits[input.keyType || "online"] = input.maxDevices; return { ok: true };
@@ -72,7 +91,16 @@ async function mockRequests(route) {
   if (url.pathname.startsWith("/api/trpc/")) {
     const procedures = decodeURIComponent(url.pathname.slice("/api/trpc/".length)).split(",");
     const inputs = request.method() === "GET" ? JSON.parse(url.searchParams.get("input") || "{}") : JSON.parse(request.postData() || "{}");
-    const results = procedures.map((procedure, index) => ({ result: { data: superjson.serialize(reply(procedure, superjson.deserialize(inputs[index] || { json: null }))) } }));
+    if (procedures.includes("keys.clearTamper")) await new Promise(resolve => setTimeout(resolve, 400));
+    const results = procedures.map((procedure, index) => {
+      const input = superjson.deserialize(inputs[index] || { json: null });
+      if (procedure === "keys.clearTamper" && restoreFailure) {
+        requests.push({ procedure, input });
+        return { error: superjson.serialize({ message: "合成恢复失败，请重试", code: -32603,
+          data: { code: "INTERNAL_SERVER_ERROR", httpStatus: 500, path: procedure } }) };
+      }
+      return { result: { data: superjson.serialize(reply(procedure, input)) } };
+    });
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(url.searchParams.get("batch") ? results : results[0]) });
   }
   if (url.pathname.startsWith("/api/system-packages")) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ systems: [companySystem] }) });
@@ -142,6 +170,113 @@ async function exportCategory(expectedMode) {
   }
 }
 
+/** Exercise real creator menus, pagination, combination, exports and responsive layout using synthetic records. */
+async function verifyCreatorFilters(origin) {
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
+    for (const pathname of ["/keys", "/offline-key-list", "/limited-keys", "/limited-keys?type=offline"]) {
+      const offline = pathname.includes("offline"), procedure = offline ? "offlineKeys.list" : "keys.list";
+      const mode = pathname.includes("limited") ? "limited" : "unlimited";
+      let start = requests.length;
+      await page.goto(origin + pathname);
+      await waitForRequest("keys.creators", start, input => input.keyType === (offline ? "offline" : "online") && input.deviceMode === mode);
+      await page.getByText("客户甲", { exact: true }).first().waitFor();
+      const next = offline ? page.getByRole("button").filter({ has: page.locator("svg.lucide-chevron-right") }).last()
+        : page.getByRole("button", { name: "下一页", exact: true });
+      start = requests.length;
+      await next.click();
+      await waitForRequest(procedure, start, input => input.page === 2);
+      await page.getByRole("checkbox", { name: "全选本页" }).click();
+      await page.getByRole("button", { name: /删除选中/ }).waitFor();
+      start = requests.length;
+      await page.getByRole("combobox", { name: "按生成人员筛选" }).click();
+      await page.getByRole("option", { name: "测试人员 (issuer-a)", exact: true }).waitFor();
+      await page.getByRole("option", { name: "测试人员 (issuer-b)", exact: true }).click();
+      const selected = await waitForRequest(procedure, start, input => input.createdById === 92);
+      assert.equal(selected.input.page, 1, "changing creator resets pagination");
+      assert.equal(selected.input.deviceMode, mode, "changing creator preserves device category");
+      await page.getByText("客户乙", { exact: true }).first().waitFor();
+      assert.equal(await page.getByText("客户甲", { exact: true }).count(), 0, "only the selected creator's records remain");
+      assert.equal(await page.getByRole("button", { name: /删除选中/ }).count(), 0, "hidden records are not left selected");
+      assert((await page.locator("body").innerText()).includes("21"), "filtered totals match the selected creator");
+      await assertNoPageOverflow(pathname + " creator " + width);
+      await page.screenshot({ path: path.join(artifacts, `creator-${offline ? "offline" : "online"}-${mode}-${width}.png`), fullPage: true });
+      if (!offline) {
+        await page.getByRole("combobox").filter({ hasText: "全部状态" }).click();
+        start = requests.length;
+        await page.getByRole("option", { name: "已签发", exact: true }).click();
+        await waitForRequest(procedure, start, input => input.createdById === 92 && input.status === "ISSUED");
+        start = requests.length;
+        await page.getByPlaceholder("搜索密钥...").fill("客户乙");
+        await page.getByRole("button", { name: "搜索", exact: true }).click();
+        await waitForRequest(procedure, start, input => input.search === "客户乙" && input.createdById === 92);
+        for (const format of ["CSV", "JSON"]) {
+          start = requests.length;
+          await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: format, exact: true }).click()]);
+          const exported = (await waitForRequest("keys.export", start)).input;
+          assert.equal(exported.createdById, 92);
+          assert.equal(exported.status, "ISSUED");
+          assert.equal(exported.search, "客户乙");
+          assert.equal(exported.deviceMode, mode);
+        }
+      }
+      start = requests.length;
+      await page.getByRole("combobox", { name: "按生成人员筛选" }).click();
+      await page.getByRole("option", { name: "全部人员", exact: true }).click();
+      await waitForRequest(procedure, start, input => input.createdById === undefined && input.page === 1);
+    }
+  }
+  assert.deepEqual(errors, []);
+  assert.deepEqual(unexpected, []);
+  console.log("Creator filtering passed: online/offline and ordinary/limited lists, duplicate names, page reset, selection reset, totals, combined filters, CSV/JSON, 1440px/390px screenshots; synthetic APIs only.");
+}
+
+/** Confirm restoration explicitly; cancellation and failures must never become issuance or revocation. */
+async function verifyTamperedRecovery(origin) {
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
+    await page.goto(origin + "/tampered");
+    await page.getByRole("button", { name: "恢复原密钥", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("heading", { name: "恢复原密钥 #7349", exact: true }).waitFor();
+    await dialog.evaluate(async element => {
+      await Promise.all(element.getAnimations({ subtree: true }).map(animation => animation.finished.catch(() => {})));
+    });
+    assert((await dialog.innerText()).includes("不生成新密钥、不延长有效期"));
+    await assertNoPageOverflow("tampered recovery " + width);
+    await page.screenshot({ path: path.join(artifacts, `tampered-recovery-${width}.png`), fullPage: true });
+    assert.equal(requests.filter(item => item.procedure === "keys.clearTamper").length, 0, "opening a dialog does not restore a key");
+    await dialog.getByRole("button", { name: "取消", exact: true }).click();
+    await dialog.waitFor({ state: "hidden" });
+  }
+  assert.equal(requests.filter(item => item.procedure === "keys.clearTamper").length, 0, "cancel has no mutation");
+  await page.getByRole("button", { name: "恢复原密钥", exact: true }).click();
+  const dialog = page.getByRole("dialog"), confirm = dialog.getByRole("button", { name: "确认恢复原密钥", exact: true });
+  let start = requests.length;
+  await confirm.click();
+  await page.waitForFunction(() => [...document.querySelectorAll('[role="dialog"] button')]
+    .some(button => button.textContent.includes("确认恢复原密钥") && button.disabled));
+  assert.equal(await confirm.isDisabled(), true, "pending recovery cannot be submitted twice");
+  await page.keyboard.press("Escape");
+  await dialog.waitFor();
+  await waitForRequest("keys.clearTamper", start);
+  await page.getByText("合成恢复失败，请重试", { exact: true }).waitFor();
+  assert.equal(await dialog.count(), 1, "failure keeps the original target available for retry");
+  assert.equal(await confirm.isEnabled(), true);
+  restoreFailure = false;
+  start = requests.length;
+  await confirm.click();
+  const call = await waitForRequest("keys.clearTamper", start);
+  assert.deepEqual(call.input, { keyId: 7349 }, "recovery only identifies the original key");
+  await dialog.waitFor({ state: "hidden" });
+  await page.getByText("暂无异常密钥", { exact: true }).waitFor();
+  assert.equal(requests.filter(item => item.procedure === "keys.clearTamper").length, 2, "only confirmation and explicit retry submit");
+  assert(!requests.some(item => ["keys.reissue", "keys.revoke", "keys.generate"].includes(item.procedure)), "restoring the original key does not issue or revoke keys");
+  assert.deepEqual(errors, []);
+  assert.deepEqual(unexpected, []);
+  console.log("Tampered recovery passed: real page and confirmation, cancellation, pending guard, failure retry, original-key-only parameters, refreshed list, desktop/mobile screenshots; synthetic APIs only.");
+}
+
 try {
   await server.listen();
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
@@ -150,6 +285,11 @@ try {
   page.on("pageerror", error => errors.push(error.message));
   await page.route("**/*", mockRequests);
 
+  if (tamperedOnly) {
+    await verifyTamperedRecovery(origin);
+  } else if (creatorsOnly) {
+    await verifyCreatorFilters(origin);
+  } else {
   await page.goto(`${origin}/generate`);
   await waitForRequest("contracts.policy");
   assert.equal(await page.locator('input[id*="device-limit"]').count(), 0, "ordinary generation cannot accidentally enable computer limits");
@@ -287,6 +427,7 @@ try {
   assert.deepEqual(errors, []);
   assert.deepEqual(unexpected, []);
   console.log("Limited key UI checks passed: real navigation, ordinary/limited online and offline generation, published systems without customer selection, integer validation, populated list and CSV/JSON filters, refreshed categories after editing, v4 offline display, role guard, keyboard tabs, 390px layout; all API responses synthetic.");
+  }
   console.log(`Synthetic UI screenshots: ${artifacts}`);
 } catch (error) {
   await page?.screenshot({ path: path.join(artifacts, "failure.png"), fullPage: true });

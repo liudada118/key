@@ -22,6 +22,7 @@ import {
   getLicenseKeyById,
   getLicenseKeyByString,
   getLicenseKeys,
+  getKeyCreators,
   getSensorValuesByGroups,
   getManagedSensorGroups,
   getDepartments,
@@ -737,6 +738,7 @@ export const appRouter = router({
           pageSize: z.number().min(1).max(100).default(20),
           search: z.string().optional(),
           machineId: z.string().optional(),
+          createdById: z.number().int().positive().optional(),
           deviceMode: deviceModeSchema,
         })
       )
@@ -748,6 +750,7 @@ export const appRouter = router({
           pageSize: input.pageSize,
           search: input.search,
           machineId: input.machineId,
+          ...(input.createdById !== undefined ? { createdById: input.createdById } : {}),
           deviceMode: input.deviceMode,
         });
       }),
@@ -947,6 +950,16 @@ export const appRouter = router({
         };
       }),
 
+    creators: protectedProcedure
+      .input(z.object({ keyType: z.enum(["online", "offline"]), deviceMode: deviceModeSchema }))
+      .query(async ({ ctx, input }) => {
+        const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+        const managedGroups = input.keyType === "online" && ctx.user.role !== "super_admin"
+          ? await getManagedSensorGroups(ctx.user.id) : [];
+        const visibleSensorValues = managedGroups.length ? await getSensorValuesByGroups(managedGroups) : [];
+        return getKeyCreators({ ...input, userIds, visibleSensorValues });
+      }),
+
     list: protectedProcedure
       .input(
         z.object({
@@ -959,6 +972,7 @@ export const appRouter = router({
           status: z.string().optional(),
           search: z.string().optional(),
           customerId: z.number().optional(),
+          createdById: z.number().int().positive().optional(),
           deviceMode: deviceModeSchema,
         })
       )
@@ -978,6 +992,7 @@ export const appRouter = router({
           status: input.status,
           search: input.search,
           customerId: input.customerId,
+          createdById: input.createdById,
           visibleSensorValues,
           deviceMode: input.deviceMode,
         });
@@ -1167,6 +1182,10 @@ export const appRouter = router({
         z.object({
           format: z.enum(["csv", "json"]),
           deviceMode: deviceModeSchema,
+          createdById: z.number().int().positive().optional(),
+          genType: z.enum(["single", "batch"]).optional(),
+          status: z.string().optional(),
+          search: z.string().optional(),
           category: z.string().optional(),
           sensorType: z.string().optional(),
           isActivated: z.boolean().optional(),
@@ -1175,6 +1194,8 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+        const managedGroups = ctx.user.role !== "super_admin" ? await getManagedSensorGroups(ctx.user.id) : [];
+        const visibleSensorValues = managedGroups.length ? await getSensorValuesByGroups(managedGroups) : [];
         const { items } = await getLicenseKeys({
           userIds,
           page: 1,
@@ -1184,6 +1205,11 @@ export const appRouter = router({
           isActivated: input.isActivated,
           customerId: input.customerId,
           deviceMode: input.deviceMode,
+          createdById: input.createdById,
+          genType: input.genType,
+          status: input.status,
+          search: input.search,
+          visibleSensorValues,
         });
 
         // 从数据库动态获取传感器标签映射
@@ -1390,8 +1416,15 @@ export const appRouter = router({
 
     /** 清除异常 / 重新激活 */
     clearTamper: adminProcedure
-      .input(z.object({ keyId: z.number() }))
+      .input(z.object({ keyId: z.number().int().positive() }))
       .mutation(async ({ ctx, input }) => {
+        if (ctx.user.isActive === false) throw new TRPCError({ code: "FORBIDDEN", message: "账号已被禁用" });
+        const key = await getLicenseKeyById(input.keyId);
+        if (!key || key.isDeleted) throw new TRPCError({ code: "NOT_FOUND", message: "密钥不存在" });
+        if (ctx.user.role !== "super_admin") {
+          const userIds = await getUserAndSubordinateIds(ctx.user.id, ctx.user.role);
+          if (!userIds.includes(key.createdById)) throw new TRPCError({ code: "FORBIDDEN", message: "无权恢复此密钥" });
+        }
         const result = await clearKeyTamper(input.keyId, ctx.user.id, ctx.user.name || ctx.user.username);
         await createAuditLog({
           userId: ctx.user.id,

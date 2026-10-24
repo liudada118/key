@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { trpc } from "../lib/trpc";
-import { Button } from "@/components/ui/button";
+import { Button, ButtonSpinner } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -20,7 +21,7 @@ import {
 } from "@/components/ui/table";
 import { toast } from "sonner";
 import { copyText } from "@/lib/clipboard";
-import { ShieldAlert } from "lucide-react";
+import { RotateCcw, ShieldAlert } from "lucide-react";
 
 function fmt(ts?: number | null) {
   if (!ts) return "-";
@@ -31,6 +32,7 @@ function mask(keyString: string) {
 }
 
 export default function TamperedKeys() {
+  const utils = trpc.useUtils();
   const [page, setPage] = useState(1);
   const pageSize = 20;
   const { data, refetch, isLoading } = trpc.keys.tamperedList.useQuery({ page, pageSize });
@@ -45,6 +47,19 @@ export default function TamperedKeys() {
   const [reissueTarget, setReissueTarget] = useState<number | null>(null);
   // 重签结果弹窗
   const [reissued, setReissued] = useState<{ keyString: string; id: number } | null>(null);
+  const [restoreTarget, setRestoreTarget] = useState<{ id: number; expireTimestamp: number } | null>(null);
+
+  const restoreMutation = trpc.keys.clearTamper.useMutation({
+    onSuccess: () => {
+      toast.success("原密钥异常已清除，请客户重新校验");
+      setRestoreTarget(null);
+      void utils.keys.tamperedList.invalidate();
+      void utils.keys.tamperedCount.invalidate();
+      void utils.keys.list.invalidate();
+      void utils.keys.stats.invalidate();
+    },
+    onError: err => toast.error(err.message || "恢复失败，请重试"),
+  });
 
   const revokeMutation = trpc.keys.revoke.useMutation({
     onSuccess: () => {
@@ -67,7 +82,7 @@ export default function TamperedKeys() {
   });
 
   return (
-    <div className="space-y-6">
+    <div className="min-w-0 space-y-6">
       <div className="flex items-center gap-2">
         <ShieldAlert className="h-6 w-6 text-red-600" />
         <h1 className="text-2xl font-bold">异常密钥管理</h1>
@@ -118,6 +133,12 @@ export default function TamperedKeys() {
                   <TableCell className="text-xs">{fmt(k.expireTimestamp)}</TableCell>
                   <TableCell className="text-xs max-w-[180px] truncate" title={k.tamperReason || ""}>{k.tamperReason || "-"}</TableCell>
                   <TableCell className="text-right whitespace-nowrap">
+                    <Button size="sm" variant="outline" className="mr-1"
+                      disabled={restoreMutation.isPending}
+                      onClick={() => setRestoreTarget({ id: k.id, expireTimestamp: k.expireTimestamp })}>
+                      <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
+                      恢复原密钥
+                    </Button>
                     <Button
                       size="sm"
                       variant="outline"
@@ -152,6 +173,29 @@ export default function TamperedKeys() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={restoreTarget !== null} onOpenChange={open => { if (!open && !restoreMutation.isPending) setRestoreTarget(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>恢复原密钥 #{restoreTarget?.id}</DialogTitle>
+            <DialogDescription>清除时间异常标记并重置时间高水位，不生成新密钥、不延长有效期、不修改电脑数量限制。</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 text-sm">
+            <p>原到期时间：{fmt(restoreTarget?.expireTimestamp)}</p>
+            <p>核实后将恢复异常前的状态；原本已过期、暂停或吊销的密钥仍不能使用。</p>
+            <p className="text-muted-foreground">请先确认客户电脑时间正确，再让客户重启软件并联网校验。旧客户端若仍提示本机时间异常，需要另外排查，不能绕过本机校验。</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={restoreMutation.isPending} onClick={() => setRestoreTarget(null)}>取消</Button>
+            <Button disabled={restoreTarget === null || restoreMutation.isPending}
+              aria-busy={restoreMutation.isPending}
+              onClick={() => { if (restoreTarget && !restoreMutation.isPending) restoreMutation.mutate({ keyId: restoreTarget.id }); }}>
+              <ButtonSpinner pending={restoreMutation.isPending} />
+              确认恢复原密钥
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* 吊销原因弹窗 */}
       <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && setRevokeTarget(null)}>

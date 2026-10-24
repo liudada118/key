@@ -1015,6 +1015,35 @@ export async function getSensorValuesByGroups(groups: string[]): Promise<string[
   return Array.from(new Set(values));
 }
 
+/** Keep creator filters inside the existing owner/managed-sensor visibility boundary. */
+function onlineKeyVisibility(userIds: number[], visibleSensorValues?: string[]) {
+  const owner = inArray(licenseKeys.createdById, userIds);
+  if (!visibleSensorValues?.length) return owner;
+  return or(owner, eq(licenseKeys.sensorType, "all"), ...visibleSensorValues.map(value =>
+    sql`FIND_IN_SET(${value}, ${licenseKeys.sensorType}) > 0`));
+}
+
+/** Return only creators of visible, undeleted keys in the selected device category. */
+export async function getKeyCreators(opts: {
+  keyType: "online" | "offline";
+  userIds: number[];
+  visibleSensorValues?: string[];
+  deviceMode?: LicenseDeviceMode;
+}) {
+  const db = await getDb();
+  if (!db) return [];
+  const table = opts.keyType === "online" ? licenseKeys : offlineKeys;
+  const visibility = opts.keyType === "online" ? onlineKeyVisibility(opts.userIds, opts.visibleSensorValues)
+    : inArray(offlineKeys.createdById, opts.userIds);
+  const name = sql<string>`COALESCE(NULLIF(${users.name}, ''), MAX(NULLIF(${table.createdByName}, '')), NULLIF(${users.username}, ''), '未知人员')`;
+  return db.select({ id: table.createdById, name, username: users.username }).from(table)
+    .leftJoin(users, eq(users.id, table.createdById))
+    .leftJoin(licenseDevicePolicies, and(eq(licenseDevicePolicies.keyType, opts.keyType), eq(licenseDevicePolicies.keyId, table.id)))
+    .where(and(visibility, eq(table.isDeleted, false), deviceModeCondition(opts.keyType, opts.deviceMode)))
+    .groupBy(table.createdById, users.name, users.username)
+    .orderBy(asc(name), asc(table.createdById));
+}
+
 export async function getLicenseKeys(opts: {
   userIds: number[];
   page: number;
@@ -1026,6 +1055,7 @@ export async function getLicenseKeys(opts: {
   status?: string;
   search?: string;
   customerId?: number;
+  createdById?: number;
   /** 传感器分组可见：密钥用到这些传感器值（或 all）也可见（事业部管理员跨部门看，仅密钥管理模块） */
   visibleSensorValues?: string[];
   deviceMode?: LicenseDeviceMode;
@@ -1037,14 +1067,7 @@ export async function getLicenseKeys(opts: {
   await expireStaleKeys(opts.userIds);
 
   // 基础可见：自己 + 下属（createdById）；再叠加“传感器属于我管理分组”的跨部门可见
-  let visibility: any = inArray(licenseKeys.createdById, opts.userIds);
-  if (opts.visibleSensorValues && opts.visibleSensorValues.length) {
-    const sensorConds: any[] = [sql`${licenseKeys.sensorType} = 'all'`];
-    for (const v of opts.visibleSensorValues) {
-      sensorConds.push(sql`FIND_IN_SET(${v}, ${licenseKeys.sensorType}) > 0`);
-    }
-    visibility = or(visibility, or(...sensorConds));
-  }
+  const visibility = onlineKeyVisibility(opts.userIds, opts.visibleSensorValues);
   const conditions: any[] = [visibility, eq(licenseKeys.isDeleted, false)];
   const deviceCondition = deviceModeCondition("online", opts.deviceMode);
   if (deviceCondition) conditions.push(deviceCondition);
@@ -1057,6 +1080,7 @@ export async function getLicenseKeys(opts: {
   if (opts.isActivated !== undefined) conditions.push(eq(licenseKeys.isActivated, opts.isActivated));
   if (opts.status) conditions.push(eq(licenseKeys.status, opts.status as any));
   if (opts.customerId) conditions.push(eq(licenseKeys.customerId, opts.customerId));
+  if (opts.createdById !== undefined) conditions.push(eq(licenseKeys.createdById, opts.createdById));
   if (opts.search) {
     conditions.push(
       or(
@@ -1677,12 +1701,14 @@ export async function getOfflineKeys(params: {
   pageSize: number;
   search?: string;
   machineId?: string;
+  createdById?: number;
   deviceMode?: LicenseDeviceMode;
 }) {
   const db = await getDb();
   if (!db) return { items: [], total: 0, page: params.page, pageSize: params.pageSize };
 
   const conditions: any[] = [inArray(offlineKeys.createdById, params.userIds), eq(offlineKeys.isDeleted, false)];
+  if (params.createdById !== undefined) conditions.push(eq(offlineKeys.createdById, params.createdById));
   const deviceCondition = deviceModeCondition("offline", params.deviceMode);
   if (deviceCondition) conditions.push(deviceCondition);
 

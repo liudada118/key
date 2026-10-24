@@ -41,6 +41,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { formatScopeEntry, isGroupScopeToken } from "@shared/licenseScopes";
 import { useAuth } from "@/_core/hooks/useAuth";
 import LicenseDevicesDialog from "@/components/LicenseDevicesDialog";
+import KeyCreatorSelect from "@/components/KeyCreatorSelect";
 import { LICENSE_PRODUCT_LABELS, normalizeLicenseProduct } from "@shared/licenseProducts";
 import { deviceLimitLabel, type LicenseDeviceMode } from "@/lib/licenseDeviceMode";
 
@@ -66,6 +67,7 @@ export default function KeyList({ deviceMode = "unlimited", embedded = false }: 
   const [genType, setGenType] = useState<string>("__all__");
   const [sensorType, setSensorType] = useState<string>("__all__");
   const [statusFilter, setStatusFilter] = useState<string>("__all__");
+  const [creator, setCreator] = useState("__all__");
 
   // 生命周期操作弹窗状态
   const [lifecycleAction, setLifecycleAction] = useState<"suspend" | "restore" | "revoke" | "renew" | null>(null);
@@ -104,8 +106,9 @@ export default function KeyList({ deviceMode = "unlimited", embedded = false }: 
       sensorType: sensorType === "__all__" ? undefined : sensorType,
       status: statusFilter === "__all__" ? undefined : statusFilter,
       search: search || undefined,
+      createdById: creator === "__all__" ? undefined : Number(creator),
     }),
-    [page, genType, sensorType, statusFilter, search, deviceMode]
+    [page, genType, sensorType, statusFilter, search, deviceMode, creator]
   );
 
   const utils = trpc.useUtils();
@@ -479,8 +482,7 @@ export default function KeyList({ deviceMode = "unlimited", embedded = false }: 
             onClick={() =>
               exportMutation.mutate({
                 format: "csv",
-                deviceMode,
-                sensorType: sensorType === "__all__" ? undefined : sensorType,
+                ...queryInput,
               })
             }
             disabled={exportMutation.isPending}
@@ -494,8 +496,7 @@ export default function KeyList({ deviceMode = "unlimited", embedded = false }: 
             onClick={() =>
               exportMutation.mutate({
                 format: "json",
-                deviceMode,
-                sensorType: sensorType === "__all__" ? undefined : sensorType,
+                ...queryInput,
               })
             }
             disabled={exportMutation.isPending}
@@ -536,6 +537,8 @@ export default function KeyList({ deviceMode = "unlimited", embedded = false }: 
                 搜索
               </Button>
             </div>
+            <KeyCreatorSelect keyType="online" deviceMode={deviceMode} value={creator}
+              onChange={value => { setCreator(value); setPage(1); setSelectedIds([]); }} />
             <Select value={genType} onValueChange={(v) => { setGenType(v); setPage(1); }}>
               <SelectTrigger className="w-[130px] bg-secondary/50">
                 <SelectValue placeholder="生成方式" />

@@ -33,6 +33,7 @@ import {
 import { useState, useMemo } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import LicenseDevicesDialog from "@/components/LicenseDevicesDialog";
+import KeyCreatorSelect from "@/components/KeyCreatorSelect";
 import { LICENSE_PRODUCT_LABELS, normalizeLicenseProduct } from "@shared/licenseProducts";
 import { toast } from "sonner";
 import { copyText } from "@/lib/clipboard";
@@ -56,6 +57,7 @@ export default function OfflineKeyList({ deviceMode = "unlimited", embedded = fa
   const [deviceKeyId, setDeviceKeyId] = useState<number | null>(null);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
+  const [creator, setCreator] = useState("__all__");
 
   // 传感器 value→label 映射
   const { data: sensorGroups } = trpc.sensors.groups.useQuery();
@@ -74,6 +76,7 @@ export default function OfflineKeyList({ deviceMode = "unlimited", embedded = fa
     pageSize: 10,
     deviceMode,
     search: search || undefined,
+    createdById: creator === "__all__" ? undefined : Number(creator),
   });
 
   // 批量选择 + 删除
@@ -175,6 +178,8 @@ export default function OfflineKeyList({ deviceMode = "unlimited", embedded = fa
                   删除选中（{selectedIds.length}）
                 </Button>
               )}
+              <KeyCreatorSelect keyType="offline" deviceMode={deviceMode} value={creator}
+                onChange={value => { setCreator(value); setPage(1); setSelectedIds([]); }} />
               <div className="relative">
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                 <Input

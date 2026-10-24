@@ -7,6 +7,7 @@ const storage = vi.hoisted(() => ({
   getUserAndSubordinateIds: vi.fn(), getManagedSensorGroups: vi.fn(), getSensorValuesByGroups: vi.fn(),
   getSensorTypesGrouped: vi.fn(), createAuditLog: vi.fn(),
   reissueLicenseKey: vi.fn(),
+  getKeyCreators: vi.fn(),
 }));
 const devices = vi.hoisted(() => ({ readDevicePolicy: vi.fn() }));
 vi.mock("./db", async importOriginal => ({ ...await importOriginal<typeof import("./db")>(), ...storage }));
@@ -33,6 +34,7 @@ beforeEach(() => {
   storage.generateOfflineActivationCode.mockImplementation(async input => input);
   storage.reissueLicenseKey.mockResolvedValue({ newKey: { id: 2 }, oldKeyId: 1 });
   devices.readDevicePolicy.mockResolvedValue(0);
+  storage.getKeyCreators.mockResolvedValue([]);
 });
 
 describe("limited license issuance permissions", () => {
@@ -87,6 +89,45 @@ describe("limited license issuance permissions", () => {
 });
 
 describe("device category query scope", () => {
+  it("keeps creator selection separate from the caller's permission scope", async () => {
+    await caller("user").keys.list({ createdById: 999, page: 2, status: "ACTIVATED", search: "customer" });
+    expect(storage.getLicenseKeys).toHaveBeenCalledWith(expect.objectContaining({
+      userIds: [7, 8], visibleSensorValues: ["hand"], createdById: 999, page: 2, status: "ACTIVATED", search: "customer",
+    }));
+    await caller("user").offlineKeys.list({ createdById: 999, page: 1 });
+    expect(storage.getOfflineKeys).toHaveBeenCalledWith(expect.objectContaining({ userIds: [7, 8], createdById: 999 }));
+  });
+
+  it.each(["online", "offline"] as const)("scopes %s creator options to existing visibility", async keyType => {
+    await caller("admin").keys.creators({ keyType, deviceMode: "limited" });
+    expect(storage.getKeyCreators).toHaveBeenCalledWith({
+      keyType, deviceMode: "limited", userIds: [7, 8], visibleSensorValues: keyType === "online" ? ["hand"] : [],
+    });
+    if (keyType === "offline") expect(storage.getManagedSensorGroups).not.toHaveBeenCalled();
+  });
+
+  it("requires login before reading creator options", async () => {
+    const guest = appRouter.createCaller({ user: null, req: {}, res: {} } as TrpcContext);
+    await expect(guest.keys.creators({ keyType: "online" })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    expect(storage.getKeyCreators).not.toHaveBeenCalled();
+  });
+
+  it.each([0, -1, 1.5])("rejects malformed creator id %s before querying", async createdById => {
+    const user = caller("super_admin");
+    await expect(user.keys.list({ createdById })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(user.offlineKeys.list({ createdById })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(user.keys.export({ format: "csv", createdById })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(storage.getLicenseKeys).not.toHaveBeenCalled();
+    expect(storage.getOfflineKeys).not.toHaveBeenCalled();
+  });
+
+  it.each(["csv", "json"] as const)("keeps the selected creator and combined filters in %s export", async format => {
+    await caller("admin").keys.export({ format, createdById: 8, deviceMode: "unlimited", genType: "single", status: "ISSUED", search: "customer" });
+    expect(storage.getLicenseKeys).toHaveBeenCalledWith(expect.objectContaining({
+      createdById: 8, userIds: [7, 8], visibleSensorValues: ["hand"], deviceMode: "unlimited", genType: "single", status: "ISSUED", search: "customer",
+    }));
+  });
+
   it.each([undefined, "all", "unlimited", "limited"] as const)("forwards %s without changing online ownership or department visibility", async deviceMode => {
     await caller("admin").keys.list({ page: 2, pageSize: 10, deviceMode, customerId: 12, category: "rental" });
     expect(storage.getLicenseKeys).toHaveBeenCalledWith(expect.objectContaining({ userIds: [7, 8], visibleSensorValues: ["hand"], page: 2, pageSize: 10, deviceMode, customerId: 12, category: "rental" }));
