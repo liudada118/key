@@ -26,6 +26,9 @@ const companySystem = { systemId: "company-seat-fixture", name: "公司坐垫展
 const limits = { online: 3, offline: 3 };
 const creatorsOnly = process.argv.includes("--creators-only");
 const tamperedOnly = process.argv.includes("--tampered-only");
+const notificationsOnly = process.argv.includes("--notifications-only");
+let requestRows = [];
+let readReceiptFailure = false;
 let restoreFailure = true;
 let tamperedRows = [{ id: 7349, keyString: "SYNTHETIC-NOT-A-LICENSE", customerName: "合成恢复客户", sensorType: "hand", status: "TAMPERED",
   expireTimestamp: Date.now() + 86400000, tamperedAt: new Date(), reportedClientTime: Date.now() - 13 * 60000,
@@ -69,6 +72,25 @@ function reply(procedure, input) {
     case "keys.creators": return creators;
     case "keys.tamperedList": return { items: tamperedRows, total: tamperedRows.length };
     case "keys.tamperedCount": return tamperedRows.length;
+    case "keyGenerationRequests.notifications": return {
+      pending: role === "super_admin" ? requestRows.filter(row => row.status === "PENDING").length : 0,
+      approved: requestRows.filter(row => row.requestedById === user.id && row.status === "APPROVED" && !row.resultReadAt).length,
+    };
+    case "keyGenerationRequests.list": {
+      const visible = requestRows.filter(row => (role === "super_admin" || row.requestedById === user.id) && (!input.status || row.status === input.status));
+      return { items: visible.slice((input.page - 1) * input.pageSize, input.page * input.pageSize), total: visible.length };
+    }
+    case "keyGenerationRequests.markResultsRead":
+      for (const row of requestRows) {
+        if (row.requestedById === user.id && row.status === "APPROVED" && input.ids.includes(row.id)) row.resultReadAt = new Date();
+      }
+      return { success: true };
+    case "keyGenerationRequests.review": {
+      const row = requestRows.find(row => row.id === input.id);
+      row.status = input.decision === "APPROVE" ? "APPROVED" : "REJECTED";
+      row.generatedKeyCount = row.status === "APPROVED" ? 1 : 0;
+      return row;
+    }
     case "keys.clearTamper": tamperedRows = tamperedRows.filter(row => row.id !== input.keyId); return { success: true, key: { id: input.keyId, status: "ACTIVATED" } };
     case "keys.export": return input.format === "csv" ? "synthetic,not-a-license" : [{ id: 102, synthetic: true }];
     case "keys.devices": return { maxDevices: limits[input.keyType || "online"], devices: [] };
@@ -94,6 +116,11 @@ async function mockRequests(route) {
     if (procedures.includes("keys.clearTamper")) await new Promise(resolve => setTimeout(resolve, 400));
     const results = procedures.map((procedure, index) => {
       const input = superjson.deserialize(inputs[index] || { json: null });
+      if (procedure === "keyGenerationRequests.markResultsRead" && readReceiptFailure) {
+        requests.push({ procedure, input });
+        return { error: superjson.serialize({ message: "Synthetic read receipt failure", code: -32603,
+          data: { code: "INTERNAL_SERVER_ERROR", httpStatus: 500, path: procedure } }) };
+      }
       if (procedure === "keys.clearTamper" && restoreFailure) {
         requests.push({ procedure, input });
         return { error: superjson.serialize({ message: "合成恢复失败，请重试", code: -32603,
@@ -277,6 +304,86 @@ async function verifyTamperedRecovery(origin) {
   console.log("Tampered recovery passed: real page and confirmation, cancellation, pending guard, failure retry, original-key-only parameters, refreshed list, desktop/mobile screenshots; synthetic APIs only.");
 }
 
+async function verifyNotifications(origin) {
+  const approved = id => ({ id, requestNo: `KGR-FIXTURE-${id}`, requestedById: user.id, requestedByName: user.name,
+    mode: "single", productType: "shroom-desktop", sensorTypes: '["hand"]', days: 30, count: 1,
+    reason: "Synthetic notification fixture", status: "APPROVED", resultReadAt: null, reviewedAt: new Date(),
+    generatedKeyCount: 1, createdAt: new Date("2026-10-26T09:43:10Z") });
+  const notice = label => page.getByRole("button", { name: new RegExp(`^${label}，`) });
+  await page.clock.install();
+  await page.addInitScript(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => !!window.__fixtureHidden });
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => window.__fixtureHidden ? "hidden" : "visible" });
+  });
+  requestRows = [{ ...approved(177), requestedById: 92, status: "PENDING", generatedKeyCount: 0 }];
+  await page.goto(`${origin}/keys`);
+  await notice("无合同申请").waitFor();
+  await notice("异常密钥").waitFor();
+  const onlineSection = page.locator('[data-slot="collapsible"]').filter({ hasText: "在线密钥" }).first();
+  assert.equal(await onlineSection.getByRole("button", { name: /^异常密钥/ }).count(), 1);
+  await page.screenshot({ path: path.join(artifacts, "notices-super-admin-desktop.png"), fullPage: true });
+  await page.getByRole("button", { name: "收起导航", exact: true }).click();
+  await page.evaluate(async () => {
+    await Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => {})));
+  });
+  const dot = notice("异常密钥").locator('[data-slot="navigation-notice"]');
+  const [dotBox, buttonBox] = await Promise.all([dot.boundingBox(), notice("异常密钥").boundingBox()]);
+  assert(buttonBox?.width <= 40, "collapsed navigation has finished resizing to an icon button");
+  assert(dotBox && buttonBox && dotBox.x >= buttonBox.x && dotBox.x + dotBox.width <= buttonBox.x + buttonBox.width + 1, "collapsed notice stays inside its icon button");
+  await page.screenshot({ path: path.join(artifacts, "notices-collapsed.png"), fullPage: true });
+  await page.getByRole("button", { name: "展开导航", exact: true }).click();
+  await notice("无合同申请").click();
+  await page.getByRole("button", { name: "批准", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "批准并生成", exact: true }).click();
+  await page.waitForFunction(() => ![...document.querySelectorAll('[data-sidebar="menu-button"]')].some(button => button.getAttribute("aria-label")?.includes("密钥申请待审批")));
+  assert.equal(requests.filter(item => item.procedure === "keyGenerationRequests.markResultsRead").length, 0, "super admin viewing someone else's approval does not acknowledge it");
+  await notice("异常密钥").waitFor();
+
+  role = "user";
+  requestRows = Array.from({ length: 21 }, (_, index) => approved(300 + index));
+  await page.goto(`${origin}/keys`);
+  await notice("无合同申请").waitFor();
+  assert.equal(await page.getByRole("button", { name: /^异常密钥/ }).count(), 0, "child accounts retain their original navigation boundary");
+  await page.screenshot({ path: path.join(artifacts, "notices-applicant-desktop.png"), fullPage: true });
+  await page.evaluate(() => { window.__fixtureHidden = true; document.dispatchEvent(new Event("visibilitychange")); });
+  const hiddenStart = requests.length;
+  await notice("无合同申请").click();
+  await page.getByText("KGR-FIXTURE-300", { exact: true }).waitFor();
+  assert(!requests.slice(hiddenStart).some(item => item.procedure === "keyGenerationRequests.markResultsRead"), "hidden pages never acknowledge results");
+  readReceiptFailure = true;
+  await page.evaluate(() => { window.__fixtureHidden = false; document.dispatchEvent(new Event("visibilitychange")); });
+  await waitForRequest("keyGenerationRequests.markResultsRead", hiddenStart);
+  await notice("无合同申请").waitFor();
+  assert.equal(requestRows.filter(row => !row.resultReadAt).length, 21, "failed read receipt retains every unread result");
+  readReceiptFailure = false;
+  await page.clock.fastForward(31_000);
+  await page.waitForFunction(() => [...document.querySelectorAll('[data-sidebar="menu-button"]')].some(button => button.getAttribute("aria-label") === "无合同申请，1 条申请已批准，结果未查看"));
+  assert.equal(requestRows.filter(row => !row.resultReadAt).length, 1, "opening page one does not consume results on page two");
+  await page.getByRole("button", { name: "下一页", exact: true }).click();
+  await page.getByText("KGR-FIXTURE-320", { exact: true }).waitFor();
+  await page.waitForFunction(() => [...document.querySelectorAll('[data-sidebar="menu-button"]')].some(button => button.getAttribute("aria-label") === "无合同申请"));
+  assert.equal(requestRows.filter(row => !row.resultReadAt).length, 0);
+  await page.reload();
+  await page.getByRole("button", { name: "无合同申请", exact: true }).waitFor();
+  assert.equal(await notice("无合同申请").count(), 0, "acknowledged state survives a new page session");
+
+  role = "super_admin";
+  requestRows = [{ ...approved(500), requestedById: 92, status: "PENDING" }];
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${origin}/keys`);
+  await page.getByRole("button", { name: /打开导航，.*密钥申请待审批/ }).click();
+  await notice("无合同申请").waitFor();
+  await notice("异常密钥").waitFor();
+  await page.evaluate(async () => {
+    await Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => {})));
+  });
+  await assertNoPageOverflow("mobile notification sidebar");
+  await page.screenshot({ path: path.join(artifacts, "notices-mobile.png"), fullPage: true });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(unexpected, []);
+  console.log("Notification UI passed: role boundaries, super-admin approval, persistent applicant receipts, hidden-page guard, failure/retry, pagination, unresolved tamper notice, collapsed/mobile screenshots; all APIs synthetic.");
+}
+
 try {
   await server.listen();
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
@@ -285,7 +392,9 @@ try {
   page.on("pageerror", error => errors.push(error.message));
   await page.route("**/*", mockRequests);
 
-  if (tamperedOnly) {
+  if (notificationsOnly) {
+    await verifyNotifications(origin);
+  } else if (tamperedOnly) {
     await verifyTamperedRecovery(origin);
   } else if (creatorsOnly) {
     await verifyCreatorFilters(origin);

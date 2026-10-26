@@ -1,6 +1,6 @@
 # 架构文档
 
-> 本文档由 Manus 自动生成和维护。最后更新于：2026-10-24
+> 本文档由 Manus 自动生成和维护。最后更新于：2026-10-26
 
 ## 1. 项目概述
 
@@ -89,6 +89,11 @@ key-manager/
 │   │   ├── static.ts           # 独立静态资源服务，生产包不加载Vite
 │   │   └── ...                 # 其他核心模块
 │   ├── db.ts                   # 数据库查询 helpers（账号 + 密钥 CRUD）
+│   ├── keyGenerationRequestTime.test.ts # 申请提交时间映射及审批/拒绝回归
+│   ├── keyGenerationRequestTime.integration.test.ts # 本地 MySQL 临时表跨时区回归
+│   ├── keyRequestNotifications.ts # 申请批准未读计数、超管待审批计数和本人已读回执
+│   ├── keyRequestNotifications.test.ts # 计数与已读更新 SQL 的归属边界
+│   ├── keyRequestNotificationsRouter.test.ts # 提醒接口身份、启用状态和输入校验
 │   ├── licenseDeviceMode.ts    # 电脑授权分类 SQL、当前上限与离线签名格式判断
 │   ├── routers.ts              # tRPC 路由定义（keys + accounts + auth + sensors + customers + offline）
 │   ├── organizationExport.ts   # 全量账号/部门只读快照及安全字段投影
@@ -130,6 +135,7 @@ key-manager/
 ├── drizzle/                    # 数据库 schema 与迁移
 │   ├── schema.ts               # 含 licenseKeys、keyGenerationRequests 等业务表
 │   ├── 0010_key_generation_requests.sql # 无合同申请与密钥关联迁移
+│   ├── 0025_key_request_notifications.sql # 申请结果已读时间和通知计数组合索引
 │   ├── 0011_key_soft_delete_columns.sql # 在线/离线密钥软删除字段兼容迁移
 │   └── 0012_departments_table_compat.sql # 历史数据库部门表兼容迁移
 ├── shared/                     # 前后端共享
@@ -260,6 +266,10 @@ graph TD
 
 **无合同审批流程**：普通账号在确认弹窗填写原因并调用 `keyGenerationRequests.create`，服务端保存传感器、有效期、数量和生成备注，写入审计后优先通过飞书应用机器人向 `FEISHU_APPROVAL_CHAT_ID` 指定的超管群发送交互卡片；卡片发送不可用时回退到 `FEISHU_KEY_REQUEST_WEBHOOK_URL` 文本提醒，通知故障不会回滚已经成功的申请。群内点击同意或拒绝后，`POST /api/feishu/key-request/card-action` 对回调执行 AES 解密、签名/Token、App ID、时间窗口及群 `chat_id` 校验，再调用与网站 `keyGenerationRequests.review` 共用的审批服务。批准时密钥写入与申请状态更新处于同一事务，生成的密钥归申请人所有并在密钥管理页可见；成功响应会将飞书卡片更新为最终状态，重复点击由申请状态锁拦截。超级管理员选择“无合同生成”时直接调用密钥生成接口，不写入申请表或发送申请通知。
 
+**申请时间读取**：申请表由 MySQL 自动生成的 `createdAt`、`updatedAt` 使用 `UNIX_TIMESTAMP` 投影并转换成 JavaScript `Date`，避免 Drizzle 将会话时区的墙上时间误解析为 UTC。创建后回读、单条查询、列表及审批事务共用同一投影；前端仍按 `Asia/Shanghai` 展示。应用以 UTC 字符串写入的 `reviewedAt`、`generatedAt` 保留原映射，不对历史时间统一减八小时、不改变连接全局时区，也不迁移或重写历史记录。
+
+**导航红点**：在线密钥分组直接显示“异常密钥”，保留管理员/超管权限；当前数据范围内仍有异常时持续亮红点。申请入口对超管显示全局待审批提醒，对所有登录账号显示本人未查看的批准结果。两类计数每 30 秒前台刷新，切回窗口时重新查询，后台不持续轮询；折叠导航和手机菜单按钮也保留提示及无障碍文字。申请列表只将当前可见页中本人的已批准结果写入 `resultReadAt`；后台页面、其他申请人、待审批结果和其他分页不被自动标记。失败保留未读，下一次列表刷新重试；已读状态由数据库保存，不依赖浏览器存储。
+
 **账号创建流程**：管理员提交新增账号后，服务端写入 `users`，前端先刷新账号列表再关闭创建弹窗。账号查询通过 `users.departmentId` 左连接 `departments`；`0012_departments_table_compat.sql` 为历史数据库补齐部门表。Radix Dialog、AlertDialog 和 Select 的 Portal 节点统一禁止自动翻译，避免外部翻译脚本改写 React 管理的 DOM。
 
 **前端 DOM 稳定性**：通用 `Button` 会将直接文本子节点归并到稳定的 `<span data-slot="button-label">` 中，并提供始终挂载、仅切换可见性的 `ButtonSpinner`。密钥生成弹窗的合同/无合同操作按钮以及生成页的占位区/结果区始终保留在 DOM 中，请求前后只更新属性和文本，避免浏览器翻译或扩展移动节点后触发 React `insertBefore`。Dialog、Sonner 等 Portal 根节点同时设置 `translate="no"` / `notranslate`；无合同申请与审批成功后先关闭弹窗并刷新查询，再显示成功提示。
@@ -304,6 +314,8 @@ graph TD
 | `tRPC` | `contracts.dashboard` | 启用中的登录账号 | 全可见去重合同的状态、在线开钥覆盖和部门分布；list 新增 issuance，在分页前按在线历史生成记录筛选 |
 | `tRPC` | `keyGenerationRequests.create` | 登录 | 提交包含完整生成参数的无合同密钥申请 |
 | `tRPC` | `keyGenerationRequests.list` | 登录 | 超管查看全部申请，其他账号仅查看本人申请 |
+| `tRPC` | `keyGenerationRequests.notifications` | 启用中的登录账号 | 返回本人未读批准数和仅超管可见的全局待审批数，不返回申请明细，禁止缓存 |
+| `tRPC` | `keyGenerationRequests.markResultsRead` | 启用中的登录账号 | 接收当前页 1 至 100 个申请 ID，仅标记本人的已批准未读结果，重复调用不覆盖原已读时间 |
 | `tRPC` | `keyGenerationRequests.review` | 超级管理员 | 批准并事务生成密钥，或填写原因拒绝申请 |
 | `POST` | `/api/feishu/key-request/card-action` | 飞书验签 + 指定审批群 | 接收应用机器人卡片操作并调用统一审批服务 |
 | `POST` | `/api/usage/events/batch` | 有效登记软件密钥 | ≤50 条白名单埋点/错误，事务去重，提交后确认全部 ID |
@@ -317,7 +329,7 @@ graph TD
 | :--- | :--- | :--- |
 | `users` | id, username, password, role, createdById, teamId, phone, managedGroups, departmentId, isActive | 三级角色用户表；`0009_user_profile_columns.sql` 补齐账号资料与部门字段 |
 | `licenseKeys` | id, keyString, sensorType, days, category, contractId, contractNo, generationRequestId, customerName, isDeleted | 在线密钥表；支持合同生成、无合同审批生成和超管无合同直生成 |
-| `keyGenerationRequests` | id, requestNo, sensorTypes, days, count, reason, requestedById, status, reviewer, generatedBatchId | 无合同密钥申请及审批结果 |
+| `keyGenerationRequests` | id, requestNo, sensorTypes, days, count, reason, requestedById, status, reviewer, generatedBatchId, resultReadAt | 无合同密钥申请、审批结果及申请人已读时间；通知组合索引覆盖 status/requestedById/resultReadAt |
 | `departments` | id, name, sensorGroup, managerId, createdAt, updatedAt | 账号部门及传感器分组；`0012_departments_table_compat.sql` 为旧库补齐 |
 | `customers` | id, name, contactPerson, phone, isActive | 客户表 |
 | `sensor_types` | id, value, label, groupName, groupIcon, sortOrder | 传感器类型表 |
@@ -1402,3 +1414,42 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 | 完成日期 | 完成的功能/工作 | 简要说明 |
 | --- | --- | --- |
 | 2026-10-24 | 网页手动恢复原密钥 | 本地页面和接口权限已完成，单测、类型检查、构建及合成浏览器验收通过；真实密钥与线上部署均未操作。 |
+
+## 2026-10-26 无合同申请提交时间修正
+
+- 线上只读核对确认：申请 #4 的原始提交时间为北京时间 `2026-10-26 17:43:10`，原读取路径将其当作 UTC，页面错误显示次日 `01:43:10`。数据库自动时间与应用写入的审批时间存在不同的转换路径，本次只修正申请自动时间的读取。
+- `db.ts` 的申请共享投影将 `createdAt`、`updatedAt` 读取为 epoch 后转换成 `Date`，覆盖提交后回显、列表、单条和批准/拒绝的锁定读取。保留全部筛选、计数、事务及时间排序，不修改密钥、有效期、历史数据或全局数据库时区。
+- 验证：新增 7 项常规回归通过；通过 `KEY_REQUEST_TIME_TEST_URL` 显式启用的 3 项本地 MySQL 集成测试，在 `+08:00`、`+00:00`、`-07:00` 会话验证历史提交、自动新建、审批时间原映射和拒绝后回读。仅使用当前连接的临时表，不修改本地业务表。全量常规测试 605 通过、55 个按条件跳过（含这 3 项显式集成用例）；类型检查及生产构建通过。未提交、推送或部署生产。
+
+### 更新日志（追加）
+
+| 日期 | 变更类型 | 内容 |
+| --- | --- | --- |
+| 2026-10-26 | 修复缺陷 | 修复无合同密钥申请提交时间多显示八小时，统一申请自动时间读取，保留历史审批时间和密钥有效期。 |
+
+### 项目进度（追加）
+
+| 完成日期 | 完成的功能/工作 | 简要说明 |
+| --- | --- | --- |
+| 2026-10-26 | 申请提交时间跨时区修正 | 只读定位线上偏移原因；7 项常规及 3 项本地 MySQL 时区回归通过，无历史数据迁移。 |
+
+## 2026-10-26 密钥审批与异常导航提醒
+
+- `DashboardLayout.tsx` 将异常密钥移出折叠的监控与安全分组，放到在线密钥下直接显示；当前权限内异常数量大于零时持续提示。申请入口按角色组合“待审批”和“本人批准结果未读”两种红点原因，单一状态区域提供完整无障碍提示，折叠图标与移动端入口可见。
+- `keyRequestNotifications.ts` 仅聚合计数，普通账号不查询全局待审批；已读更新同时限制具体 ID、当前申请人、APPROVED 状态和原未读条件，跨账号、重复和审批前请求不会提前消费后续提醒。通知接口复用启用中的登录权限，前台 30 秒轮询，后台暂停，窗口聚焦刷新。
+- `KeyGenerationRequests.tsx` 仅在前台查看已加载分页时提交本人的批准回执；失败保留提醒，下一次数据刷新重试，切页不批量清空未显示结果。申请提交和审批成功时主动刷新通知，飞书审批仍通过共用数据库状态在下一次刷新时反映。
+- 新增迁移 `0025_key_request_notifications.sql`，添加可空 `resultReadAt` 和组合索引。已有批准结果首次视为未读，查看后保留跨浏览器状态；未改密钥授权、原审批或异常恢复策略。本地仅在确认前 25 项迁移已应用后追加执行该迁移，账本现为 26 项，未部署或修改生产数据库。
+- 验证：全量常规测试 628 通过、56 个条件用例跳过；显式本地 MySQL 临时表测试 4 项通过，涵盖前三项时间转换和新增已读归属/幂等/后续批准提醒。类型检查、生产构建通过。`node scripts/tests/limited-keys.mjs --notifications-only` 以合成 API 验证超管审批、申请人已读、失败重试、后台不误读、分页、角色、1440px/390px 和真实折叠完成后的截图，无真实申请或密钥操作。
+- 本地密钥服务在 `http://localhost:3003/` 启动并通过 `/healthz` 检查；3000 至 3002 已有其他上位机服务，保持原进程不动。未提交、推送或上线。
+
+### 更新日志（追加）
+
+| 日期 | 变更类型 | 内容 |
+| --- | --- | --- |
+| 2026-10-26 | 新增功能 | 申请通过未读、超管待审批及异常密钥导航红点；异常入口上移在线分组，新增服务端已读回执与通知计数索引。 |
+
+### 项目进度（追加）
+
+| 完成日期 | 完成的功能/工作 | 简要说明 |
+| --- | --- | --- |
+| 2026-10-26 | 密钥审批与异常提醒 | 角色隔离、已读持久化、移动/折叠显示与后台轮询控制已完成；本地迁移、数据库回归和合成浏览器验收通过，生产未部署。 |

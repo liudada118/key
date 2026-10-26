@@ -176,6 +176,13 @@
       "when": 1792559644750,
       "tag": "0024_algorithm_platform",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "5",
+      "when": 1793019000000,
+      "tag": "0025_key_request_notifications",
+      "breakpoints": true
     }
   ]
 }

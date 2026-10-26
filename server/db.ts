@@ -783,6 +783,17 @@ export async function getGeneratedKeyCountsByContractNos(contractNos: string[]) 
   );
 }
 
+// MySQL generates these timestamps in its session timezone; Drizzle otherwise
+// parses their wall-clock strings as UTC. Application-written review dates keep
+// their existing mapping so historical approvals are not shifted a second time.
+const keyGenerationRequestSelection = {
+  ...getTableColumns(keyGenerationRequests),
+  createdAt: sql`UNIX_TIMESTAMP(${keyGenerationRequests.createdAt})`
+    .mapWith(value => new Date(Number(value) * 1000)),
+  updatedAt: sql`UNIX_TIMESTAMP(${keyGenerationRequests.updatedAt})`
+    .mapWith(value => new Date(Number(value) * 1000)),
+};
+
 export async function createKeyGenerationRequest(
   data: InsertKeyGenerationRequest
 ) {
@@ -790,7 +801,7 @@ export async function createKeyGenerationRequest(
   if (!db) throw new Error("Database not available");
   await db.insert(keyGenerationRequests).values(data);
   const rows = await db
-    .select()
+    .select(keyGenerationRequestSelection)
     .from(keyGenerationRequests)
     .where(eq(keyGenerationRequests.requestNo, data.requestNo))
     .limit(1);
@@ -802,7 +813,7 @@ export async function getKeyGenerationRequestById(id: number) {
   const db = await getDb();
   if (!db) return undefined;
   const rows = await db
-    .select()
+    .select(keyGenerationRequestSelection)
     .from(keyGenerationRequests)
     .where(eq(keyGenerationRequests.id, id))
     .limit(1);
@@ -830,7 +841,7 @@ export async function getKeyGenerationRequests(opts: {
 
   const [items, totalRows] = await Promise.all([
     db
-      .select()
+      .select(keyGenerationRequestSelection)
       .from(keyGenerationRequests)
       .where(where)
       .orderBy(desc(keyGenerationRequests.createdAt))
@@ -886,7 +897,7 @@ export async function approveKeyGenerationRequestWithKeys(params: {
 
   return db.transaction(async (tx) => {
     const pendingRows = await tx
-      .select()
+      .select(keyGenerationRequestSelection)
       .from(keyGenerationRequests)
       .where(
         and(
@@ -938,7 +949,7 @@ export async function rejectKeyGenerationRequest(params: {
 
   return db.transaction(async (tx) => {
     const pendingRows = await tx
-      .select()
+      .select(keyGenerationRequestSelection)
       .from(keyGenerationRequests)
       .where(
         and(

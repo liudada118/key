@@ -99,6 +99,7 @@ export default function KeyGenerationGateDialog({
       onOpenChange(false);
       onRequestSubmitted?.();
       await utils.keyGenerationRequests.list.invalidate();
+      await utils.keyGenerationRequests.notifications.invalidate();
       toast.success(`申请 ${request?.requestNo || ""} 已提交`);
     },
     onError: (error) => toast.error(error.message),

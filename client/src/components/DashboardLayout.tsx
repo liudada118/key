@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/sidebar";
 import { getLoginUrl } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
+import { trpc } from "@/lib/trpc";
 import {
   AlertTriangle,
   BarChart3,
@@ -97,6 +98,7 @@ const menuSections: MenuSection[] = [
       { icon: KeyRound, label: "生成密钥", path: "/generate" },
       { icon: ClipboardCheck, label: "无合同申请", path: "/key-generation-requests" },
       { icon: BarChart3, label: "密钥管理", path: "/keys" },
+      { icon: AlertTriangle, label: "异常密钥", path: "/tampered", roles: ["super_admin", "admin"] },
     ],
   },
   {
@@ -146,7 +148,6 @@ const menuSections: MenuSection[] = [
     icon: Shield,
     collapsible: true,
     items: [
-      { icon: AlertTriangle, label: "异常密钥", path: "/tampered", roles: ["super_admin", "admin"] },
       { icon: MessageSquare, label: "反馈管理", path: "/feedback" },
       { icon: MessageSquare, label: "Agent 聊天", path: "/agent-chats", roles: ["super_admin"] },
       { icon: PackagePlus, label: "公司系统库", path: "/system-packages" },
@@ -264,6 +265,33 @@ function DashboardLayoutContent({
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const activeMenuItem = allMenuItems.find((item) => item.path === location);
+  const { data: requestNotifications } = trpc.keyGenerationRequests.notifications.useQuery(undefined, {
+    enabled: !!user,
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    staleTime: 15_000,
+  });
+  const canManageKeys = user?.role === "super_admin" || user?.role === "admin";
+  const { data: tamperedCount } = trpc.keys.tamperedCount.useQuery(undefined, {
+    enabled: canManageKeys,
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    staleTime: 15_000,
+  });
+  const requestNotice = [
+    user?.role === "super_admin" && requestNotifications?.pending
+      ? `${requestNotifications.pending} 条密钥申请待审批` : "",
+    requestNotifications?.approved
+      ? `${requestNotifications.approved} 条申请已批准，结果未查看` : "",
+  ].filter(Boolean).join("；");
+  const tamperedNotice = canManageKeys && tamperedCount ? `${tamperedCount} 把异常密钥待处理` : "";
+  const notificationLabels: Record<string, string> = {
+    "/key-generation-requests": requestNotice,
+    "/tampered": tamperedNotice,
+  };
+  const notificationSummary = [requestNotice, tamperedNotice].filter(Boolean).join("；");
 
   useEffect(() => {
     const active = menuSections.find(section => section.items.some(item => item.path === location));
@@ -331,6 +359,7 @@ function DashboardLayoutContent({
           </SidebarHeader>
 
           <SidebarContent className="gap-0">
+            <span role="status" aria-atomic="true" className="sr-only">{notificationSummary}</span>
             {menuSections.map((section) => {
               // 过滤掉没有权限的菜单项
               const visibleItems = section.items.filter(
@@ -374,6 +403,7 @@ function DashboardLayoutContent({
                   <SidebarMenu className={`px-2 py-0 ${section.collapsible && !isCollapsed ? "pl-5" : ""}`}>
                     {visibleItems.map((item) => {
                       const isActive = location === item.path;
+                      const notice = notificationLabels[item.path] || "";
                       return (
                         <SidebarMenuItem key={item.path}>
                           <SidebarMenuButton
@@ -383,13 +413,21 @@ function DashboardLayoutContent({
                               if (isMobile) setOpenMobile(false);
                             }}
                             aria-current={isActive ? "page" : undefined}
-                            tooltip={item.label}
-                            className="h-10 transition-all font-normal"
+                            aria-label={notice ? `${item.label}，${notice}` : item.label}
+                            tooltip={notice ? `${item.label}：${notice}` : item.label}
+                            title={notice || undefined}
+                            className="relative h-10 transition-all font-normal"
                           >
                             <item.icon
                               className={`h-4 w-4 ${isActive ? "text-primary" : ""}`}
                             />
-                            <span>{item.label}</span>
+                            <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                            <span
+                              aria-hidden="true"
+                              data-slot="navigation-notice"
+                              data-visible={!!notice}
+                              className={`h-2 w-2 shrink-0 rounded-full bg-destructive ${notice ? "visible" : "invisible"} ${isCollapsed ? "absolute right-0.5 top-0.5 ring-2 ring-sidebar" : "ml-auto"}`}
+                            />
                           </SidebarMenuButton>
                         </SidebarMenuItem>
                       );
@@ -460,7 +498,10 @@ function DashboardLayoutContent({
         {isMobile && (
           <div className="flex border-b h-14 items-center justify-between bg-background/95 px-2 backdrop-blur sticky top-0 z-40">
             <div className="flex items-center gap-2">
-              <SidebarTrigger className="h-9 w-9 rounded-lg bg-background" />
+              <div className="relative">
+                <SidebarTrigger className="h-9 w-9 rounded-lg bg-background" aria-label={notificationSummary ? `打开导航，${notificationSummary}` : "打开导航"} />
+                <span aria-hidden="true" className={`pointer-events-none absolute right-1 top-1 h-2 w-2 rounded-full bg-destructive ${notificationSummary ? "visible" : "invisible"}`} />
+              </div>
               <span className="tracking-tight text-foreground">
                 {activeMenuItem?.label ?? "菜单"}
               </span>

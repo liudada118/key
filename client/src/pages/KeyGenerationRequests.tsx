@@ -22,7 +22,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
 import { Check, ClipboardCheck, KeyRound, Loader2, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 import { formatLicenseScope } from "@shared/licenseScopes";
@@ -43,6 +43,8 @@ type GenerationRequestItem = {
   reason: string;
   generationRemark: string | null;
   requestedByName: string;
+  requestedById: number;
+  resultReadAt: Date | string | null;
   status: RequestStatus;
   reviewedByName: string | null;
   reviewRemark: string | null;
@@ -105,13 +107,46 @@ export default function KeyGenerationRequests() {
   const utils = trpc.useUtils();
   const isSuperAdmin = user?.role === "super_admin";
 
-  const { data, isLoading, isFetching } =
+  const { data, dataUpdatedAt, isLoading, isFetching } =
     trpc.keyGenerationRequests.list.useQuery({
       page,
       pageSize: PAGE_SIZE,
       status: statusFilter === "ALL" ? undefined : statusFilter,
+    }, {
+      refetchInterval: 30_000,
+      refetchIntervalInBackground: false,
+      refetchOnWindowFocus: true,
     });
   const { data: sensorGroups } = trpc.sensors.groups.useQuery();
+  const { mutateAsync: markResultsRead } = trpc.keyGenerationRequests.markResultsRead.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        utils.keyGenerationRequests.notifications.invalidate(),
+        utils.keyGenerationRequests.list.invalidate(),
+      ]);
+    },
+  });
+  const [isPageVisible, setIsPageVisible] = useState(() => typeof document === "undefined" || !document.hidden);
+  const lastReadAttempt = useRef("");
+  const readInFlight = useRef(false);
+  useEffect(() => {
+    const updateVisibility = () => setIsPageVisible(!document.hidden);
+    document.addEventListener("visibilitychange", updateVisibility);
+    return () => document.removeEventListener("visibilitychange", updateVisibility);
+  }, []);
+  useEffect(() => {
+    if (!user || !data || !isPageVisible || document.hidden || readInFlight.current) return;
+    const ids = data.items.filter(item => item.requestedById === user.id
+      && item.status === "APPROVED" && !item.resultReadAt).map(item => item.id);
+    if (!ids.length) return;
+    const attempt = `${user.id}:${dataUpdatedAt}:${ids.join(",")}`;
+    if (lastReadAttempt.current === attempt) return;
+    lastReadAttempt.current = attempt;
+    readInFlight.current = true;
+    // Only acknowledge results actually loaded on this visible page. On failure
+    // retain the red dot and retry on the next list refresh, not every render.
+    void markResultsRead({ ids }).catch(() => {}).finally(() => { readInFlight.current = false; });
+  }, [user?.id, data, dataUpdatedAt, isPageVisible, markResultsRead]);
 
   const sensorLabels = useMemo(
     () =>
@@ -135,6 +170,7 @@ export default function KeyGenerationRequests() {
       setReviewRemark("");
       await Promise.all([
         utils.keyGenerationRequests.list.invalidate(),
+        utils.keyGenerationRequests.notifications.invalidate(),
         utils.keys.list.invalidate(),
       ]);
       toast.success(

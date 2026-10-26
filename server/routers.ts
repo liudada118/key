@@ -3,6 +3,7 @@ import { z } from "zod";
 import { nanoid } from "nanoid";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
+import { getKeyRequestNotifications, markKeyRequestResultsRead } from "./keyRequestNotifications";
 import { adminProcedure, protectedProcedure, publicProcedure, router, superAdminProcedure } from "./_core/trpc";
 import {
   activateLicenseKey,
@@ -1555,6 +1556,18 @@ export const appRouter = router({
 
   // ===== 无合同密钥生成申请 =====
   keyGenerationRequests: router({
+    notifications: protectedProcedure.query(async ({ ctx }) => {
+      ctx.res.setHeader("Cache-Control", "no-store");
+      return getKeyRequestNotifications(ctx.user.id, ctx.user.role === "super_admin");
+    }),
+
+    markResultsRead: protectedProcedure
+      .input(z.object({ ids: z.array(z.number().int().positive()).min(1).max(100) }).strict())
+      .mutation(async ({ ctx, input }) => {
+        await markKeyRequestResultsRead(ctx.user.id, input.ids);
+        return { success: true };
+      }),
+
     create: protectedProcedure
       .input(
         z.object({

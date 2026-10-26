@@ -3,6 +3,7 @@ import {
   boolean,
   date,
   int,
+  index,
   mysqlEnum,
   mysqlTable,
   text,
@@ -270,9 +271,11 @@ export const keyGenerationRequests = mysqlTable("keyGenerationRequests", {
   generatedAt: timestamp("generatedAt"),
   /** 批量申请批准后生成的批次号；单个申请为空 */
   generatedBatchId: varchar("generatedBatchId", { length: 64 }),
+  /** Applicant has viewed this approved result; pending requests stay unread. */
+  resultReadAt: timestamp("resultReadAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, table => [index("key_requests_notice_idx").on(table.status, table.requestedById, table.resultReadAt)]);
 
 export type KeyGenerationRequest = typeof keyGenerationRequests.$inferSelect;
 export type InsertKeyGenerationRequest = typeof keyGenerationRequests.$inferInsert;
