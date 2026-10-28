@@ -22,6 +22,8 @@ pnpm feishu:list-chats
 
 ## 2. 配置卡片回调
 
+先将当前飞书应用的 Verification Token（以及已设置的 Encrypt Key）填入服务器 `.env` 并重启加载。不要把这些值发到聊天、日志或提交到 Git。URL 校验只需要正确的验证配置，不要求审批群已设置或数据库可用；但真正同意/拒绝时仍须配置 App ID 和审批群。
+
 在应用的“事件与回调”页面：
 
 1. 选择“将回调发送至开发者服务器”。
@@ -35,6 +37,15 @@ https://shroom.jq-industries.com/api/feishu/key-request/card-action
 4. 在“加密策略”中复制 Verification Token 和 Encrypt Key。
 
 服务端支持加密回调。配置 Encrypt Key 后会同时校验请求签名、五分钟时间窗口、Verification Token、App ID 和审批群 `chat_id`。
+
+URL 验证请求必须是 `type: "url_verification"`，校验 Token、按需解密后原样返回 `{ "challenge": "收到的值" }`。真正的卡片事件即使夹带 `challenge` 字段，也不能跳过签名检查或执行未授权审批。
+
+如果配置时仍提示 Challenge code 未返回，检查接口 HTTP 状态：
+
+- 503：服务器缺 Verification Token；旧版本也可能因审批群未设置而提前拒绝，需要先部署本次修复。
+- 401：Verification Token 不匹配，或真正卡片回调缺少有效签名。
+- 400：请求结构或密文错误，检查两端 Encrypt Key 是否一致。
+- 返回 HTML、404 或重定向：检查反向代理路径；不要把网站登录地址用作回调地址。
 
 ## 3. 本地环境变量
 

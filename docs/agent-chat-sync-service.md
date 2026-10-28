@@ -1,6 +1,6 @@
 # Agent 聊天同步服务
 
-更新：2026-10-14。对应客户端契约 `E:/shroom1/docs/agent-chat-sync-api.md`。
+更新：2026-10-28。对应客户端契约 `E:/shroom1/docs/agent-chat-sync-api.md`。
 
 ## 接入
 
@@ -9,7 +9,7 @@
 - 新版客户端首次使用默认自动同步，主进程自动读取软件密钥，无需客户额外填写地址、上传凭证或保存同步设置。高级配置折叠，保留原有手动关闭和自定义服务器；已有独立凭证可清除后改用软件密钥。
 - 软件密钥鉴权请求头：`Authorization: License <软件密钥>`、`Idempotency-Key: <eventId>`、`Content-Type: application/json`。
 - 兼容旧方式 `Authorization: Bearer <ags_上传凭证>`；自定义地址仍需独立凭证，不会自动接收本机软件密钥，不使用模型 API Key。
-- 在线密钥按现有 `license_key_id` 来源隔离。离线 RSA 码查服务器登记记录、签发公钥、签名和期限，要求关联有效客户；使用唯一 `offline_key_id` 隔离来源，客户关联变化不修改已有会话主键。
+- 在线密钥支持有效且未过期的未登记旧密钥，按规范化密钥的 SHA-256 隔离来源，不自动补录或重签。已有登记仍优先使用服务器状态和期限；后续补录会复用同一来源。离线 RSA 码仍查服务器登记记录、签发公钥、签名和期限，要求关联有效客户；使用唯一 `offline_key_id` 隔离来源，客户关联变化不修改已有会话主键。
 - 本服务与密钥管理后端一起启动，不需要独立进程。
 
 ## 部署
@@ -20,7 +20,7 @@ pnpm build
 pnpm start
 ```
 
-发布时按迁移日志顺序执行迁移；聊天同步所需包含 `0013_agent_chat_sync.sql`、`0014_agent_chat_license_auth.sql` 和新增的 `0021_agent_chat_offline_sources.sql`，然后重启应用。不运行 `db:push` 来代替迁移。0021 只追加一个可空唯一离线密钥来源字段，不改已有会话、回执或在线来源。新功能尚未部署。
+发布时按迁移日志顺序执行迁移；聊天同步所需包含 `0013_agent_chat_sync.sql`、`0014_agent_chat_license_auth.sql`、`0021_agent_chat_offline_sources.sql` 和 `0026_agent_legacy_license_sources.sql`，然后重启应用。不运行 `db:push` 来代替迁移。0026 只追加可空唯一的 `license_key_hash`，不重建来源、会话或回执，也不自动登记软件密钥。旧密钥兼容需部署此版本和该迁移后生效。
 MySQL 必须使用 InnoDB，`max_allowed_packet` 建议至少 32 MiB。新增四张表；归属迁移保留旧聊天和回执的原主键，不修改授权记录。
 HTTP 接收器先鉴权，再运行独立的 8 MiB JSON 解析器，注册在项目全局 50 MB 解析器之前。
 仅接收非压缩 UTF-8 JSON。每客户、每服务进程最多 60 次/分钟，超限返回 429；多实例部署应在网关增加共享限流。
@@ -85,14 +85,15 @@ pnpm agent-sync:credential revoke --id 456 --admin admin
 
 ### 软件密钥校验与公司归属
 
-- 必须是服务器 `licenseKeys` 中存在且可解析的密钥，不接受只在本地解码通过但服务器没有登记的密钥。
-- 每次上传检查服务器到期时间、软删除标记及状态；仅 `ISSUED`、`ACTIVATED`、`RENEWED` 且未过期可用。`SUSPENDED`、`REVOKED`、`TAMPERED`、`EXPIRED` 均拒绝；续期以数据库期限为准。数据库不可用返回 503，不降级放行。
+- 在线上位机密钥先解码并查询登记记录。已登记时检查服务器到期时间、软删除标记及状态；仅 `ISSUED`、`ACTIVATED`、`RENEWED` 且未过期可用。`SUSPENDED`、`REVOKED`、`TAMPERED`、`EXPIRED` 均拒绝；续期以数据库期限为准。大小写变化不能绕过旧登记状态。
+- 未登记的旧在线密钥只在既有解码器判定有效、范围有效且内嵌期限仍未到期时允许上传；无需客户额外换密钥、绑定公司或创建独立上传凭证。沿用旧 AES 兼容校验，并非新增 RSA 签名或实名客户认证；保留网关限流与正文大小限制。数据库不可用仍返回 503，不做离线放行。
+- 来源仅保存小写规范化密钥的 SHA-256，不保存原密钥或新建 `licenseKeys` 记录。未登记来源显示“未绑定公司 · 旧版密钥 #来源ID”；后续人工补录时关联原来源并显示对应公司，不丢失已有聊天。曾关联登记、后来被物理删除的来源也不会回退为匿名旧密钥放行。需暂停或吊销未登记旧密钥时，应先核对补录，再按服务器状态管理。
 - 绑定客户已停用或已删除时拒绝上传。未绑定公司的有效密钥允许上传，并独立显示“未绑定公司 · 密钥 #ID”。
 - 显示名优先取关联客户名称，再取服务器密钥记录中的公司名称（兼容飞书合同自动生成）；不接受客户端提交公司名或客户 ID。
-- `agent_chat_sources` 为每个密钥或旧客户凭证建立稳定来源 ID。会话表/回执表的 `tenant_id` 现在指来源 ID；旧客户来源沿用原 ID。网页查询的历史参数名 `customerId` 指列表返回的来源 ID，不应自行填入客户表 ID。
+- `agent_chat_sources` 为每个密钥或旧客户凭证建立稳定来源 ID；在线来源用 `license_key_hash` 与可空 `license_key_id` 兼容后续登记，离线来源仍用 `offline_key_id`。会话表/回执表的 `tenant_id` 指来源 ID；旧客户来源沿用原 ID。网页查询的历史参数名 `customerId` 指列表返回的来源 ID，不应自行填入客户表 ID。
 - 同公司多把密钥仍按密钥隔离快照，名称可相同；绑定关系变化只更新展示名称，不搬迁回执或重置 revision。
 - 客户端按官方地址与软件密钥摘要隔离队列，切换密钥不把旧队列交给新密钥；安装标识不变。软件密钥不另存至同步配置，不写入快照、日志或返回给模型/页面。
-- 401 `INVALID_LICENSE` 表示密钥格式错误或未登记；403 `LICENSE_UNAVAILABLE` 表示状态、到期或客户绑定不允许上传。原独立凭证方式保持兼容。
+- 401 `INVALID_LICENSE` 表示密钥格式、解码或离线登记不合法；在线旧密钥仅因未登记不再返回 401。403 `LICENSE_UNAVAILABLE` 表示状态、到期或客户绑定不允许上传，SDK 密钥仍返回 `PRODUCT_MISMATCH`。原独立凭证方式和离线 RSA 登记/客户要求保持兼容。
 
 ### 事件数据
 
@@ -125,6 +126,9 @@ pnpm check
 pnpm exec vitest run server/agentSync.test.ts server/agentSyncRouter.test.ts
 # 仅使用本机测试数据库管理员；测试自行建立并删除随机命名的测试库
 $env:AGENT_SYNC_TEST_ADMIN_URL = 'mysql://root@127.0.0.1:3307'
+pnpm exec vitest run server/agentSync.integration.test.ts
+# 或使用已初始化的本地应用库：仅创建连接内临时表，无需建库权限
+$env:AGENT_SYNC_TEST_LOCAL_URL = 'mysql://本地应用账号:密码@127.0.0.1:3307/key_manager'
 pnpm exec vitest run server/agentSync.integration.test.ts
 ```
 

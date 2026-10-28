@@ -5,6 +5,7 @@ export const agentChatSources = mysqlTable("agent_chat_sources", {
   customerId: int("customer_id").unique("agent_source_customer"),
   licenseKeyId: int("license_key_id").unique("agent_source_license"),
   offlineKeyId: int("offline_key_id").unique("agent_source_offline_license"),
+  licenseKeyHash: varchar("license_key_hash", { length: 64 }).unique("agent_source_license_hash"),
 });
 
 export const agentUploadCredentials = mysqlTable("agent_upload_credentials", {

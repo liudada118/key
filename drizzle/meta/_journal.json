@@ -183,6 +183,13 @@
       "when": 1793019000000,
       "tag": "0025_key_request_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "5",
+      "when": 1793156400000,
+      "tag": "0026_agent_legacy_license_sources",
+      "breakpoints": true
     }
   ]
 }

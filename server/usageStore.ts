@@ -19,7 +19,7 @@ async function database() {
 
 /** Reuse license validation and obtain server-owned company metadata for the source snapshot. */
 export async function authenticateUsage(key: string): Promise<UsagePrincipal> {
-  const principal = await authenticateLicenseUpload(key);
+  const principal = await authenticateLicenseUpload(key, { allowLegacy: false });
   const db = await database();
   const [source] = await db.select({ customerId: sql<number | null>`COALESCE(${licenseKeys.customerId}, ${offlineKeys.customerId})`, customerName: customers.name,
     licenseName: sql<string | null>`COALESCE(${licenseKeys.customerName}, ${offlineKeys.customerName})`,

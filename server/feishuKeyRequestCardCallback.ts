@@ -77,11 +77,15 @@ export function decryptFeishuCallback(
     key,
     encrypted.subarray(0, 16),
   );
-  const decrypted = Buffer.concat([
-    decipher.update(encrypted.subarray(16)),
-    decipher.final(),
-  ]);
-  return decrypted.toString("utf8");
+  try {
+    const decrypted = Buffer.concat([
+      decipher.update(encrypted.subarray(16)),
+      decipher.final(),
+    ]);
+    return decrypted.toString("utf8");
+  } catch {
+    throw new FeishuCallbackError("飞书回调解密失败，请核对 Encrypt Key", 400);
+  }
 }
 
 function parseJsonObject(rawBody: string) {
@@ -123,8 +127,8 @@ function getCallbackConfig(): FeishuCallbackConfig {
   ).trim();
   const encryptKey = (process.env.FEISHU_CALLBACK_ENCRYPT_KEY || "").trim();
 
-  if (!appId || !chatId || !verificationToken) {
-    throw new FeishuCallbackError("飞书审批回调配置不完整", 503);
+  if (!verificationToken) {
+    throw new FeishuCallbackError("服务器未配置 FEISHU_VERIFICATION_TOKEN", 503);
   }
   return {
     appId,
@@ -179,6 +183,9 @@ export function parseFeishuKeyRequestCardAction(
   payload: JsonRecord,
   config: FeishuCallbackConfig,
 ): ParsedCardAction {
+  if (!config.appId || !config.chatId) {
+    throw new FeishuCallbackError("飞书审批回调配置不完整：需要 App ID 和审批群 Chat ID", 503);
+  }
   const header = isRecord(payload.header) ? payload.header : undefined;
   if (header?.event_type !== "card.action.trigger") {
     throw new FeishuCallbackError("不支持的飞书回调类型", 400);
@@ -334,8 +341,12 @@ export function registerFeishuKeyRequestCardCallback(app: Express) {
 
         const config = getCallbackConfig();
         const payload = decodeFeishuCallbackPayload(rawBody, config.encryptKey);
+        const isUrlVerification = payload.type === "url_verification";
         const challenge =
           typeof payload.challenge === "string" ? payload.challenge : "";
+        if (isUrlVerification && (!challenge || challenge.length > 1024)) {
+          throw new FeishuCallbackError("飞书 URL 校验 challenge 无效", 400);
+        }
 
         verifyFeishuCallback({
           rawBody,
@@ -346,10 +357,10 @@ export function registerFeishuKeyRequestCardCallback(app: Express) {
             signature: req.header("X-Lark-Signature") || undefined,
           },
           config,
-          requireSignature: !challenge,
+          requireSignature: !isUrlVerification,
         });
 
-        if (challenge) {
+        if (isUrlVerification) {
           res.json({ challenge });
           return;
         }

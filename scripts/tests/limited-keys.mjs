@@ -27,6 +27,7 @@ const limits = { online: 3, offline: 3 };
 const creatorsOnly = process.argv.includes("--creators-only");
 const tamperedOnly = process.argv.includes("--tampered-only");
 const notificationsOnly = process.argv.includes("--notifications-only");
+const timesOnly = process.argv.includes("--times-only");
 let requestRows = [];
 let readReceiptFailure = false;
 let restoreFailure = true;
@@ -51,6 +52,12 @@ function records(procedure, input) {
   }
   const all = [{ ...base, id: 101, deviceLimit: 0, deviceRestricted: false }, { ...base, id: 102, deviceLimit: current, deviceRestricted: offline || current > 0 }];
   if (offline) all.push({ ...base, id: 103, deviceLimit: 0, deviceRestricted: true });
+  if (timesOnly) {
+    for (const item of all) {
+      item.createdAt = new Date(item.deviceRestricted ? "2026-10-27T16:10:11Z" : "2026-10-27T09:52:24Z");
+      item.expireTimestamp = item.expireDate = item.createdAt.getTime() + 30 * 86400000;
+    }
+  }
   const items = all.filter(item => input?.deviceMode === "limited" ? item.deviceRestricted : !item.deviceRestricted);
   return { items, total: items.length, page: input?.page || 1, pageSize: input?.pageSize || 20 };
 }
@@ -304,6 +311,33 @@ async function verifyTamperedRecovery(origin) {
   console.log("Tampered recovery passed: real page and confirmation, cancellation, pending guard, failure retry, original-key-only parameters, refreshed list, desktop/mobile screenshots; synthetic APIs only.");
 }
 
+async function verifyKeyTimes(origin) {
+  for (const timezoneId of ["UTC", "America/Los_Angeles"]) {
+    await page.close();
+    page = await browser.newPage({ timezoneId, viewport: { width: 1440, height: 1000 } });
+    page.on("pageerror", error => errors.push(error.message));
+    await page.route("**/*", mockRequests);
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
+      for (const pathname of ["/keys", "/offline-key-list", "/limited-keys", "/limited-keys?type=offline"]) {
+        await page.goto(origin + pathname);
+        const limited = pathname.startsWith("/limited-keys");
+        const expectedTime = limited ? "2026/10/28 00:10:11" : "2026/10/27 17:52:24";
+        const expectedDate = limited ? "2026/10/28" : "2026/10/27";
+        const cell = page.locator(`td[title="${expectedTime}"]`).first();
+        await cell.waitFor();
+        assert.equal((await cell.innerText()).trim(), expectedDate, "creation day follows Beijing time, not the browser timezone");
+        if (width === 390) await cell.scrollIntoViewIfNeeded();
+        await assertNoPageOverflow(`key time ${timezoneId} ${width} ${pathname}`);
+        await page.screenshot({ path: path.join(artifacts, `key-time-${timezoneId.replaceAll("/", "-")}-${width}-${pathname.slice(1).replaceAll(/[?=]/g, "-")}.png`), fullPage: true });
+      }
+    }
+  }
+  assert.deepEqual(errors, []);
+  assert.deepEqual(unexpected, []);
+  console.log("Key time UI passed: Beijing dates and exact-time titles for online/offline ordinary/limited lists, UTC and America/Los_Angeles browsers, midnight boundary, 1440px/390px screenshots; synthetic APIs only.");
+}
+
 async function verifyNotifications(origin) {
   const approved = id => ({ id, requestNo: `KGR-FIXTURE-${id}`, requestedById: user.id, requestedByName: user.name,
     mode: "single", productType: "shroom-desktop", sensorTypes: '["hand"]', days: 30, count: 1,
@@ -392,7 +426,9 @@ try {
   page.on("pageerror", error => errors.push(error.message));
   await page.route("**/*", mockRequests);
 
-  if (notificationsOnly) {
+  if (timesOnly) {
+    await verifyKeyTimes(origin);
+  } else if (notificationsOnly) {
     await verifyNotifications(origin);
   } else if (tamperedOnly) {
     await verifyTamperedRecovery(origin);

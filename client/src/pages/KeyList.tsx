@@ -1,5 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { formatBeijingDate, formatBeijingDateTime } from "@shared/time";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import {
   Dialog,
@@ -662,7 +663,7 @@ export default function KeyList({ deviceMode = "unlimited", embedded = false }: 
                         <TableCell className="text-sm text-foreground">{key.days}天</TableCell>
                         <TableCell className="whitespace-nowrap text-sm">{deviceLimitLabel(key.deviceLimit, key.deviceRestricted)}</TableCell>
                         <TableCell className="text-sm text-foreground">
-                          {new Date(key.expireTimestamp).toLocaleDateString("zh-CN")}
+                          {formatBeijingDate(key.expireTimestamp)}
                         </TableCell>
                         <TableCell>
                           {renderStatus(key)}
@@ -680,8 +681,8 @@ export default function KeyList({ deviceMode = "unlimited", embedded = false }: 
                         <TableCell className="text-sm text-foreground">
                           {key.createdByName || "-"}
                         </TableCell>
-                        <TableCell className="text-sm text-muted-foreground">
-                          {new Date(key.createdAt).toLocaleDateString("zh-CN")}
+                        <TableCell className="text-sm text-muted-foreground" title={formatBeijingDateTime(key.createdAt)}>
+                          {formatBeijingDate(key.createdAt)}
                         </TableCell>
                         <TableCell>
                           {renderActions(key)}
@@ -852,7 +853,7 @@ export default function KeyList({ deviceMode = "unlimited", embedded = false }: 
                       )}
                       <div className="flex items-center gap-3 text-xs text-muted-foreground">
                         <span>操作人：{record.actorName || "系统"}</span>
-                        <span>{new Date(record.createdAt).toLocaleString("zh-CN")}</span>
+                        <span>{formatBeijingDateTime(record.createdAt)}</span>
                       </div>
                     </div>
                   </div>

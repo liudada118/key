@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { formatBeijingDate, formatBeijingDateTime } from "@shared/time";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -268,7 +269,7 @@ export default function OfflineKeyList({ deviceMode = "unlimited", embedded = fa
                           <TableCell>{item.days}天</TableCell>
                           <TableCell className="whitespace-nowrap">{deviceLimitLabel(item.deviceLimit, item.deviceRestricted)}</TableCell>
                           <TableCell className="text-xs">
-                            {new Date(item.expireDate).toLocaleDateString("zh-CN")}
+                            {formatBeijingDate(item.expireDate)}
                           </TableCell>
                           <TableCell className="text-sm">
                             {item.customerName
@@ -285,8 +286,8 @@ export default function OfflineKeyList({ deviceMode = "unlimited", embedded = fa
                               : "-"}
                           </TableCell>
                           <TableCell className="text-sm">{item.createdByName || "-"}</TableCell>
-                          <TableCell className="text-xs">
-                            {new Date(item.createdAt).toLocaleDateString("zh-CN")}
+                          <TableCell className="text-xs" title={formatBeijingDateTime(item.createdAt)}>
+                            {formatBeijingDate(item.createdAt)}
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-1">

@@ -1,5 +1,6 @@
 import { and, asc, count, desc, eq, getTableColumns, gte, inArray, isNull, isNotNull, like, lte, ne, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
+import type { AnyMySqlColumn } from "drizzle-orm/mysql-core";
 import {
   InsertUser,
   auditLogs,
@@ -48,6 +49,23 @@ import {
   getLicenseSensorGroups,
   groupKeyByDbGroupName,
 } from "../shared/licenseScopes";
+
+// Default/on-update timestamps are returned in the MySQL session timezone.
+// Read their actual instant, rather than letting Drizzle assume a UTC string.
+function databaseGeneratedTime(column: AnyMySqlColumn) {
+  return sql`UNIX_TIMESTAMP(${column})`.mapWith(value => new Date(Number(value) * 1000));
+}
+
+const licenseKeySelection = {
+  ...getTableColumns(licenseKeys),
+  createdAt: databaseGeneratedTime(licenseKeys.createdAt),
+  updatedAt: databaseGeneratedTime(licenseKeys.updatedAt),
+};
+const offlineKeySelection = {
+  ...getTableColumns(offlineKeys),
+  createdAt: databaseGeneratedTime(offlineKeys.createdAt),
+  updatedAt: databaseGeneratedTime(offlineKeys.updatedAt),
+};
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -788,10 +806,8 @@ export async function getGeneratedKeyCountsByContractNos(contractNos: string[]) 
 // their existing mapping so historical approvals are not shifted a second time.
 const keyGenerationRequestSelection = {
   ...getTableColumns(keyGenerationRequests),
-  createdAt: sql`UNIX_TIMESTAMP(${keyGenerationRequests.createdAt})`
-    .mapWith(value => new Date(Number(value) * 1000)),
-  updatedAt: sql`UNIX_TIMESTAMP(${keyGenerationRequests.updatedAt})`
-    .mapWith(value => new Date(Number(value) * 1000)),
+  createdAt: databaseGeneratedTime(keyGenerationRequests.createdAt),
+  updatedAt: databaseGeneratedTime(keyGenerationRequests.updatedAt),
 };
 
 export async function createKeyGenerationRequest(
@@ -1105,7 +1121,7 @@ export async function getLicenseKeys(opts: {
   const offset = (opts.page - 1) * opts.pageSize;
 
   const [items, totalResult] = await Promise.all([
-    db.select({ ...getTableColumns(licenseKeys), deviceLimit: effectiveDeviceLimit("online"), deviceRestricted: restrictedDeviceFormat("online") }).from(licenseKeys)
+    db.select({ ...licenseKeySelection, deviceLimit: effectiveDeviceLimit("online"), deviceRestricted: restrictedDeviceFormat("online") }).from(licenseKeys)
       .leftJoin(licenseDevicePolicies, and(eq(licenseDevicePolicies.keyType, "online"), eq(licenseDevicePolicies.keyId, licenseKeys.id)))
       .where(where).orderBy(desc(licenseKeys.createdAt)).limit(opts.pageSize).offset(offset),
     db.select({ count: count() }).from(licenseKeys)
@@ -1169,7 +1185,7 @@ export async function deleteLicenseKeysVisible(
 export async function getLicenseKeyByString(keyString: string) {
   const db = await getDb();
   if (!db) return undefined;
-  const result = await db.select().from(licenseKeys).where(eq(licenseKeys.keyString, keyString)).limit(1);
+  const result = await db.select(licenseKeySelection).from(licenseKeys).where(eq(licenseKeys.keyString, keyString)).limit(1);
   return result.length > 0 ? result[0] : undefined;
 }
 
@@ -1299,7 +1315,7 @@ export async function updateLicenseKeyCategory(keyId: number, category: "product
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   await db.update(licenseKeys).set({ category }).where(eq(licenseKeys.id, keyId));
-  const result = await db.select().from(licenseKeys).where(eq(licenseKeys.id, keyId)).limit(1);
+  const result = await db.select(licenseKeySelection).from(licenseKeys).where(eq(licenseKeys.id, keyId)).limit(1);
   return result.length > 0 ? result[0] : undefined;
 }
 
@@ -1307,7 +1323,7 @@ export async function updateLicenseKeyCategory(keyId: number, category: "product
 export async function getLicenseKeyById(keyId: number) {
   const db = await getDb();
   if (!db) return undefined;
-  const result = await db.select().from(licenseKeys).where(eq(licenseKeys.id, keyId)).limit(1);
+  const result = await db.select(licenseKeySelection).from(licenseKeys).where(eq(licenseKeys.id, keyId)).limit(1);
   return result.length > 0 ? result[0] : undefined;
 }
 
@@ -1740,7 +1756,7 @@ export async function getOfflineKeys(params: {
   const where = conditions.length > 1 ? and(...conditions) : conditions[0];
 
   const [items, totalResult] = await Promise.all([
-    db.select({ ...getTableColumns(offlineKeys), deviceLimit: effectiveDeviceLimit("offline"), deviceRestricted: restrictedDeviceFormat("offline") }).from(offlineKeys)
+    db.select({ ...offlineKeySelection, deviceLimit: effectiveDeviceLimit("offline"), deviceRestricted: restrictedDeviceFormat("offline") }).from(offlineKeys)
       .leftJoin(licenseDevicePolicies, and(eq(licenseDevicePolicies.keyType, "offline"), eq(licenseDevicePolicies.keyId, offlineKeys.id))).where(where)
       .orderBy(desc(offlineKeys.createdAt))
       .limit(params.pageSize)
@@ -1950,7 +1966,7 @@ export async function renewLicenseKey(keyId: number, additionalDays: number, act
 export async function getKeyStatusHistoryList(keyType: "online" | "offline", keyId: number) {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(keyStatusHistory)
+  return db.select({ ...getTableColumns(keyStatusHistory), createdAt: databaseGeneratedTime(keyStatusHistory.createdAt) }).from(keyStatusHistory)
     .where(and(eq(keyStatusHistory.keyType, keyType), eq(keyStatusHistory.keyId, keyId)))
     .orderBy(desc(keyStatusHistory.createdAt));
 }
@@ -2078,7 +2094,7 @@ export async function getTamperedKeys(
   const pageSize = opts?.pageSize ?? 20;
   const offset = (page - 1) * pageSize;
   const [items, totalResult] = await Promise.all([
-    db.select().from(licenseKeys).where(where).orderBy(desc(licenseKeys.tamperedAt)).limit(pageSize).offset(offset),
+    db.select(licenseKeySelection).from(licenseKeys).where(where).orderBy(desc(licenseKeys.tamperedAt)).limit(pageSize).offset(offset),
     db.select({ count: count() }).from(licenseKeys).where(where),
   ]);
   return { items, total: totalResult[0]?.count ?? 0 };
@@ -2141,7 +2157,7 @@ export async function reissueLicenseKey(keyId: number, actorId: number, actorNam
     if (policy.maxDevices > 0) {
       await tx.insert(licenseDevicePolicies).values({ keyType: "online", keyId: result.insertId, maxDevices: policy.maxDevices });
     }
-    const [inserted] = await tx.select().from(licenseKeys).where(eq(licenseKeys.id, result.insertId)).limit(1);
+    const [inserted] = await tx.select(licenseKeySelection).from(licenseKeys).where(eq(licenseKeys.id, result.insertId)).limit(1);
     return { ...inserted, deviceLimit: policy.maxDevices, deviceRestricted: policy.maxDevices > 0 };
   });
 

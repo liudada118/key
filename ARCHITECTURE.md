@@ -1,6 +1,6 @@
 # 架构文档
 
-> 本文档由 Manus 自动生成和维护。最后更新于：2026-10-26
+> 本文档由 Manus 自动生成和维护。最后更新于：2026-10-28
 
 ## 1. 项目概述
 
@@ -94,6 +94,9 @@ key-manager/
 │   ├── keyRequestNotifications.ts # 申请批准未读计数、超管待审批计数和本人已读回执
 │   ├── keyRequestNotifications.test.ts # 计数与已读更新 SQL 的归属边界
 │   ├── keyRequestNotificationsRouter.test.ts # 提醒接口身份、启用状态和输入校验
+│   ├── keyTimes.test.ts        # 密钥自动时间、既有状态时间和北京时间展示回归
+│   ├── keyTimes.export.test.ts # CSV/JSON 导出与运行环境时区解耦
+│   ├── keyTimes.integration.test.ts # 本地临时密钥/历史表跨 MySQL 会话时区回归
 │   ├── licenseDeviceMode.ts    # 电脑授权分类 SQL、当前上限与离线签名格式判断
 │   ├── routers.ts              # tRPC 路由定义（keys + accounts + auth + sensors + customers + offline）
 │   ├── organizationExport.ts   # 全量账号/部门只读快照及安全字段投影
@@ -121,6 +124,8 @@ key-manager/
 │   ├── feishuKeyRequestWebhook.test.ts # Webhook 格式、失败隔离与安全校验测试
 │   ├── feishuKeyRequestCard.ts # 飞书应用机器人审批卡片构建与发送
 │   ├── feishuKeyRequestCardCallback.ts # 卡片回调解密、验签、群权限校验与响应
+│   ├── feishuKeyRequestCallbackHttp.test.ts # Challenge 引导配置、解密失败及审批签名隔离
+│   ├── agentSyncLegacyAuth.test.ts # 旧密钥上传、停用控制和统计鉴权边界
 │   ├── keyGenerationRequestApproval.ts # 网站和飞书共用的申请审批服务
 │   ├── onlineKeyGeneration.ts  # 在线密钥记录准备与生成
 │   ├── keyGeneration.contractRequirement.test.ts # 在线生成合同必填测试
@@ -136,9 +141,11 @@ key-manager/
 │   ├── schema.ts               # 含 licenseKeys、keyGenerationRequests 等业务表
 │   ├── 0010_key_generation_requests.sql # 无合同申请与密钥关联迁移
 │   ├── 0025_key_request_notifications.sql # 申请结果已读时间和通知计数组合索引
+│   ├── 0026_agent_legacy_license_sources.sql # 旧在线密钥聊天来源哈希及唯一约束
 │   ├── 0011_key_soft_delete_columns.sql # 在线/离线密钥软删除字段兼容迁移
 │   └── 0012_departments_table_compat.sql # 历史数据库部门表兼容迁移
 ├── shared/                     # 前后端共享
+│   ├── time.ts                 # 固定 Asia/Shanghai 的中文日期及完整时间格式
 │   ├── crypto.ts               # AES-128-ECB 密钥生成/解码模块（ESM）
 │   ├── crypto-lib.cjs          # 同上的自包含 CJS 副本（Electron 可 require）
 │   ├── licenseScopes.ts        # 分类授权纯逻辑：注册表校验、@group: 令牌、范围展开
@@ -267,6 +274,8 @@ graph TD
 **无合同审批流程**：普通账号在确认弹窗填写原因并调用 `keyGenerationRequests.create`，服务端保存传感器、有效期、数量和生成备注，写入审计后优先通过飞书应用机器人向 `FEISHU_APPROVAL_CHAT_ID` 指定的超管群发送交互卡片；卡片发送不可用时回退到 `FEISHU_KEY_REQUEST_WEBHOOK_URL` 文本提醒，通知故障不会回滚已经成功的申请。群内点击同意或拒绝后，`POST /api/feishu/key-request/card-action` 对回调执行 AES 解密、签名/Token、App ID、时间窗口及群 `chat_id` 校验，再调用与网站 `keyGenerationRequests.review` 共用的审批服务。批准时密钥写入与申请状态更新处于同一事务，生成的密钥归申请人所有并在密钥管理页可见；成功响应会将飞书卡片更新为最终状态，重复点击由申请状态锁拦截。超级管理员选择“无合同生成”时直接调用密钥生成接口，不写入申请表或发送申请通知。
 
 **申请时间读取**：申请表由 MySQL 自动生成的 `createdAt`、`updatedAt` 使用 `UNIX_TIMESTAMP` 投影并转换成 JavaScript `Date`，避免 Drizzle 将会话时区的墙上时间误解析为 UTC。创建后回读、单条查询、列表及审批事务共用同一投影；前端仍按 `Asia/Shanghai` 展示。应用以 UTC 字符串写入的 `reviewedAt`、`generatedAt` 保留原映射，不对历史时间统一减八小时、不改变连接全局时区，也不迁移或重写历史记录。
+
+**密钥时间读取与展示**：`databaseGeneratedTime` 复用于申请表、在线/离线密钥的 `createdAt`/`updatedAt` 及状态历史的 `createdAt`。在线普通/限制列表、异常列表、按 ID/原串查询、类型修改和重签后回读共用在线字段投影，离线列表使用对应投影；只转换数据库自动时间，不改变激活/异常等应用写入时间或数值型到期时间。`shared/time.ts` 将密钥列表、历史和 CSV/JSON 导出固定为 `Asia/Shanghai`，不依赖浏览器或 Node 所在时区；创建日期附完整时间的悬停提示。
 
 **导航红点**：在线密钥分组直接显示“异常密钥”，保留管理员/超管权限；当前数据范围内仍有异常时持续亮红点。申请入口对超管显示全局待审批提醒，对所有登录账号显示本人未查看的批准结果。两类计数每 30 秒前台刷新，切回窗口时重新查询，后台不持续轮询；折叠导航和手机菜单按钮也保留提示及无障碍文字。申请列表只将当前可见页中本人的已批准结果写入 `resultReadAt`；后台页面、其他申请人、待审批结果和其他分页不被自动标记。失败保留未读，下一次列表刷新重试；已读状态由数据库保存，不依赖浏览器存储。
 
@@ -405,6 +414,8 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 ### 7.5. Agent 聊天同步
 
 `server/agentSync.ts` 在全局正文解析器之前注册 `POST /api/agent/conversations`，先用软件密钥或独立 Bearer 凭证鉴权，再校验 8 MiB 以内的白名单快照。`agentSyncSchema.ts` 对齐桌面端版本 1 契约；归属由服务器登记的密钥或凭证确定。
+
+聊天上传现支持未登记但能由既有解码器验证、范围有效且未过期的旧在线密钥，以规范化密钥 SHA-256 创建独立来源，不写原密钥或自动补录授权表。已登记密钥仍以数据库状态、续期和客户可用性为准；大小写变化及物理删除不能回退绕过登记控制。`agent_chat_sources.license_key_hash` 唯一，后续补录时在原来源上关联 `license_key_id`，不搬迁会话或回执。离线 RSA 码维持登记及客户关联要求；客户使用统计调用共享鉴权时显式 `allowLegacy: false`，不随聊天兼容策略放宽。
 
 `agentSyncStore.ts` 在事务内锁定事件回执、校验请求摘要并按 revision 原子更新最新快照，提交后才 ACK。旧版成功确认但不覆盖新版，同事件不同内容返回 409。迁移 `0013_agent_chat_sync.sql` 增加 `agent_upload_credentials`、`agent_conversations`、`agent_sync_events` 三张 InnoDB 表；ID 使用区分大小写的索引。
 
@@ -1453,3 +1464,45 @@ cd /e/shroom1 && node scripts/sync-license-registry.cjs E:\key\config\licenseSen
 | 完成日期 | 完成的功能/工作 | 简要说明 |
 | --- | --- | --- |
 | 2026-10-26 | 密钥审批与异常提醒 | 角色隔离、已读持久化、移动/折叠显示与后台轮询控制已完成；本地迁移、数据库回归和合成浏览器验收通过，生产未部署。 |
+
+## 2026-10-27 密钥创建时间跨日偏移修复
+
+- 线上只读核对密钥 #524：MySQL 原始创建时间为北京时间 `2026-10-27 17:52:24`，页面因把该墙上时间当成 UTC 再转北京时间而显示成 28 日；到期时间数值与创建时刻相差 30 天及原有毫秒精度，有效期计算正确。
+- 共享 `databaseGeneratedTime` 将数据库自动时间按 epoch 映射为 `Date`，覆盖在线/离线普通及限制列表、在线按 ID/原密钥串读取、异常列表、类别修改回读、重签事务回读以及状态历史。申请自动时间沿用相同规则，审批、激活、暂停、异常判定时间保留原映射；查询排序、权限、筛选和计数不变。
+- 前后端共享 `formatBeijingDate`/`formatBeijingDateTime`，列表与 CSV/JSON 的创建、到期及已有激活时间按同一北京时间格式展示；列表创建日期可悬停查看完整时间。未重写原记录、修改有效期/电脑限制或增加迁移，不更改全局数据库时区。
+- 验证：全量常规测试 639 通过、59 个按条件跳过；新增 8 项密钥时间和 3 项导出常规回归。通过 `KEY_TIME_TEST_URL` 显式启用 3 项本地 MySQL 会话测试，在已初始化的本机数据库中只读取表结构并克隆连接内临时表，验证 `+08:00`、`+00:00`、`-07:00` 的四类列表、单条、异常、历史和存储时间不变；原申请时间/回执集成 4 项同时通过。类型检查、生产构建通过。
+- `node scripts/tests/limited-keys.mjs --times-only` 使用合成 API，验证 UTC 与 America/Los_Angeles 浏览器中的在线/离线普通及限制列表、北京时间跨零点、完整时间提示及 1440px/390px 截图；未操作真实密钥。本地开发服务仍在 `http://localhost:3003/`，健康检查通过。未提交、推送或部署生产。
+
+### 更新日志（追加）
+
+| 日期 | 变更类型 | 内容 |
+| --- | --- | --- |
+| 2026-10-27 | 修复缺陷 | 修正密钥创建时间多八小时导致跨日，统一相关列表、历史及 CSV/JSON 为北京时间，保留有效期和状态时间语义。 |
+
+### 项目进度（追加）
+
+| 完成日期 | 完成的功能/工作 | 简要说明 |
+| --- | --- | --- |
+| 2026-10-27 | 密钥自动时间与北京时间展示 | 完成默认时间读取投影、跨端日期格式、只读定位及本地临时表/合成浏览器回归；无需数据库迁移，生产未操作。 |
+
+## 2026-10-28 飞书 Challenge 与旧密钥聊天上传
+
+- 线上只读探测确认回调路径可达，但返回 HTTP 503“飞书审批回调配置不完整”；App ID 已设置，Verification Token、Encrypt Key 和审批群尚未配置。本地验证了用户提供的旧格式密钥仍有效，正式库未发现登记；未将真实密钥写入源码、测试、日志或生产数据库。
+- `feishuKeyRequestCardCallback.ts` 将 URL 验证与业务审批配置分离：正确 Token 可在无审批群、无数据库访问的情况下响应明文/加密 `url_verification` Challenge；缺 Token 仍 503，Token 错误 401，密文或解密失败 400。不以任意 `challenge` 字段跳过卡片事件签名；真正审批仍要求 App ID、指定群及原有验签权限。
+- `agentSyncStore.ts` 允许有效未过期的未登记在线密钥上传聊天，保留旧 AES 兼容语义，并非新增不可伪造签名。哈希唯一来源用于并发首次上传、后续补录及公司显示；原密钥、原期限和授权状态不被补录或修改，客户端也不能指定客户归属。已登记的暂停/吊销/异常/删除/到期、无效客户、SDK 产品仍拒绝；登记续期仍以数据库为准。`usageStore.ts` 明确维持原登记要求。
+- 迁移 `0026_agent_legacy_license_sources.sql` 只新增可空唯一 `license_key_hash`，不重建旧来源。确认本地前 26 项迁移已应用后，仅追加该迁移，本地账本现为 27 项。没有执行真实密钥补录、签发或上传，也未改生产环境变量、部署代码或重启生产服务。
+- 验证：全量常规 661 通过、63 个条件用例跳过，类型检查和生产构建通过。新增 11 项 Challenge HTTP 与 11 项旧密钥鉴权回归；显式本地临时表集成 15 项通过，包含真实 v1 / 1.1.40 格式 HTTP 200、并发来源、后续补录保留历史、大小写停用控制、来源隔离及幂等回执。集成套件支持只需本地应用账号的连接内临时表，无需提升建库权限；管理员随机测试库模式继续保留。
+- 上线须发布包含 0026 的版本并先执行迁移；飞书后台与服务器必须使用同一 Verification Token，若设置加密则同时配置 Encrypt Key。审批群只影响真正的审批，不再阻止 URL 配置；未配置安全参数不会开放无验证回调。
+
+### 更新日志（追加）
+
+| 日期 | 变更类型 | 内容 |
+| --- | --- | --- |
+| 2026-10-28 | 修复缺陷 | 分离飞书 URL Challenge 与审批群配置，保留 Token、签名和群权限；明确返回配置及解密错误。 |
+| 2026-10-28 | 新增功能 | 有效旧在线密钥免补录上传聊天，哈希隔离来源并兼容后续公司关联，不放宽使用统计或停用密钥控制。 |
+
+### 项目进度（追加）
+
+| 完成日期 | 完成的功能/工作 | 简要说明 |
+| --- | --- | --- |
+| 2026-10-28 | 旧密钥聊天上传与飞书 Challenge 修复 | 本地代码、0026 迁移和真实 HTTP/数据库回归完成；正式部署及飞书安全参数配置待执行。 |

@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, asc, count, desc, eq, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, or, sql } from "drizzle-orm";
 import { agentChatSources, agentConversations, agentSyncEvents, agentUploadCredentials, customers, licenseKeys, offlineKeys, rsaKeyPairs } from "../drizzle/schema";
 import { getDb } from "./db";
 import { decodeLicenseKey } from "../shared/crypto";
@@ -60,7 +60,7 @@ export async function listAgentChatCustomers() {
     .groupBy(agentConversations.tenantId, sourceName).orderBy(asc(agentConversations.tenantId));
 }
 
-const sourceName = sql<string>`COALESCE(NULLIF(${customers.name}, ''), NULLIF(${licenseKeys.customerName}, ''), NULLIF(${offlineKeys.customerName}, ''), IF(${agentChatSources.licenseKeyId} IS NOT NULL, CONCAT('未绑定公司 · 密钥 #', ${agentChatSources.licenseKeyId}), IF(${agentChatSources.offlineKeyId} IS NOT NULL, CONCAT('未绑定公司 · 离线密钥 #', ${agentChatSources.offlineKeyId}), CONCAT('客户 #', ${agentChatSources.customerId}, '（已删除）'))))`;
+const sourceName = sql<string>`COALESCE(NULLIF(${customers.name}, ''), NULLIF(${licenseKeys.customerName}, ''), NULLIF(${offlineKeys.customerName}, ''), IF(${agentChatSources.licenseKeyId} IS NOT NULL, CONCAT('未绑定公司 · 密钥 #', ${agentChatSources.licenseKeyId}), IF(${agentChatSources.offlineKeyId} IS NOT NULL, CONCAT('未绑定公司 · 离线密钥 #', ${agentChatSources.offlineKeyId}), IF(${agentChatSources.licenseKeyHash} IS NOT NULL, CONCAT('未绑定公司 · 旧版密钥 #', ${agentChatSources.id}), CONCAT('客户 #', ${agentChatSources.customerId}, '（已删除）')))))`;
 
 // Read database-generated timestamps as epoch seconds, independent of the MySQL session timezone.
 const receivedAt = sql`UNIX_TIMESTAMP(${agentConversations.receivedAt})`.mapWith(value => new Date(Number(value) * 1000));
@@ -130,7 +130,24 @@ async function resolveSource(db: Awaited<ReturnType<typeof database>>, identity:
   return source.id;
 }
 
-export async function authenticateLicenseUpload(key: string) {
+async function resolveOnlineSource(db: Awaited<ReturnType<typeof database>>, keyHash: string, keyId?: number) {
+  // Both legacy and registered paths use one unique hash, including concurrent
+  // first uploads and later registration. Never persist the original license.
+  await db.insert(agentChatSources).values({ licenseKeyHash: keyHash, ...(keyId === undefined ? {} : { licenseKeyId: keyId }) })
+    .onDuplicateKeyUpdate({ set: {
+      licenseKeyHash: sql`COALESCE(license_key_hash, ${keyHash})`,
+      ...(keyId === undefined ? {} : { licenseKeyId: sql`COALESCE(license_key_id, ${keyId})` }),
+    } });
+  const [source] = await db.select({ id: agentChatSources.id, licenseKeyId: agentChatSources.licenseKeyId })
+    .from(agentChatSources).where(eq(agentChatSources.licenseKeyHash, keyHash)).limit(1);
+  if (!source) throw new AgentSyncError(503, "STORAGE_UNAVAILABLE");
+  // A formerly registered license that was hard-deleted must not regain access
+  // through the unregistered legacy compatibility path.
+  if (keyId === undefined && source.licenseKeyId !== null) throw new AgentSyncError(403, "LICENSE_UNAVAILABLE");
+  return source.id;
+}
+
+export async function authenticateLicenseUpload(key: string, options: { allowLegacy?: boolean } = {}) {
   const db = await database();
   const now = Date.now();
   if (!/^[a-f0-9]+$/i.test(key)) {
@@ -153,16 +170,23 @@ export async function authenticateLicenseUpload(key: string) {
   }
   key = key.toLowerCase();
   const decoded = decodeLicenseKey(key, now);
-  if (decoded.productType !== "shroom-desktop") throw new AgentSyncError(403, "PRODUCT_MISMATCH");
   if (!decoded.expireTimestamp || !decoded.sensorTypes?.length) throw new AgentSyncError(401, "INVALID_LICENSE");
+  if (decoded.productType !== "shroom-desktop") throw new AgentSyncError(403, "PRODUCT_MISMATCH");
   const [row] = await db.select({ id: licenseKeys.id, status: licenseKeys.status, expiresAt: licenseKeys.expireTimestamp,
     deleted: licenseKeys.isDeleted, customerId: licenseKeys.customerId, customerActive: customers.isActive,
   }).from(licenseKeys).leftJoin(customers, eq(customers.id, licenseKeys.customerId))
-    .where(eq(licenseKeys.keyString, key)).limit(1);
-  if (!row) throw new AgentSyncError(401, "INVALID_LICENSE");
+    .where(or(eq(licenseKeys.keyString, key), sql`LOWER(${licenseKeys.keyString}) = ${key}`)).limit(1);
+  const keyHash = hashUploadToken(key);
+  if (!row) {
+    if (options.allowLegacy === false) throw new AgentSyncError(401, "INVALID_LICENSE");
+    if (!decoded.valid || !Number.isFinite(decoded.expireTimestamp) || decoded.expireTimestamp <= now) {
+      throw new AgentSyncError(403, "LICENSE_UNAVAILABLE");
+    }
+    return { tenantId: await resolveOnlineSource(db, keyHash), credentialId: 0 };
+  }
   if (row.deleted || !["ISSUED", "ACTIVATED", "RENEWED"].includes(row.status) || row.expiresAt <= now
     || (row.customerId !== null && row.customerActive !== true)) throw new AgentSyncError(403, "LICENSE_UNAVAILABLE");
-  return { tenantId: await resolveSource(db, { licenseKeyId: row.id }), credentialId: 0 };
+  return { tenantId: await resolveOnlineSource(db, keyHash, row.id), credentialId: 0 };
 }
 
 export async function authenticateUpload(token: string) {

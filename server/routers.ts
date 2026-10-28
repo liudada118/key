@@ -1,4 +1,5 @@
 import { COOKIE_NAME } from "@shared/const";
+import { formatBeijingDateTime } from "@shared/time";
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import { getSessionCookieOptions } from "./_core/cookies";
@@ -1240,13 +1241,13 @@ export const appRouter = router({
             密钥类型: k.category === "production" ? "量产密钥" : "在线租赁密钥",
             电脑数量上限: k.deviceLimit > 0 ? k.deviceLimit : "不限量",
             有效期天数: k.days,
-            到期时间: new Date(k.expireTimestamp).toLocaleString("zh-CN"),
+            到期时间: formatBeijingDateTime(k.expireTimestamp),
             状态: k.status,
             是否已激活: k.isActivated ? "是" : "否",
-            激活时间: k.activatedAt ? new Date(k.activatedAt).toLocaleString("zh-CN") : "",
+            激活时间: k.activatedAt ? formatBeijingDateTime(k.activatedAt) : "",
             客户: k.customerName || "",
             创建者: k.createdByName || "",
-            创建时间: k.createdAt.toLocaleString("zh-CN"),
+            创建时间: formatBeijingDateTime(k.createdAt),
             备注: k.remark || "",
           }));
         }
@@ -1259,13 +1260,13 @@ export const appRouter = router({
             k.category === "production" ? "量产密钥" : "在线租赁密钥",
             k.deviceLimit > 0 ? k.deviceLimit : "不限量",
             k.days,
-            new Date(k.expireTimestamp).toLocaleString("zh-CN"),
+            formatBeijingDateTime(k.expireTimestamp),
             k.status,
             k.isActivated ? "是" : "否",
-            k.activatedAt ? new Date(k.activatedAt).toLocaleString("zh-CN") : "",
+            k.activatedAt ? formatBeijingDateTime(k.activatedAt) : "",
             k.customerName || "",
             k.createdByName || "",
-            k.createdAt.toLocaleString("zh-CN"),
+            formatBeijingDateTime(k.createdAt),
             k.remark || "",
           ].join(",")
         );
