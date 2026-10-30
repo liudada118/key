@@ -4,9 +4,14 @@ import { authenticateUsage, persistUsageBatch } from "./usageStore";
 import { MAX_USAGE_BATCH_BYTES, usageBatchSchema } from "./usageSchema";
 
 export const USAGE_PATH = "/api/usage/events/batch";
+export const USAGE_CAPABILITIES_PATH = "/api/usage/capabilities";
 
 /** Receive bounded, authenticated batches and acknowledge only committed event IDs. */
 export function registerUsage(app: Express, dependencies = { authenticate: authenticateUsage, persist: persistUsageBatch }) {
+  app.get(USAGE_CAPABILITIES_PATH, (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ schemaVersions: [1, 2] });
+  });
   const route = express.Router();
   const buckets = new Map<number, { start: number; count: number }>();
   route.use((req, res, next) => {

@@ -7,6 +7,7 @@ vi.mock("./usageStore", () => ({
   listUsageEvents: vi.fn(async () => ({ items: [], total: 0 })), getUsageEventContext: vi.fn(async () => []),
   getUsageAnalysisSummary: vi.fn(async () => ({})), listUsageFeatureUsage: vi.fn(async () => ({})),
   getUsageDashboard: vi.fn(async () => ({})),
+  getUsageCollectionOutcome: vi.fn(async () => null),
   listUsageCustomerUsage: vi.fn(async () => ({})), listUsageSystems: vi.fn(async () => []),
 }));
 const filters = { from: "2026-09-01", to: "2026-09-24", environment: "production" as const };
@@ -28,6 +29,8 @@ describe("usage administrator access", () => {
       await expect(client.systems(filters)).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(client.events({ filters })).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(client.context(identity)).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(client.collectionOutcome({ sourceId: identity.sourceId, installationId: identity.installationId,
+        collectionId: "synthetic-collection" })).rejects.toMatchObject({ code: "FORBIDDEN" });
     }
   });
   it("preserves the full customer/install/event scope and validates bounded dates", async () => {

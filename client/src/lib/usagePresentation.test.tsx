@@ -7,7 +7,7 @@ describe("usage dashboard metric meanings", () => {
     expect(usageActionLabel("restore_update_display")).toBe("恢复 · 展示配置");
     expect(usageMetricText({ featureId: "sensor_frames", count: 1500, durationMs: 30000 })).toContain("50.0 帧/秒");
     expect(usageMetricText({ featureId: "sensor_frames", count: 1500, durationMs: 30000 })).toContain("不等于丢帧统计");
-    expect(usageMetricText({ featureId: "collection", count: 209, durationMs: 4200 })).toContain("已保存 209 条帧记录");
+    expect(usageMetricText({ featureId: "collection", count: 209, durationMs: 4200 })).toContain("旧版上报 209 条帧记录");
     expect(usageMetricText({ featureId: "webpage_update", action: "download_ready", count: 1048576 })).toContain("1.00 MiB");
     expect(usageActionLabel("future-action")).toBe("future-action");
     expect(usageErrorLabel("DEVICE_LIMIT_REACHED")).toContain("电脑数量上限");
@@ -31,7 +31,7 @@ describe("usage dashboard metric meanings", () => {
   it("uses domain metrics instead of raw exposure/attempt totals and preserves missing duration", () => {
     const row = { featureId: "monitoring", category: "business", uses: 4, successes: 2,
       observedEvents: 1000, monitoringMs: 60000, monitoringSamples: 1, collectionMs: 30000, collectionSamples: 1 };
-    expect(usageFeaturePrimaryMetric(row)).toEqual({ label: "监测时长", value: "1.0 分钟" });
+    expect(usageFeaturePrimaryMetric(row)).toEqual({ label: "监测观测时长", value: "1.0 分钟" });
     expect(usageFeaturePrimaryMetric({ ...row, monitoringSamples: 0 }).value).toBe("未上报时长");
     expect(usageFeaturePrimaryMetric({ ...row, monitoringMs: 0 }).value).toBe("0 秒");
     expect(usageFeaturePrimaryMetric({ ...row, featureId: "collection" }).value).toBe("2 次");

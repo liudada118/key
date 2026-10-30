@@ -29,23 +29,70 @@ const propertiesSchema = z.object({
   message: z.string().max(400).optional(), stack: z.string().max(1800).optional(),
 }).strict();
 
-export const usageEventSchema = z.object({
+const eventSchemaV1 = z.object({
   schemaVersion: z.literal(1), eventId: z.string().uuid(), installationId: z.string().uuid(),
   sessionId: z.string().uuid(), occurredAt: z.string().datetime({ offset: true }),
   appVersion: z.string().min(1).max(80), environment: z.enum(["production", "development", "test"]),
   eventName: z.enum(usageEventNames), properties: propertiesSchema, runtimeVersions: runtimeVersions.optional(),
-}).strict().superRefine((event, ctx) => {
+}).strict();
+const counter = z.number().int().min(0).max(1e12);
+const propertiesSchemaV2 = propertiesSchema.extend({
+  collectionId: identifier.optional(), outcome: z.enum(["saved", "partial", "failed", "cancelled", "unknown"]).optional(),
+  stopReason: identifier.optional(), outcomeRevision: z.number().int().min(0).max(1e9).optional(),
+  supersedesEventId: z.string().uuid().optional(), committedRows: counter.optional(), failedRows: counter.optional(),
+  frameCount: counter.optional(), queuedCount: counter.optional(), droppedCount: counter.optional(),
+  invalidCount: counter.optional(), expiredCount: counter.optional(), capacityDroppedCount: counter.optional(),
+  storageFailureCount: counter.optional(), suppressedCount: counter.optional(), repeatedCount: counter.optional(),
+  oldestQueuedAt: z.string().datetime({ offset: true }).optional(), qualityId: z.string().uuid().optional(),
+  usageContext: z.enum(["customer", "internal", "demo", "test"]).optional(),
+  summaryKind: z.enum(["page_residence", "legacy_frame_window"]).optional(),
+}).strict();
+const eventSchemaV2 = eventSchemaV1.extend({ schemaVersion: z.literal(2),
+  eventName: z.enum([...usageEventNames, "usage_delivery_summary", "collection_outcome_reconciled"]),
+  properties: propertiesSchemaV2,
+}).strict();
+
+/** Enforce the same text and byte limits for both immutable wire contracts. */
+function validateEnvelope(event: z.infer<typeof eventSchemaV1> | z.infer<typeof eventSchemaV2>, ctx: z.RefinementCtx) {
   if (event.eventName !== "error_reported" && (event.properties.message !== undefined || event.properties.stack !== undefined)) {
     ctx.addIssue({ code: "custom", message: "Error text requires error_reported" });
   }
   if (Buffer.byteLength(JSON.stringify(event), "utf8") > MAX_USAGE_EVENT_BYTES) {
     ctx.addIssue({ code: "custom", message: "Event exceeds byte limit" });
   }
+}
+export const usageEventSchemaV1 = eventSchemaV1.superRefine(validateEnvelope);
+export const usageEventSchemaV2 = eventSchemaV2.superRefine((event, ctx) => {
+  validateEnvelope(event, ctx);
+  const p = event.properties;
+  const terminal = event.eventName === "collection_finished" || event.eventName === "collection_outcome_reconciled";
+  if ((terminal || event.eventName === "collection_started") && !p.collectionId) {
+    ctx.addIssue({ code: "custom", message: "Collection identity required" });
+  }
+  if (terminal) {
+    const expected = { saved: "success", partial: "failure", failed: "failure", cancelled: "cancelled", unknown: "unknown" } as const;
+    if (!p.outcome || p.result !== expected[p.outcome] || !p.stopReason || p.outcomeRevision === undefined
+      || p.committedRows === undefined || p.failedRows === undefined || p.frameCount === undefined) {
+      ctx.addIssue({ code: "custom", message: "Complete typed outcome required" });
+    }
+    if (event.eventName === "collection_finished" ? p.outcomeRevision !== 0 || p.supersedesEventId !== undefined
+      : !p.outcomeRevision || !p.supersedesEventId || p.supersedesEventId.toLowerCase() === event.eventId.toLowerCase()) {
+      ctx.addIssue({ code: "custom", message: "Invalid outcome revision" });
+    }
+  } else if (p.outcome !== undefined || p.outcomeRevision !== undefined || p.supersedesEventId !== undefined) {
+    ctx.addIssue({ code: "custom", message: "Outcome revision requires a terminal collection event" });
+  }
+  if (event.eventName === "usage_delivery_summary" && (!p.qualityId || p.queuedCount === undefined
+    || p.droppedCount === undefined || p.invalidCount === undefined)) {
+    ctx.addIssue({ code: "custom", message: "Delivery counters and identity required" });
+  }
 });
+export const usageEventSchema = z.discriminatedUnion("schemaVersion", [usageEventSchemaV1, usageEventSchemaV2]);
 
-export const usageBatchSchema = z.object({
-  schemaVersion: z.literal(1), events: z.array(usageEventSchema).min(1).max(50),
-}).strict();
+export const usageBatchSchema = z.discriminatedUnion("schemaVersion", [
+  z.object({ schemaVersion: z.literal(1), events: z.array(usageEventSchemaV1).min(1).max(50) }).strict(),
+  z.object({ schemaVersion: z.literal(2), events: z.array(usageEventSchemaV2).min(1).max(50) }).strict(),
+]);
 export type UsageEvent = z.infer<typeof usageEventSchema>;
 
 /** Remove credentials and personal paths before storing or displaying error text. */
@@ -66,6 +113,8 @@ export function sanitizeUsageEvent(event: UsageEvent): UsageEvent {
     ...event, eventId: event.eventId.toLowerCase(), installationId: event.installationId.toLowerCase(),
     sessionId: event.sessionId.toLowerCase(), occurredAt: new Date(event.occurredAt).toISOString(),
     properties: { ...event.properties,
+      ...(event.schemaVersion === 2 && event.properties.supersedesEventId
+        ? { supersedesEventId: event.properties.supersedesEventId.toLowerCase() } : {}),
       ...(event.properties.message !== undefined ? { message: scrubUsageText(event.properties.message) } : {}),
       ...(event.properties.stack !== undefined ? { stack: scrubUsageText(event.properties.stack) } : {}),
     },

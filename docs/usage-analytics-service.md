@@ -2,6 +2,21 @@
 
 实现日期：2026-09-24。服务器首版已观察到线上接收路由响应和包含菜单的静态资源；这不等同于真实客户数据验收。本轮扩展仍在隔离工作区，未发布或操作生产数据库。
 
+## 2026-10-29：v2 接收与采集终态修订（本地未发布）
+
+`GET /api/usage/capabilities` 返回无身份信息的 `{ "schemaVersions": [1, 2] }`，不缓存。客户端先探测能力；旧服务无该能力时将 v2 留在本地，继续发送 v1。批次与所有成员事件必须同版，禁止混批；v1 原白名单保持严格，不接受 v2 新字段。每批仍限 50 条/256 KiB、每事件 4 KiB。
+
+v2 仅新增事件 `usage_delivery_summary` 和 `collection_outcome_reconciled`。属性新增：`collectionId`（至多80字符标识）、`outcome`（saved/partial/failed/cancelled/unknown）、`stopReason`（标识）、`outcomeRevision`（0–1e9整数）、`supersedesEventId`（UUID）；`committedRows/failedRows/frameCount/queuedCount/droppedCount/invalidCount/expiredCount/capacityDroppedCount/storageFailureCount/suppressedCount/repeatedCount`（0–1e12整数）；`oldestQueuedAt`（带时区ISO时间）、`qualityId`（UUID）、`usageContext`（customer/internal/demo/test）、`summaryKind`（page_residence/legacy_frame_window）。这次不实现精确有效时长，历史 duration 保留为观测值。
+
+- v2 `collection_started` 必须有 `collectionId`；终态必须同时有该标识、outcome、result、stopReason、outcomeRevision 和三种采集计数。saved 对应 success，partial/failed 对应 failure，cancelled/unknown 各对应同名 result。
+- `collection_finished` 只接受 revision 0 且无 supersedes；`collection_outcome_reconciled` 必须 revision > 0 并引用前一修订事件，不可引用自己。前序暂缺仍保存事实，不能推断成功。
+- `usage_delivery_summary` 必须有 qualityId、queuedCount、droppedCount、invalidCount；它是诊断观测，不计业务使用。
+- 迁移 `0027_usage_collection_revisions.sql` 新增最小不可变修订回执，以来源/安装/collectionId/revision 为主键。同 eventId 异正文返回409；异 eventId 占用同 revision 返回 `409 COLLECTION_REVISION_CONFLICT`，整批回滚。先按现有迁移账本追加迁移，再发布能力接口；本轮没有对现有本机或生产业务库执行该迁移。
+- `usage.collectionOutcome` 仅向启用中的超管开放，返回最高 revision、latestEventId、缺失修订/前序数量、complete、contentUnavailable 和最新事件。2→0→1 补传只补链，不能把最新状态退回0或1；引用错误前序保持不完整。原始事件始终可查。
+- 统计只使用最新且完整的终态，按 collectionId 去重；saved 还必须 committedRows > 0 才计成功使用。全零空采集不计成功；旧版结果保持原观测口径，不把新修订计作第二次采集。保留策略删除正文后修订表仅留身份、前序和摘要，阻止重用revision及回退旧结果。
+
+本地验证：25项HTTP/契约/权限/展示测试、16项独立临时MySQL事务测试及TypeScript检查通过。`node scripts/test-usage-local-mysql.mjs` 使用 `.local/mysql.json` 中的二进制路径创建独立临时实例，绑定回环随机端口、测试后关闭并清理，不使用既有业务数据目录或账号。未执行生产迁移、部署、真实客户上传或全仓生产构建。
+
 ## 接入与部署顺序
 
 1. 在目标环境审查并备份数据库，执行仓库既有迁移流程，使 `0013`、`0014`、`0015_usage_analytics.sql` 按序生效；不要跳过原有迁移记录或手工重复执行。

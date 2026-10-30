@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import { and, asc, count, desc, eq, gte, lt, lte, sql, type SQL } from "drizzle-orm";
-import { agentChatSources, customers, licenseKeys, offlineKeys, usageEvents, usageSources } from "../drizzle/schema";
+import { agentChatSources, customers, licenseKeys, offlineKeys, usageCollectionRevisions, usageEvents, usageSources } from "../drizzle/schema";
 import { getDb } from "./db";
 import { AgentSyncError, authenticateLicenseUpload } from "./agentSyncStore";
 import { sanitizeUsageEvent, type UsageEvent, type UsageFilters } from "./usageSchema";
 import { usageAnalysisColumns, usageCustomerKey, usageFeatureCategory,
-  usageFeatureId, usageSystemType } from "./usageAnalyticsSql";
+  usageFeatureId, usageLatestCollectionOutcome, usageSuccessfulResult, usageSystemType } from "./usageAnalyticsSql";
 import { registerUsageGuard } from "./uploadRetention";
 
 export type UsagePrincipal = { sourceId: number; customerId: number | null; customerName: string };
@@ -52,6 +52,21 @@ export async function persistUsageBatch(principal: UsagePrincipal, events: Usage
         installationId: event.installationId, objectId: event.eventId }, payloadHash);
       if (guard.conflict) throw new AgentSyncError(409, "EVENT_CONTENT_CONFLICT");
       if (guard.blocked) continue;
+      if (event.schemaVersion === 2 && (event.eventName === "collection_finished" || event.eventName === "collection_outcome_reconciled")) {
+        const outcome = event.properties;
+        const identity = { sourceId: principal.sourceId, installationId: event.installationId,
+          collectionId: outcome.collectionId!, revision: outcome.outcomeRevision! };
+        await tx.insert(usageCollectionRevisions).values({ ...identity, eventId: event.eventId,
+          supersedesEventId: outcome.supersedesEventId, payloadHash })
+          .onDuplicateKeyUpdate({ set: { eventId: sql`event_id` } });
+        const [revision] = await tx.select().from(usageCollectionRevisions).where(and(
+          eq(usageCollectionRevisions.sourceId, identity.sourceId), eq(usageCollectionRevisions.installationId, identity.installationId),
+          eq(usageCollectionRevisions.collectionId, identity.collectionId), eq(usageCollectionRevisions.revision, identity.revision),
+        )).for("update");
+        if (!revision || revision.eventId !== event.eventId || revision.payloadHash !== payloadHash) {
+          throw new AgentSyncError(409, "COLLECTION_REVISION_CONFLICT");
+        }
+      }
       await tx.insert(usageEvents).values({
         sourceId: principal.sourceId, installationId: event.installationId, eventId: event.eventId,
         sessionId: event.sessionId, occurredMs: Date.parse(event.occurredAt),
@@ -189,15 +204,17 @@ export async function getUsageOverview(filters: UsageFilters) {
   const totals = await db.select(summaryColumns).from(usageEvents)
     .innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(where);
   const features = await db.select({ eventName: usageEvents.eventName, featureId: usageEvents.featureId,
-    ...summaryColumns, successes: sql<number>`SUM(IF(${usageEvents.result} = 'success', 1, 0))`.mapWith(Number),
-    failures: sql<number>`SUM(IF(${usageEvents.result} = 'failure', 1, 0))`.mapWith(Number),
-    durationMs: sql<number>`COALESCE(SUM(${usageEvents.durationMs}), 0)`.mapWith(Number),
+    ...summaryColumns, successes: sql<number>`SUM(IF(${usageSuccessfulResult}, 1, 0))`.mapWith(Number),
+    failures: sql<number>`SUM(IF(${usageEvents.result} = 'failure' AND
+      (${usageEvents.eventName} NOT IN ('collection_finished', 'collection_outcome_reconciled') OR ${usageLatestCollectionOutcome}), 1, 0))`.mapWith(Number),
+    durationMs: sql<number>`COALESCE(SUM(IF(${usageEvents.eventName} NOT IN ('collection_finished', 'collection_outcome_reconciled')
+      OR ${usageLatestCollectionOutcome}, ${usageEvents.durationMs}, 0)), 0)`.mapWith(Number),
   }).from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(where)
     .groupBy(usageEvents.eventName, usageEvents.featureId).orderBy(desc(count())).limit(100);
   const customerRows = await db.select({ customerKey, customerName: sql<string>`MAX(${usageSources.customerName})`,
     ...summaryColumns, lastOccurredMs: sql<number>`MAX(${usageEvents.occurredMs})`.mapWith(Number),
     monitoringMs: sql<number>`COALESCE(SUM(IF(${usageEvents.eventName} = 'monitoring_usage_summary', ${usageEvents.durationMs}, 0)), 0)`.mapWith(Number),
-    collectionMs: sql<number>`COALESCE(SUM(IF(${usageEvents.eventName} = 'collection_finished', ${usageEvents.durationMs}, 0)), 0)`.mapWith(Number),
+    collectionMs: usageAnalysisColumns.collectionMs,
     foregroundMs: sql<number>`COALESCE(SUM(IF(${usageEvents.eventName} = 'usage_session_summary' AND ${usageEvents.featureId} = 'foreground', ${usageEvents.durationMs}, 0)), 0)`.mapWith(Number),
     interactionMs: sql<number>`COALESCE(SUM(IF(${usageEvents.eventName} = 'usage_session_summary' AND ${usageEvents.featureId} = 'interaction', ${usageEvents.durationMs}, 0)), 0)`.mapWith(Number),
   }).from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(where)
@@ -241,4 +258,31 @@ export async function getUsageEventContext(input: { sourceId: number; installati
     .where(and(identity, eq(usageEvents.sessionId, target.sessionId), lte(usageEvents.occurredMs, target.occurredMs)))
     .orderBy(desc(usageEvents.occurredMs), desc(usageEvents.eventId)).limit(20);
   return rows.reverse().map(row => JSON.parse(row.payloadJson) as UsageEvent);
+}
+
+/** Read the highest immutable revision and report chain gaps without falling back to an older outcome. */
+export async function getUsageCollectionOutcome(input: { sourceId: number; installationId: string; collectionId: string }) {
+  const db = await database();
+  const identity = and(eq(usageCollectionRevisions.sourceId, input.sourceId),
+    eq(usageCollectionRevisions.installationId, input.installationId.toLowerCase()),
+    eq(usageCollectionRevisions.collectionId, input.collectionId));
+  const [latest] = await db.select().from(usageCollectionRevisions).where(identity)
+    .orderBy(desc(usageCollectionRevisions.revision)).limit(1);
+  if (!latest) return null;
+  const [chain] = await db.select({ revisions: count(),
+    missingPredecessors: sql<number>`SUM(CASE WHEN usage_collection_revisions.revision > 0 AND NOT EXISTS (
+      SELECT 1 FROM usage_collection_revisions previous WHERE previous.source_id = usage_collection_revisions.source_id
+      AND previous.installation_id = usage_collection_revisions.installation_id AND previous.collection_id = usage_collection_revisions.collection_id
+      AND previous.revision = usage_collection_revisions.revision - 1 AND previous.event_id = usage_collection_revisions.supersedes_event_id
+    ) THEN 1 ELSE 0 END)`.mapWith(Number),
+  }).from(usageCollectionRevisions).where(identity);
+  const [content] = await db.select({ payloadJson: usageEvents.payloadJson }).from(usageEvents).where(and(
+    eq(usageEvents.sourceId, input.sourceId), eq(usageEvents.installationId, input.installationId.toLowerCase()),
+    eq(usageEvents.eventId, latest.eventId),
+  )).limit(1);
+  const missingRevisions = latest.revision + 1 - chain.revisions;
+  return { collectionId: latest.collectionId, latestRevision: latest.revision, latestEventId: latest.eventId,
+    missingRevisions, missingPredecessors: chain.missingPredecessors,
+    complete: missingRevisions === 0 && chain.missingPredecessors === 0,
+    contentUnavailable: !content, event: content ? JSON.parse(content.payloadJson) as UsageEvent : null };
 }

@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import express, { type Express, type Request, type Response } from "express";
 import { TRPCError } from "@trpc/server";
+import { parse } from "date-fns";
 import { getActiveSuperAdmin } from "./db";
 import { buildFeishuKeyRequestResolvedCard } from "./feishuKeyRequestCard";
 import { reviewKeyGenerationRequest } from "./keyGenerationRequestApproval";
@@ -9,6 +10,8 @@ export const FEISHU_KEY_REQUEST_CALLBACK_PATH =
   "/api/feishu/key-request/card-action";
 
 type JsonRecord = Record<string, unknown>;
+type CallbackTimestampUnit = "seconds" | "milliseconds" | "microseconds" | "nanoseconds" | "datetime" | "invalid";
+type CallbackTimestampFormat = "integer" | "decimal" | "scientific" | "go_time" | "invalid";
 
 type FeishuCallbackConfig = {
   appId: string;
@@ -29,6 +32,14 @@ export class FeishuCallbackError extends Error {
   constructor(
     message: string,
     readonly httpStatus: number,
+    readonly diagnostics?: {
+      timestampUnit: CallbackTimestampUnit;
+      timestampFormat?: CallbackTimestampFormat;
+      clockSkewSeconds: number | null;
+      timestampLength?: number;
+      timestampShape?: string;
+      parsedDateClockSkewSeconds?: number | null;
+    },
   ) {
     super(message);
     this.name = "FeishuCallbackError";
@@ -138,6 +149,15 @@ function getCallbackConfig(): FeishuCallbackConfig {
   };
 }
 
+function parseGoCallbackTimestamp(timestamp: string) {
+  if (timestamp.length > 128) return NaN;
+  const parts = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))? ([+-](?:[01]\d|2[0-3])[0-5]\d) (?:[A-Za-z]{1,16}|[+-]\d{2,4})(?: m=[+-]\d{1,18}\.\d{9})?$/.exec(timestamp);
+  if (!parts) return NaN;
+  // Go's monotonic suffix is process-local; only the wall time and numeric zone travel.
+  const milliseconds = (parts[2] || "").padEnd(3, "0").slice(0, 3);
+  return parse(`${parts[1]}.${milliseconds} ${parts[3]}`, "yyyy-MM-dd HH:mm:ss.SSS xx", new Date(0)).getTime();
+}
+
 export function verifyFeishuCallback(params: {
   rawBody: string;
   payload: JsonRecord;
@@ -160,14 +180,6 @@ export function verifyFeishuCallback(params: {
   if (!timestamp || !nonce || !signature) {
     throw new FeishuCallbackError("飞书回调缺少签名请求头", 401);
   }
-  const timestampNumber = Number(timestamp);
-  const now = params.now ?? Date.now();
-  if (
-    !Number.isFinite(timestampNumber) ||
-    Math.abs(now - timestampNumber * 1000) > 5 * 60 * 1000
-  ) {
-    throw new FeishuCallbackError("飞书回调时间戳已过期", 401);
-  }
   const expected = calculateFeishuCallbackSignature({
     timestamp,
     nonce,
@@ -176,6 +188,51 @@ export function verifyFeishuCallback(params: {
   });
   if (!safeEqual(signature, expected)) {
     throw new FeishuCallbackError("飞书回调签名无效", 401);
+  }
+
+  // Interpret numeric representations only after authenticating their original text.
+  const numeric = timestamp.length <= 32 && /^\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(timestamp);
+  const timestampNumber = numeric ? Number(timestamp) : NaN;
+  let timestampUnit: CallbackTimestampUnit = !Number.isFinite(timestampNumber) || timestampNumber <= 0
+    ? "invalid"
+    : timestampNumber >= 1e18 ? "nanoseconds"
+    : timestampNumber >= 1e15 ? "microseconds"
+    : timestampNumber >= 1e12 ? "milliseconds" : "seconds";
+  let timestampFormat: CallbackTimestampFormat = !numeric ? "invalid"
+    : /[eE]/.test(timestamp) ? "scientific" : timestamp.includes(".") ? "decimal" : "integer";
+  let timestampMilliseconds = timestampUnit === "seconds"
+    ? timestampNumber * 1000
+    : timestampUnit === "milliseconds" ? timestampNumber
+    : timestampUnit === "microseconds" ? timestampNumber / 1000
+    : timestampUnit === "nanoseconds" ? timestampNumber / 1e6 : NaN;
+  if (timestampUnit === "invalid") {
+    const goTimestamp = parseGoCallbackTimestamp(timestamp);
+    if (Number.isFinite(goTimestamp)) {
+      timestampUnit = "datetime";
+      timestampFormat = "go_time";
+      timestampMilliseconds = goTimestamp;
+    }
+  }
+  const now = params.now ?? Date.now();
+  if (
+    !Number.isFinite(timestampMilliseconds) ||
+    Math.abs(now - timestampMilliseconds) > 5 * 60 * 1000
+  ) {
+    throw new FeishuCallbackError("飞书回调时间戳已过期", 401, {
+      timestampUnit,
+      timestampFormat,
+      clockSkewSeconds: Number.isFinite(timestampMilliseconds)
+        ? Math.round((now - timestampMilliseconds) / 1000) : null,
+      ...(timestampUnit === "invalid" ? {
+        timestampLength: timestamp.length,
+        timestampShape: timestamp.slice(0, 64).replace(/\d/g, "0").replace(/[A-Za-z]/g, "a").replace(/[^0a\s:.,+\-/]/g, "?"),
+        parsedDateClockSkewSeconds: Number.isFinite(Date.parse(timestamp))
+          ? Math.round((now - Date.parse(timestamp)) / 1000) : null,
+      } : {}),
+    });
+  }
+  if (timestampUnit !== "seconds" || timestampFormat !== "integer") {
+    console.info("[Feishu] 已验证回调时间戳格式", { timestampUnit, timestampFormat });
   }
 }
 
@@ -314,6 +371,11 @@ async function handleCardAction(params: {
 
 function sendCallbackError(res: Response, error: unknown) {
   if (error instanceof FeishuCallbackError) {
+    console.warn("[Feishu] 密钥审批回调被拒绝", {
+      status: error.httpStatus,
+      reason: error.message,
+      ...error.diagnostics,
+    });
     res.status(error.httpStatus).json(callbackToast("error", error.message));
     return;
   }

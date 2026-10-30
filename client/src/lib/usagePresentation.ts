@@ -73,8 +73,8 @@ type FeatureMetric = { featureId: string; category: string; uses: number; succes
 /** Product metrics use domain evidence, never the sum of exposure/attempt/result event counts. */
 export function usageFeaturePrimaryMetric(row: FeatureMetric) {
   if (row.category === "diagnostic") return { label: "运行记录", value: `${row.observedEvents} 条` };
-  if (row.featureId === "monitoring") return { label: "监测时长", value: row.monitoringSamples ? usageDurationText(row.monitoringMs) : "未上报时长" };
-  if (row.featureId === "collection") return { label: "成功采集", value: `${row.successes} 次` };
+  if (row.featureId === "monitoring") return { label: "监测观测时长", value: row.monitoringSamples ? usageDurationText(row.monitoringMs) : "未上报时长" };
+  if (row.featureId === "collection") return { label: "已上报成功采集", value: `${row.successes} 次` };
   if (row.featureId === "export") return { label: "成功导出", value: `${row.successes} 次` };
   if (row.featureId === "playback") return { label: "开始回放", value: `${row.uses} 次` };
   if (row.featureId === "system_navigation") return { label: "系统访问记录", value: `${row.entries ?? 0} 条` };
@@ -87,6 +87,7 @@ export const usageEventLabels: Record<UsageEvent["eventName"], string> = {
   collection_started: "开始采集", collection_finished: "采集结束", export_result: "导出结果", playback_started: "开始回放",
   algorithm_result: "算法结果", analysis_tool_used: "分析工具操作", custom_system_saved: "系统配置操作结果",
   agent_task_result: "Agent 操作结果", usage_session_summary: "运行与使用摘要", error_reported: "错误上报",
+  usage_delivery_summary: "上报质量摘要", collection_outcome_reconciled: "采集终态修订",
 };
 
 /** Match the UTC date buckets used by the API instead of mixing them with browser-local timestamps. */
@@ -105,12 +106,18 @@ export function usageDurationText(value: number) {
 /** Each numeric field has an explicit unit and meaning; memory is never formatted as a time. */
 export function usageMetricText(properties: UsageEvent["properties"]) {
   const duration = properties.durationMs ?? 0, count = properties.count ?? 0;
+  if ("outcomeRevision" in properties && properties.outcomeRevision !== undefined) {
+    return `终态 ${properties.outcome} · 修订 ${properties.outcomeRevision} · 已落库 ${properties.committedRows} 行 · 写入失败 ${properties.failedRows} 行 · 收到 ${properties.frameCount} 帧`;
+  }
+  if ("qualityId" in properties && properties.qualityId) {
+    return `待上报 ${properties.queuedCount} 条 · 丢弃 ${properties.droppedCount} 条 · 无效 ${properties.invalidCount} 条`;
+  }
   if (properties.featureId === "main_memory") return `主进程峰值驻留内存：${count} MiB`;
   if (properties.featureId === "main_event_loop") return `窗口最大延迟：${Math.round(duration)} ms · ≥250 ms 的延迟采样：${count} 次`;
   if (properties.featureId === "renderer_long_task") return `≥50 ms 的页面长任务：${count} 次 · 累计 ${(duration / 1000).toFixed(1)} 秒`;
   if (properties.featureId === "sensor_frame_gap") return `大于 2 秒的数据流间隔：${count} 次 · 最大 ${(duration / 1000).toFixed(1)} 秒（不等于丢帧数）`;
   if (properties.featureId === "sensor_frames") return `收到 ${count} 帧 · 观测 ${(duration / 1000).toFixed(1)} 秒${duration > 0 ? ` · 平均 ${(count * 1000 / duration).toFixed(1)} 帧/秒` : ""}（不等于丢帧统计）`;
-  if (properties.featureId === "collection" && properties.count !== undefined) return `已保存 ${count} 条帧记录 · 采集 ${(duration / 1000).toFixed(1)} 秒`;
+  if (properties.featureId === "collection" && properties.count !== undefined) return `旧版上报 ${count} 条帧记录 · 观测 ${(duration / 1000).toFixed(1)} 秒`;
   if (properties.featureId === "webpage_update" && properties.action === "download_ready") return `实际下载 ${(count / 1048576).toFixed(2)} MiB · 耗时 ${(duration / 1000).toFixed(1)} 秒`;
   return [properties.durationMs !== undefined ? `耗时/时长：${(duration / 1000).toFixed(1)} 秒` : null,
     properties.count !== undefined ? `${properties.format === "csv" ? "文件数" : "数量"}：${count}` : null].filter(Boolean).join(" · ");

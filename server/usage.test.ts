@@ -2,7 +2,7 @@ import express from "express";
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { registerUsage, USAGE_PATH } from "./usage";
+import { registerUsage, USAGE_CAPABILITIES_PATH, USAGE_PATH } from "./usage";
 import { AgentSyncError } from "./agentSyncStore";
 import { MAX_USAGE_BATCH_BYTES, sanitizeUsageEvent, usageBatchSchema, usageEventSchema } from "./usageSchema";
 
@@ -40,6 +40,24 @@ async function harness(overrides: Partial<Parameters<typeof registerUsage>[1]> =
 }
 
 describe("usage receiver contract", () => {
+  it("advertises versions without credentials and accepts an independent v2 batch", async () => {
+    const { send, url, authenticate, persist } = await harness();
+    const capabilities = await fetch(new URL(USAGE_CAPABILITIES_PATH, url));
+    expect(capabilities.status).toBe(200);
+    expect(capabilities.headers.get("cache-control")).toBe("no-store");
+    expect(await capabilities.json()).toEqual({ schemaVersions: [1, 2] });
+    expect(authenticate).not.toHaveBeenCalled();
+    const quality = { ...sampleEvent(), schemaVersion: 2, eventName: "usage_delivery_summary",
+      properties: { qualityId: randomUUID(), queuedCount: 2, droppedCount: 0, invalidCount: 0 } };
+    const response = await send({ schemaVersion: 2, events: [quality] });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ accepted: true, eventIds: [quality.eventId] });
+    expect(persist).toHaveBeenCalledWith(expect.anything(), [quality]);
+    persist.mockClear();
+    expect((await send({ schemaVersion: 1, events: [quality] })).status).toBe(400);
+    expect((await send({ schemaVersion: 2, events: [{ ...quality, properties: { ...quality.properties, filename: "private" } }] })).status).toBe(400);
+    expect(persist).not.toHaveBeenCalled();
+  });
   it("accepts bounded RSA license headers through the same authenticated receiver", async () => {
     const key = Buffer.from(JSON.stringify({ payload: "fixture", signature: "fixture" })).toString("base64");
     const { send, authenticate } = await harness();

@@ -26,3 +26,11 @@ export const usageEvents = mysqlTable("usage_events", {
   index("usage_errors").on(table.eventName, table.occurredMs),
   index("usage_retention_received").on(table.receivedAt),
 ]);
+
+// Minimal immutable revision receipts survive event-content retention and prevent revision reuse.
+export const usageCollectionRevisions = mysqlTable("usage_collection_revisions", {
+  sourceId: int("source_id").notNull(), installationId: varchar("installation_id", { length: 36 }).notNull(),
+  collectionId: varchar("collection_id", { length: 80 }).notNull(), revision: int("revision").notNull(),
+  eventId: varchar("event_id", { length: 36 }).notNull(), supersedesEventId: varchar("supersedes_event_id", { length: 36 }),
+  payloadHash: varchar("payload_hash", { length: 64 }).notNull(),
+}, table => [primaryKey({ columns: [table.sourceId, table.installationId, table.collectionId, table.revision] })]);

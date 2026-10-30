@@ -2,7 +2,7 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { router, superAdminProcedure } from "./_core/trpc";
 import { usageFiltersSchema } from "./usageSchema";
-import { getUsageAnalysisSummary, getUsageDashboard, getUsageEventContext, getUsageOverview, listUsageCustomerUsage,
+import { getUsageAnalysisSummary, getUsageCollectionOutcome, getUsageDashboard, getUsageEventContext, getUsageOverview, listUsageCustomerUsage,
   listUsageCustomers, listUsageEvents, listUsageFeatureUsage, listUsageSystems } from "./usageStore";
 
 const usageAdmin = superAdminProcedure.use(({ ctx, next }) => {
@@ -34,4 +34,10 @@ export const usageRouter = router({
       if (!context) throw new TRPCError({ code: "NOT_FOUND", message: "事件不存在" });
       return context;
     }),
+  collectionOutcome: usageAdmin.input(z.object({ sourceId: z.number().int().positive(), installationId: z.string().uuid(),
+    collectionId: z.string().regex(/^[A-Za-z0-9_.:-]{1,80}$/) }).strict()).query(async ({ input }) => {
+    const outcome = await getUsageCollectionOutcome(input);
+    if (!outcome) throw new TRPCError({ code: "NOT_FOUND", message: "采集终态不存在" });
+    return outcome;
+  }),
 });

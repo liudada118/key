@@ -8,7 +8,7 @@ import { generateLicenseKey } from "../shared/crypto";
 
 let testDb: ReturnType<typeof drizzle>;
 vi.mock("./db", () => ({ getDb: async () => testDb }));
-import { authenticateUsage, getUsageDashboard, getUsageAnalysisSummary, getUsageEventContext, getUsageOverview,
+import { authenticateUsage, getUsageCollectionOutcome, getUsageDashboard, getUsageAnalysisSummary, getUsageEventContext, getUsageOverview,
   listUsageCustomerUsage, listUsageEvents, listUsageFeatureUsage, listUsageSystems, persistUsageBatch } from "./usageStore";
 const adminUrl = process.env.USAGE_TEST_ADMIN_URL;
 
@@ -37,7 +37,7 @@ describe.skipIf(!adminUrl)("usage MySQL transaction and attribution", () => {
     await pool.query("INSERT INTO customers VALUES (1,1,'Company A'),(2,1,'Company B'),(3,0,'Inactive')");
     await pool.query("CREATE TABLE licenseKeys (id int AUTO_INCREMENT PRIMARY KEY, keyString text, status varchar(32), expireTimestamp bigint, isDeleted boolean DEFAULT 0, customerId int, customerName varchar(256))");
     await pool.query("CREATE TABLE offlineKeys (id int PRIMARY KEY, customerId int, customerName varchar(256))");
-    for (const file of ["0013_agent_chat_sync.sql", "0014_agent_chat_license_auth.sql", "0015_usage_analytics.sql", "0021_agent_chat_offline_sources.sql", "0022_upload_retention.sql", "0026_agent_legacy_license_sources.sql"]) {
+    for (const file of ["0013_agent_chat_sync.sql", "0014_agent_chat_license_auth.sql", "0015_usage_analytics.sql", "0021_agent_chat_offline_sources.sql", "0022_upload_retention.sql", "0026_agent_legacy_license_sources.sql", "0027_usage_collection_revisions.sql"]) {
       const migration = await readFile(new URL(`../drizzle/${file}`, import.meta.url), "utf8");
       for (const statement of migration.split("--> statement-breakpoint")) await pool.query(statement);
     }
@@ -45,6 +45,68 @@ describe.skipIf(!adminUrl)("usage MySQL transaction and attribution", () => {
   afterAll(async () => {
     await pool?.end();
     if (admin) { await admin.query(`DROP DATABASE IF EXISTS \`${databaseName}\``); await admin.end(); }
+  });
+
+  it("retains out-of-order 2/0/1 facts, never regresses, and rejects a second ID for revision 2", async () => {
+    const scope = { sourceId: 6001, customerId: 6001, customerName: "Revision Fixture" };
+    const installationId = randomUUID(), collectionId = randomUUID();
+    const first = event({ schemaVersion: 2, installationId, eventName: "collection_finished", properties: {
+      featureId: "collection", collectionId, outcome: "failed", result: "failure", outcomeRevision: 0,
+      stopReason: "storage_error", committedRows: 0, failedRows: 8, frameCount: 8, durationMs: 1000 } });
+    const second = event({ ...first, eventId: randomUUID(), eventName: "collection_outcome_reconciled", properties: {
+      ...first.properties, outcome: "partial", result: "failure", outcomeRevision: 1,
+      supersedesEventId: first.eventId, committedRows: 3, failedRows: 5 } });
+    const latest = event({ ...second, eventId: randomUUID(), properties: { ...second.properties,
+      outcome: "saved", result: "success", outcomeRevision: 2, supersedesEventId: second.eventId,
+      committedRows: 8, failedRows: 0 } });
+    const identity = { sourceId: scope.sourceId, installationId, collectionId };
+    const scoped = { ...filters, customerKey: "customer:6001" };
+    await persistUsageBatch(scope, [latest]);
+    expect(await getUsageCollectionOutcome(identity)).toMatchObject({ latestRevision: 2, missingRevisions: 2,
+      missingPredecessors: 1, complete: false, event: latest });
+    expect(await getUsageAnalysisSummary(scoped)).toMatchObject({ uses: 0, successes: 0 });
+    await persistUsageBatch(scope, [first]);
+    expect(await getUsageCollectionOutcome(identity)).toMatchObject({ latestRevision: 2, missingRevisions: 1, complete: false });
+    await persistUsageBatch(scope, [second]);
+    expect(await getUsageCollectionOutcome(identity)).toMatchObject({ latestRevision: 2, missingRevisions: 0,
+      missingPredecessors: 0, complete: true, event: latest });
+    expect(await getUsageAnalysisSummary(scoped)).toMatchObject({ uses: 1, successes: 1, failures: 0, collectionMs: 1000 });
+    await Promise.all(Array.from({ length: 3 }, () => persistUsageBatch(scope, [first, second, latest])));
+    expect(await rows("SELECT event_id FROM usage_events WHERE source_id=6001")).toHaveLength(3);
+    await expect(persistUsageBatch(scope, [{ ...latest, eventId: randomUUID() }])).rejects.toMatchObject({ status: 409, code: "COLLECTION_REVISION_CONFLICT" });
+    await expect(persistUsageBatch(scope, [{ ...latest, properties: { ...latest.properties, committedRows: 9 } }])).rejects.toMatchObject({ status: 409 });
+    expect(await getUsageAnalysisSummary(scoped)).toMatchObject({ uses: 1, successes: 1, failures: 0 });
+    const reversed = event({ ...latest, eventId: randomUUID(), properties: { ...latest.properties, outcome: "failed",
+      result: "failure", outcomeRevision: 3, supersedesEventId: latest.eventId, committedRows: 0, failedRows: 8 } });
+    await persistUsageBatch(scope, [reversed]);
+    await persistUsageBatch(scope, [latest]);
+    expect(await getUsageAnalysisSummary(scoped)).toMatchObject({ uses: 0, successes: 0, failures: 1 });
+  });
+
+  it("does not count saved-but-empty records or quality reports as confirmed usage", async () => {
+    const scope = { sourceId: 6002, customerId: 6002, customerName: "Empty Fixture" };
+    const empty = event({ schemaVersion: 2, eventName: "collection_finished", properties: { collectionId: randomUUID(),
+      outcome: "saved", result: "success", outcomeRevision: 0, stopReason: "manual_stop", committedRows: 0, failedRows: 0, frameCount: 0 } });
+    await persistUsageBatch(scope, [empty, event({ schemaVersion: 2, eventName: "usage_delivery_summary", properties: {
+      qualityId: randomUUID(), queuedCount: 0, droppedCount: 0, invalidCount: 0 } })]);
+    expect(await getUsageAnalysisSummary({ ...filters, customerKey: "customer:6002" })).toMatchObject({ usedCustomers: 0, uses: 0, successes: 0 });
+  });
+
+  it("keeps revision conflicts atomic and identities isolated, reporting mismatched predecessors", async () => {
+    const scope = { sourceId: 6003, customerId: 6003, customerName: "Isolation Fixture" };
+    const first = event({ schemaVersion: 2, eventName: "collection_finished", properties: { collectionId: "collection-1",
+      outcome: "saved", result: "success", outcomeRevision: 0, stopReason: "manual_stop", committedRows: 1, failedRows: 0, frameCount: 1 } });
+    await persistUsageBatch(scope, [first]);
+    const fresh = event();
+    await expect(persistUsageBatch(scope, [fresh, { ...first, eventId: randomUUID() }])).rejects.toMatchObject({ status: 409 });
+    expect(await rows("SELECT event_id FROM usage_events WHERE event_id=?", [fresh.eventId])).toHaveLength(0);
+    await persistUsageBatch({ ...scope, sourceId: 6004 }, [first]);
+    await persistUsageBatch(scope, [{ ...first, installationId: randomUUID() }]);
+    const mismatch = event({ ...first, eventId: randomUUID(), eventName: "collection_outcome_reconciled", properties: {
+      ...first.properties, outcomeRevision: 1, supersedesEventId: randomUUID() } });
+    await persistUsageBatch(scope, [mismatch]);
+    expect(await getUsageCollectionOutcome({ sourceId: scope.sourceId, installationId: first.installationId, collectionId: "collection-1" }))
+      .toMatchObject({ latestRevision: 1, missingRevisions: 0, missingPredecessors: 1, complete: false });
   });
 
   it("deduplicates concurrent retries and rejects changed bodies without overwriting", async () => {
