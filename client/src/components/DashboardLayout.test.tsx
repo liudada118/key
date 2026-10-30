@@ -64,7 +64,7 @@ describe("sidebar disclosure and direct license navigation", () => {
     expect(html).toContain("反馈管理");
     expect(html).toContain("公司系统库");
     expect(html).not.toContain("Agent 聊天");
-    expect(html).not.toContain("SDK 获取");
+    expect(html).not.toContain("SDK 申请与登记");
     expect(html).not.toContain("异常密钥");
   });
 
@@ -73,7 +73,7 @@ describe("sidebar disclosure and direct license navigation", () => {
     const html = render();
     expect(html).toContain("Agent 聊天");
     expect(html).toContain("客户使用分析");
-    expect(html).toContain("SDK 获取");
+    expect(html).toContain("SDK 申请与登记");
   });
 
   it.each(["/limited-generate", "/limited-keys"])("keeps the restricted category visible and marks %s active", (path) => {

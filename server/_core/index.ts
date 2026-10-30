@@ -214,9 +214,10 @@ async function startServer() {
     }
   });
 
-  // SDK 获取登记接口（开发者站点 shroomSDKWEB 点「获取 SDK」时提交）
+  // SDK 密钥申请与下载登记接口：新申请使用 source="sdk-license"，历史下载来源保持兼容。
   // 与 /feedback 同款：纯 REST + CORS，站点一次 fetch 即可；无需鉴权（公开提交）
-  // 注意这不是审批 —— 站点那边填完表单当场就开始下载，这里失败也不会挡住用户拿到 SDK。
+  // 这里只保存联系资料，不审批或发钥。SDK 下载无需登记；密钥申请须收到 ok:true 才算提交成功。
+  // 管理员联系确认后沿用现有产品密钥生成流程，上位机下载登记仍由站点独立处理。
   // 请求: POST /sdk-requests  body: { name, phone?, email?, organization?, sdkVersion?, source?, userAgent? }
   // 返回: { ok: true, id } | { ok: false, error }
   app.options("/sdk-requests", (_req, res) => {
