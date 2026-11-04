@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { usageActionLabel, usageErrorLabel, usageFeatureLabel, usageDurationText, usageMetricText, usageSystemLabel, usageFeaturePrimaryMetric, usageTime } from "./usagePresentation";
+import { beijingDateKey, beijingDayStartMs } from "@shared/time";
 
 describe("usage dashboard metric meanings", () => {
   it("presents new controls, frame summaries and confirmed rows in their own units", () => {
@@ -40,9 +41,26 @@ describe("usage dashboard metric meanings", () => {
     expect(usageFeaturePrimaryMetric({ ...row, featureId: "tuning_gaussian" }).value).toBe("4 次");
     expect(usageFeaturePrimaryMetric({ ...row, featureId: "main_memory", category: "diagnostic" }).value).toBe("1000 条");
   });
-  it("uses UTC consistently and distinguishes an absent last use from the Unix epoch", () => {
+  it("uses Beijing time consistently and distinguishes missing dates from the Unix epoch", () => {
     expect(usageTime(null)).toBe("未观测到");
-    expect(usageTime("2026-10-16T23:30:00Z")).toContain("2026/10/16");
+    expect(usageTime(undefined)).toBe("未观测到");
+    expect(usageTime(0)).toBe("1970/1/1 08:00:00");
+    expect(usageTime("2026-10-16T23:30:00Z")).toBe("2026/10/17 07:30:00");
+    expect(usageTime("2026-11-03T02:57:18Z")).toBe("2026/11/3 10:57:18");
+    expect(usageTime(new Date("2026-11-03T02:57:18Z"))).toBe("2026/11/3 10:57:18");
+    expect(usageTime("2026-11-03T10:57:18+08:00")).toBe("2026/11/3 10:57:18");
     expect(usageSystemLabel("jqbed")).toBe("小床监测");
+  });
+  it.each([
+    ["2026-11-02T15:59:59.999Z", "2026-11-02"],
+    ["2026-11-02T16:00:00.000Z", "2026-11-03"],
+    ["2026-12-31T16:00:00.000Z", "2027-01-01"],
+    ["2028-02-28T16:00:00.000Z", "2028-02-29"],
+  ])("uses Beijing date boundaries for %s", (instant, date) => {
+    expect(beijingDateKey(instant)).toBe(date);
+    expect(beijingDateKey(Date.parse(instant))).toBe(date);
+    expect(beijingDayStartMs(date)).toBe(Date.parse(`${date}T00:00:00+08:00`));
+    expect(Date.parse(instant)).toBeGreaterThanOrEqual(beijingDayStartMs(date));
+    expect(Date.parse(instant)).toBeLessThan(beijingDayStartMs(date) + 86400000);
   });
 });

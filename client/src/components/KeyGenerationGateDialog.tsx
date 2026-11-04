@@ -53,7 +53,7 @@ type KeyGenerationGateDialogProps = {
   category: "production" | "rental";
   generationRemark?: string;
   canGenerateWithoutContract: boolean;
-  /** 仅用于文案区分：直接生成的权限来自超管身份，还是来自「已关闭强制绑定合同」 */
+  /** 仅区分超级管理员与普通管理员的说明文案。 */
   isSuperAdmin?: boolean;
   directGenerationPending: boolean;
   onGenerateWithContract: (contract: GenerationContract) => void;
@@ -392,7 +392,7 @@ export default function KeyGenerationGateDialog({
               {canGenerateWithoutContract
                 ? isSuperAdmin
                   ? "超级管理员可直接生成，不创建审批申请。"
-                  : "当前已关闭「生成密钥必须绑定合同」，可直接生成，不创建审批申请。"
+                  : "管理员可直接生成，不创建审批申请。"
                 : "无合同密钥需由超级管理员批准，批准后系统自动生成。"}
             </div>
             <div className="mt-5 space-y-2">

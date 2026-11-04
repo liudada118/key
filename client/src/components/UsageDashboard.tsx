@@ -7,6 +7,7 @@ type Day = { day: number; usedCustomers: number; monitoringMs: number; errors: n
 type DashboardData = { days: Day[]; features: { featureId: string; usedCustomers: number; uses: number }[];
   customers: { customerKey: string; customerName: string; monitoringMs: number; uses: number }[] };
 
+// Day numbers encode calendar labels, not absolute midnights; SQL has already applied UTC+8.
 export function fillUsageDays(from: string, to: string, rows: Day[]) {
   const start = Date.parse(from) / 86400000, end = Date.parse(to) / 86400000;
   const indexed = new Map(rows.map(row => [row.day, row]));
@@ -38,7 +39,7 @@ export default function UsageDashboard({ data, loading, error, from, to, retry, 
             <Line dataKey={metric} name={chartLabel} type="linear" stroke={metric === "errors" ? "var(--chart-5)" : metric === "monitoringMinutes" ? "var(--chart-2)" : "var(--chart-1)"} strokeWidth={2} dot={days.length <= 7} activeDot={{ r: 4 }} isAnimationActive={false} />
           </LineChart></ResponsiveContainer>
         </div> : <p className="flex h-56 items-center justify-center text-sm text-muted-foreground">此范围内尚未收到使用上报</p>}
-        <details className="mt-3 text-xs text-muted-foreground"><summary className="min-h-11 w-fit cursor-pointer py-3">每日数值 · UTC</summary><div className="max-h-64 overflow-auto"><table className="w-full text-left"><caption className="sr-only">使用趋势每日数值</caption><thead><tr><th className="py-2">日期</th><th>使用客户 / 来源</th><th>监测观测时长</th><th>错误</th></tr></thead><tbody>{days.map(row => <tr key={row.date} className="border-t"><td className="py-2">{row.date}</td><td>{row.usedCustomers}</td><td>{usageDurationText(row.monitoringMs)}</td><td>{row.errors}</td></tr>)}</tbody></table></div></details>
+        <details className="mt-3 text-xs text-muted-foreground"><summary className="min-h-11 w-fit cursor-pointer py-3">每日数值 · 北京时间</summary><div className="max-h-64 overflow-auto"><table className="w-full text-left"><caption className="sr-only">使用趋势每日数值</caption><thead><tr><th className="py-2">日期</th><th>使用客户 / 来源</th><th>监测观测时长</th><th>错误</th></tr></thead><tbody>{days.map(row => <tr key={row.date} className="border-t"><td className="py-2">{row.date}</td><td>{row.usedCustomers}</td><td>{usageDurationText(row.monitoringMs)}</td><td>{row.errors}</td></tr>)}</tbody></table></div></details>
       </section>
       <div className="grid min-w-0 gap-x-8 border-b lg:grid-cols-2">
         <DashboardBreakdown title="业务功能使用排行" rows={data.features.filter(row => row.usedCustomers > 0).map(row => ({ id: row.featureId, label: usageFeatureLabel(row.featureId), value: row.usedCustomers, displayValue: `${row.usedCustomers} 个`, note: `已确认使用 ${row.uses} 次`, onClick: () => onFeature(row.featureId) }))} note="按使用客户 / 来源数排序，前 8 项；同一客户使用多个功能时分别计入。" empty="暂无已确认的业务功能使用" />

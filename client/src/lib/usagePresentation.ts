@@ -1,5 +1,6 @@
 import type { UsageEvent } from "../../../server/usageSchema";
 import { SENSOR_LABELS } from "@shared/licenseScopes";
+import { formatBeijingDateTime } from "@shared/time";
 
 export const usageFeatureLabels: Record<string, string> = {
   application: "软件运行", system_navigation: "展示系统访问", monitoring: "传感器监测", collection: "数据采集", export: "CSV 导出", playback: "历史回放",
@@ -90,9 +91,9 @@ export const usageEventLabels: Record<UsageEvent["eventName"], string> = {
   usage_delivery_summary: "上报质量摘要", collection_outcome_reconciled: "采集终态修订",
 };
 
-/** Match the UTC date buckets used by the API instead of mixing them with browser-local timestamps. */
+/** Match Beijing calendar filters and buckets without using the browser's local timezone. */
 export function usageTime(value: string | number | Date | null | undefined) {
-  return value == null ? "未观测到" : new Date(value).toLocaleString("zh-CN", { timeZone: "UTC", hour12: false });
+  return value == null ? "未观测到" : formatBeijingDateTime(value);
 }
 
 /** Keep short observed durations visible instead of rounding them to zero hours. */

@@ -23,7 +23,7 @@ describe("dashboard presentation", () => {
     expect(html).toContain('role="alert"');
     expect(html).not.toContain("stale counts");
   });
-  it("fills UTC dates over month boundaries without mixing units or exceeding the bound", () => {
+  it("fills Beijing calendar labels over month boundaries without mixing units or exceeding the bound", () => {
     const day = Date.parse("2026-09-30") / 86400000;
     const result = fillUsageDays("2026-09-30", "2026-10-02", [{ day, usedCustomers: 3, monitoringMs: 120000, errors: 2 }]);
     expect(result.map(row => row.date)).toEqual(["2026-09-30", "2026-10-01", "2026-10-02"]);

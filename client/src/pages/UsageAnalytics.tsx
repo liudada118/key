@@ -11,6 +11,7 @@ import UsageEventList from "@/components/UsageEventList";
 import UsageDashboard from "@/components/UsageDashboard";
 import UploadRetentionPanel from "@/components/UploadRetentionPanel";
 import { usageFeatureLabel, usageFeaturePrimaryMetric, usageSystemLabel, usageDurationText, usageTime } from "@/lib/usagePresentation";
+import { beijingDateKey } from "@shared/time";
 import "./usage-analytics.css";
 
 type View = "customers" | "features";
@@ -19,10 +20,11 @@ type Detail = { type: "customer" | "feature"; id: string; label: string; categor
 type Sort = "recent" | "usage" | "errors";
 const selectClass = "h-10 min-w-0 max-w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
-/** Retain the API's existing UTC calendar contract for controls and timestamps. */
+/** Select complete Beijing calendar dates even when the browser is in another timezone. */
 function recentFilters(days = 30): UsageFilters {
-  return { from: new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10),
-    to: new Date().toISOString().slice(0, 10), environment: "production", identityScope: "company" };
+  const now = Date.now();
+  return { from: beijingDateKey(now - (days - 1) * 86400000),
+    to: beijingDateKey(now), environment: "production", identityScope: "company" };
 }
 function Tip({ label, children }: { label: string; children: ReactNode }) {
   return <Tooltip><TooltipTrigger asChild><button type="button" aria-label={label} className="inline-flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><Info aria-hidden="true" className="size-3.5" /></button></TooltipTrigger><TooltipContent className="max-w-80 leading-6">{children}</TooltipContent></Tooltip>;
@@ -106,10 +108,10 @@ export default function UsageAnalytics() {
         <Field label="运行环境"><select className={selectClass} value={draft.environment} onChange={event => setDraft({ ...draft, environment: event.target.value as UsageFilters["environment"] })}><option value="production">正式环境</option><option value="development">开发环境</option><option value="test">测试环境</option><option value="all">全部环境</option></select></Field>
         <div className="col-span-2 flex items-end gap-2 xl:col-span-1"><Button type="submit" className="h-10" disabled={!valid}><span>查询</span></Button><Button type="button" variant="ghost" className="h-10" onClick={() => { setRange("30"); apply(recentFilters()); }}><span>重置</span></Button></div>
       </div>
-      <details className="text-sm" open={range === "custom" || undefined}><summary className="w-fit cursor-pointer py-1 text-xs text-muted-foreground">日期与版本</summary><div className="mt-2 grid gap-3 sm:grid-cols-3"><Field label="开始日期（UTC）"><Input type="date" required value={draft.from} onChange={event => { setRange("custom"); setDraft({ ...draft, from: event.target.value }); }} /></Field><Field label="结束日期（UTC）"><Input type="date" required value={draft.to} onChange={event => { setRange("custom"); setDraft({ ...draft, to: event.target.value }); }} /></Field><Field label="软件版本"><Input maxLength={80} value={draft.appVersion || ""} placeholder="全部版本" onChange={event => setDraft({ ...draft, appVersion: event.target.value || undefined })} /></Field></div></details>
+      <details className="text-sm" open={range === "custom" || undefined}><summary className="w-fit cursor-pointer py-1 text-xs text-muted-foreground">日期与版本</summary><div className="mt-2 grid gap-3 sm:grid-cols-3"><Field label="开始日期（北京时间）"><Input type="date" required value={draft.from} onChange={event => { setRange("custom"); setDraft({ ...draft, from: event.target.value }); }} /></Field><Field label="结束日期（北京时间）"><Input type="date" required value={draft.to} onChange={event => { setRange("custom"); setDraft({ ...draft, to: event.target.value }); }} /></Field><Field label="软件版本"><Input maxLength={80} value={draft.appVersion || ""} placeholder="全部版本" onChange={event => setDraft({ ...draft, appVersion: event.target.value || undefined })} /></Field></div></details>
       {!valid && <p role="alert" className="text-xs text-destructive">请选择有效日期，查询范围不能超过 93 天。</p>}
     </form>
-    <div className="flex flex-wrap items-center justify-between gap-3"><Tabs value={view} onValueChange={value => { setView(value as View); clearDetail(); setSection("overview"); setSort(value === "features" ? "usage" : "recent"); }}><TabsList className="h-11" aria-label="分析视角"><TabsTrigger id="usage-view-customers" aria-controls="usage-view-content" value="customers">按客户看</TabsTrigger><TabsTrigger id="usage-view-features" aria-controls="usage-view-content" value="features">按功能看</TabsTrigger></TabsList></Tabs><p className="text-xs text-muted-foreground">{filters.from} 至 {filters.to} · UTC · {scopeLabel}</p></div>
+    <div className="flex flex-wrap items-center justify-between gap-3"><Tabs value={view} onValueChange={value => { setView(value as View); clearDetail(); setSection("overview"); setSort(value === "features" ? "usage" : "recent"); }}><TabsList className="h-11" aria-label="分析视角"><TabsTrigger id="usage-view-customers" aria-controls="usage-view-content" value="customers">按客户看</TabsTrigger><TabsTrigger id="usage-view-features" aria-controls="usage-view-content" value="features">按功能看</TabsTrigger></TabsList></Tabs><p className="text-xs text-muted-foreground">{filters.from} 至 {filters.to} · 北京时间（UTC+8） · {scopeLabel}</p></div>
     <div id="usage-view-content" role="tabpanel" aria-labelledby={`usage-view-${view}`} className="space-y-5">
     {trail.length > 0 && <nav aria-label="分析路径" className="flex flex-wrap items-center gap-2 text-sm"><Button variant="ghost" size="sm" onClick={clearDetail}><ArrowLeft className="size-4" aria-hidden="true" /><span>{view === "customers" ? "全部客户" : "全部功能"}</span></Button>{trail.map((item, index) => <span key={`${item.type}:${item.id}`} className="flex min-w-0 items-center gap-2"><span aria-hidden="true" className="text-muted-foreground">/</span><button type="button" className="break-words rounded px-1 py-2 text-left font-medium hover:text-primary focus-visible:ring-2 focus-visible:ring-ring" onClick={() => { setTrail(trail.slice(0, index + 1)); setSection("overview"); setPage(1); setSystem(undefined); }}>{item.label}</button></span>)}</nav>}
     <QueryState loading={summary.isPending} error={summary.isError} empty={false}>
@@ -162,6 +164,6 @@ export default function UsageAnalytics() {
     </>}
     </div>
     </div>
-    <footer className="border-t pt-4 text-xs leading-6 text-muted-foreground"><p className="flex items-start gap-2"><Info aria-hidden="true" className="mt-1 size-3.5 shrink-0" /><span>仅统计已埋点并成功上传的数据；未观测到不等于未使用。入口展示、操作发起、成功结果与错误上报分别统计，错误不等于失败操作总数。</span></p><details className="mt-2"><summary className="w-fit cursor-pointer py-1">统计口径</summary><p className="mt-2">客户归属使用首次接收时的历史快照；未绑定公司来源单独区分。操作有标识时按授权来源、安装、功能及操作标识去重；缺少标识时按事件计数。没有明确功能标识的错误仅进入全局错误记录。前台和交互窗口不等于员工工时；运行诊断不计入业务使用客户。日期与详情时间均为 UTC，离线补传按发生时间归属。</p></details></footer>
+    <footer className="border-t pt-4 text-xs leading-6 text-muted-foreground"><p className="flex items-start gap-2"><Info aria-hidden="true" className="mt-1 size-3.5 shrink-0" /><span>仅统计已埋点并成功上传的数据；未观测到不等于未使用。入口展示、操作发起、成功结果与错误上报分别统计，错误不等于失败操作总数。</span></p><details className="mt-2"><summary className="w-fit cursor-pointer py-1">统计口径</summary><p className="mt-2">客户归属使用首次接收时的历史快照；未绑定公司来源单独区分。操作有标识时按授权来源、安装、功能及操作标识去重；缺少标识时按事件计数。没有明确功能标识的错误仅进入全局错误记录。前台和交互窗口不等于员工工时；运行诊断不计入业务使用客户。日期与详情时间均为北京时间（UTC+8），离线补传按发生时间归属。</p></details></footer>
   </div>;
 }

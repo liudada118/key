@@ -98,8 +98,8 @@ describe("online generation contract choice", () => {
     expect(fixture.dialog!.canGenerateWithoutContract).toBe(false);
   });
 
-  it.each(["admin", "user"])("requires a no-contract request for the %s role", role => {
-    fixture.role = role;
+  it("requires a no-contract request for an ordinary user", () => {
+    fixture.role = "user";
     renderToStaticMarkup(<GenerateKey />);
     fixture.launch!.onClick!({} as React.MouseEvent<HTMLButtonElement>);
     expect(fixture.dialog!.onOpenChange).toHaveBeenCalledWith(true);
@@ -107,13 +107,13 @@ describe("online generation contract choice", () => {
     expect(fixture.generate).not.toHaveBeenCalled();
   });
 
-  it("keeps the super administrator exemption inside the dialog", () => {
-    fixture.role = "super_admin";
+  it.each(["admin", "super_admin"])("keeps the %s exemption inside the dialog", role => {
+    fixture.role = role;
     renderToStaticMarkup(<GenerateKey />);
     fixture.launch!.onClick!({} as React.MouseEvent<HTMLButtonElement>);
     expect(fixture.dialog!.onOpenChange).toHaveBeenCalledWith(true);
     expect(fixture.dialog!.canGenerateWithoutContract).toBe(true);
-    expect(fixture.dialog!.isSuperAdmin).toBe(true);
+    expect(fixture.dialog!.isSuperAdmin).toBe(role === "super_admin");
     expect(fixture.generate).not.toHaveBeenCalled();
   });
 

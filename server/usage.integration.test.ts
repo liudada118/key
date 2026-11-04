@@ -116,13 +116,13 @@ describe.skipIf(!adminUrl)("usage MySQL transaction and attribution", () => {
     await expect(persistUsageBatch(principal, [{ ...payload, properties: { result: "failure" } }])).rejects.toMatchObject({ status: 409 });
     expect(JSON.parse((await rows("SELECT payload_json FROM usage_events WHERE event_id=?", [payload.eventId]))[0].payload_json)).toEqual(payload);
   });
-  it("uses full-scope business evidence and UTC buckets for dashboard trends and rankings", async () => {
+  it("uses full-scope business evidence and Beijing buckets for dashboard trends and rankings", async () => {
     const scope = { sourceId: 4901, customerId: 4901, customerName: "Dashboard Fixture" };
-    const sample = event({ eventName: "monitoring_usage_summary", occurredAt: "2026-09-25T23:59:59Z",
+    const sample = event({ eventName: "monitoring_usage_summary", occurredAt: "2026-09-25T15:59:59Z",
       properties: { featureId: "monitoring", durationMs: 120000, systemType: "foot" } });
     await persistUsageBatch(scope, [sample, sample]);
-    await persistUsageBatch(scope, [event({ eventName: "feature_exposed", occurredAt: "2026-09-26T00:00:00Z", properties: { featureId: "export" } }),
-      event({ eventName: "error_reported", occurredAt: "2026-09-26T00:00:00Z", properties: { module: "export", message: "synthetic", count: 3 } })]);
+    await persistUsageBatch(scope, [event({ eventName: "feature_exposed", occurredAt: "2026-09-25T16:00:00Z", properties: { featureId: "export" } }),
+      event({ eventName: "error_reported", occurredAt: "2026-09-25T16:00:00Z", properties: { module: "export", message: "synthetic", count: 3 } })]);
     const scoped = { from: "2026-09-25", to: "2026-09-26", environment: "test" as const, customerKey: "customer:4901" };
     const result = await getUsageDashboard(scoped);
     expect(result.days).toEqual([
@@ -314,16 +314,36 @@ describe.skipIf(!adminUrl)("usage MySQL transaction and attribution", () => {
     expect(empty).toMatchObject({ observedCustomers: 0, usedCustomers: 0, monitoringMs: 0, monitoringSamples: 0, errors: 0 });
   });
 
-  it("keeps UTC boundaries, versions, environments and system filters aligned in every view", async () => {
+  it("keeps Beijing midnight boundaries, versions and system filters aligned in every view", async () => {
     const scope = { sourceId: 581, customerId: 130, customerName: "Boundary" };
-    await persistUsageBatch(scope, [
-      event({ occurredAt: "2026-10-06T23:59:59Z", properties: { featureId: "export", result: "success", systemType: "hand" } }),
-      event({ occurredAt: "2026-10-07T00:00:00Z", properties: { featureId: "export", result: "success", systemType: "hand" } }),
-      event({ occurredAt: "2026-10-06T22:00:00Z", environment: "production", properties: { featureId: "export", result: "success", systemType: "hand" } }),
+    const sample = (occurredAt: string, patch: Partial<UsageEvent> = {}) => event({ occurredAt,
+      properties: { featureId: "export", result: "success", systemType: "hand" }, ...patch });
+    const included = [sample("2026-10-05T16:00:00.000Z"), sample("2026-10-06T00:00:00.000Z"), sample("2026-10-06T15:59:59.999Z")];
+    const error = sample("2026-10-06T01:00:00Z", { eventName: "error_reported", properties: { featureId: "export", systemType: "hand", count: 2 } });
+    await persistUsageBatch(scope, [...included, error,
+      sample("2026-10-05T15:59:59.999Z"), sample("2026-10-06T16:00:00.000Z"),
+      sample("2026-10-06T12:00:00Z", { environment: "production" }),
+      sample("2026-10-06T12:00:00Z", { appVersion: "other-version" }),
+      sample("2026-10-06T12:00:00Z", { properties: { featureId: "export", result: "success", systemType: "car" } }),
     ]);
-    const scoped = { ...filters, from: "2026-10-06", to: "2026-10-06", appVersion: "1.2.3", systemType: "hand" };
-    expect((await getUsageAnalysisSummary(scoped)).observedEvents).toBe(1);
-    expect((await listUsageFeatureUsage({ filters: scoped, page: 1, sort: "usage", category: "business" })).items[0].successes).toBe(1);
+    const scoped = { ...filters, from: "2026-10-06", to: "2026-10-06", customerKey: "customer:130", appVersion: "1.2.3", systemType: "hand" };
+    expect(await getUsageAnalysisSummary(scoped)).toMatchObject({ observedEvents: 4, successes: 3, errors: 2 });
+    expect((await listUsageFeatureUsage({ filters: scoped, page: 1, sort: "usage", category: "business" })).items[0]).toMatchObject({ successes: 3, activeDays: 1 });
+    expect((await listUsageCustomerUsage({ filters: scoped, page: 1, sort: "recent" })).items[0]).toMatchObject({ activeDays: 1, lastUsedMs: Date.parse(included[2].occurredAt) });
+    expect((await listUsageSystems(scoped))[0]).toMatchObject({ events: 4, activeDays: 1 });
+    const overview = await getUsageOverview(scoped);
+    expect(overview.totals).toMatchObject({ events: 4, activeDays: 1 });
+    expect(overview.days).toHaveLength(1);
+    expect(overview.days[0]).toMatchObject({ day: Date.parse("2026-10-06") / 86400000, events: 4 });
+    expect((await getUsageDashboard(scoped)).days).toEqual([{ day: Date.parse("2026-10-06") / 86400000, usedCustomers: 1, errors: 2, monitoringMs: 0 }]);
+    const timeline = await listUsageEvents({ filters: scoped, errorsOnly: false, page: 1 });
+    expect(timeline.total).toBe(4);
+    expect(timeline.items[0].event.occurredAt).toBe(included[2].occurredAt);
+    expect((await listUsageEvents({ filters: scoped, errorsOnly: true, page: 1 })).items.map(row => row.eventId)).toEqual([error.eventId]);
+    expect((await getUsageEventContext({ sourceId: scope.sourceId, installationId: included[0].installationId, eventId: included[0].eventId }))?.[0].occurredAt).toBe(included[0].occurredAt);
+    const nextDay = { ...scoped, from: "2026-10-07", to: "2026-10-07" };
+    expect((await listUsageEvents({ filters: nextDay, errorsOnly: false, page: 1 })).total).toBe(1);
+    expect((await listUsageCustomerUsage({ filters: { ...scoped, to: "2026-10-07" }, page: 1, sort: "recent" })).items[0].activeDays).toBe(2);
     expect((await listUsageCustomerUsage({ filters: { ...scoped, appVersion: "missing" }, page: 1, sort: "recent" })).items).toHaveLength(0);
   });
 });

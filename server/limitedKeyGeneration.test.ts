@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "./_core/context";
 
 const storage = vi.hoisted(() => ({
@@ -35,6 +35,49 @@ beforeEach(() => {
   storage.reissueLicenseKey.mockResolvedValue({ newKey: { id: 2 }, oldKeyId: 1 });
   devices.readDevicePolicy.mockResolvedValue(0);
   storage.getKeyCreators.mockResolvedValue([]);
+});
+
+afterEach(() => vi.unstubAllEnvs());
+
+describe("administrator no-contract issuance", () => {
+  it.each(["admin", "super_admin"] as const)("allows single and batch issuance for %s when contracts are required", async role => {
+    vi.stubEnv("KEY_REQUIRE_CONTRACT", "true");
+    const issuer = caller(role);
+    const input = { sensorTypes: "hand", days: 30, category: "production" as const, remark: "演示用途" };
+    await expect(issuer.keys.generate(input)).resolves.toMatchObject({ deviceLimit: 0 });
+    expect(storage.insertLicenseKey).toHaveBeenCalledWith(expect.objectContaining({
+      createdById: 7, createdByName: "Test issuer", remark: "演示用途",
+    }), 0);
+    const record = storage.insertLicenseKey.mock.calls[0][0];
+    expect(record.contractId == null).toBe(true);
+    expect(record.generationRequestId == null).toBe(true);
+    expect(storage.createAuditLog).toHaveBeenLastCalledWith(expect.objectContaining({
+      userId: 7, description: `${role === "super_admin" ? "超级管理员" : "管理员"}无合同直接生成 1 个在线密钥`,
+    }));
+    await expect(issuer.keys.batchGenerate({ ...input, count: 2 })).resolves.toMatchObject({ count: 2 });
+    expect(storage.insertLicenseKeys.mock.calls[0][0]).toHaveLength(2);
+    expect(storage.createAuditLog).toHaveBeenLastCalledWith(expect.objectContaining({
+      userId: 7, description: `${role === "super_admin" ? "超级管理员" : "管理员"}无合同直接生成 2 个在线密钥`,
+    }));
+  });
+
+  it("does not let ordinary users bypass a required contract", async () => {
+    vi.stubEnv("KEY_REQUIRE_CONTRACT", "true");
+    const input = { sensorTypes: "hand", days: 30, category: "production" as const };
+    await expect(caller("user").keys.generate(input)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(caller("user").keys.batchGenerate({ ...input, count: 2 })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(storage.insertLicenseKey).not.toHaveBeenCalled();
+    expect(storage.insertLicenseKeys).not.toHaveBeenCalled();
+  });
+
+  it("does not grant administrators approval authority or accept incomplete contract identities", async () => {
+    vi.stubEnv("KEY_REQUIRE_CONTRACT", "true");
+    const admin = caller("admin");
+    await expect(admin.keyGenerationRequests.review({ id: 42, decision: "APPROVE" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(admin.keys.generate({ sensorTypes: "hand", days: 30, category: "production", contractNo: "HT-INCOMPLETE" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(storage.insertLicenseKey).not.toHaveBeenCalled();
+    expect(storage.createAuditLog).not.toHaveBeenCalled();
+  });
 });
 
 describe("limited license issuance permissions", () => {

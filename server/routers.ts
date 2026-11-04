@@ -172,11 +172,11 @@ async function getAccessibleFeishuContract(
   const hasContractId = typeof contractId === "number";
   const trimmedContractNo = contractNo?.trim();
   const hasContractNo = Boolean(trimmedContractNo);
-  // 一个都没传：超级管理员一直可以，其他人看强制绑定开关（KEY_REQUIRE_CONTRACT）。
+  // 管理员免合同审批；普通账号仍遵循现有强制绑定开关。
   if (
     !hasContractId
     && !hasContractNo
-    && (user.role === "super_admin" || !isContractBindingRequired())
+    && (user.role === "super_admin" || user.role === "admin" || !isContractBindingRequired())
   ) {
     return null;
   }
@@ -880,7 +880,9 @@ export const appRouter = router({
             description:
               ctx.user.role === "super_admin"
                 ? "超级管理员无合同直接生成 1 个在线密钥"
-                : "已关闭强制绑定合同，无合同直接生成 1 个在线密钥",
+                : ctx.user.role === "admin"
+                  ? "管理员无合同直接生成 1 个在线密钥"
+                  : "已关闭强制绑定合同，无合同直接生成 1 个在线密钥",
             ip: ctx.req?.headers?.["x-forwarded-for"] as string || ctx.req?.socket?.remoteAddress || null,
             userAgent: ctx.req?.headers?.["user-agent"] || null,
           });
@@ -940,7 +942,9 @@ export const appRouter = router({
             description:
               ctx.user.role === "super_admin"
                 ? `超级管理员无合同直接生成 ${prepared.keys.length} 个在线密钥`
-                : `已关闭强制绑定合同，无合同直接生成 ${prepared.keys.length} 个在线密钥`,
+                : ctx.user.role === "admin"
+                  ? `管理员无合同直接生成 ${prepared.keys.length} 个在线密钥`
+                  : `已关闭强制绑定合同，无合同直接生成 ${prepared.keys.length} 个在线密钥`,
             ip: ctx.req?.headers?.["x-forwarded-for"] as string || ctx.req?.socket?.remoteAddress || null,
             userAgent: ctx.req?.headers?.["user-agent"] || null,
           });

@@ -5,7 +5,8 @@ import { getDb } from "./db";
 import { AgentSyncError, authenticateLicenseUpload } from "./agentSyncStore";
 import { sanitizeUsageEvent, type UsageEvent, type UsageFilters } from "./usageSchema";
 import { usageAnalysisColumns, usageCustomerKey, usageFeatureCategory,
-  usageFeatureId, usageLatestCollectionOutcome, usageSuccessfulResult, usageSystemType } from "./usageAnalyticsSql";
+  usageCalendarDay, usageFeatureId, usageLatestCollectionOutcome, usageSuccessfulResult, usageSystemType } from "./usageAnalyticsSql";
+import { beijingDayStartMs } from "../shared/time";
 import { registerUsageGuard } from "./uploadRetention";
 
 export type UsagePrincipal = { sourceId: number; customerId: number | null; customerName: string };
@@ -93,14 +94,14 @@ const summaryColumns = {
   events: count(),
   installations: sql<number>`COUNT(DISTINCT CONCAT(${usageEvents.sourceId}, ':', ${usageEvents.installationId}))`.mapWith(Number),
   customers: sql<number>`COUNT(DISTINCT ${customerKey})`.mapWith(Number),
-  activeDays: sql<number>`COUNT(DISTINCT FLOOR(${usageEvents.occurredMs} / 86400000))`.mapWith(Number),
+  activeDays: sql<number>`COUNT(DISTINCT ${usageCalendarDay})`.mapWith(Number),
   errors: sql<number>`COALESCE(SUM(IF(${usageEvents.eventName} = 'error_reported', ${usageEvents.occurrenceCount}, 0)), 0)`.mapWith(Number),
   uniqueErrors: sql<number>`COUNT(DISTINCT ${usageEvents.errorFingerprint})`.mapWith(Number),
 };
 
-/** Construct bounded UTC event-time filters; company identity comes only from its immutable snapshot. */
+/** Beijing calendar filters keep indexed absolute timestamps and immutable company attribution. */
 function whereFilters(filters: UsageFilters): SQL | undefined {
-  const conditions = [gte(usageEvents.occurredMs, Date.parse(filters.from)), lt(usageEvents.occurredMs, Date.parse(filters.to) + 86400000)];
+  const conditions = [gte(usageEvents.occurredMs, beijingDayStartMs(filters.from)), lt(usageEvents.occurredMs, beijingDayStartMs(filters.to) + 86400000)];
   if (filters.environment !== "all") conditions.push(eq(usageEvents.environment, filters.environment));
   if (filters.customerKey) conditions.push(eq(customerKey, filters.customerKey));
   if (filters.appVersion) conditions.push(eq(usageEvents.appVersion, filters.appVersion));
@@ -133,7 +134,7 @@ export async function getUsageAnalysisSummary(filters: UsageFilters) {
 /** Daily product evidence uses the same identity, operation and business-use rules as detail lists. */
 export async function getUsageDashboard(filters: UsageFilters) {
   const db = await database(), where = whereFilters(filters);
-  const day = sql<number>`FLOOR(${usageEvents.occurredMs} / 86400000)`.mapWith(Number);
+  const day = usageCalendarDay;
   const { usedCustomers, monitoringMs, errors } = usageAnalysisColumns;
   const days = await db.select({ day, usedCustomers, monitoringMs, errors }).from(usageEvents)
     .innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(where).groupBy(day).orderBy(asc(day));
@@ -219,9 +220,9 @@ export async function getUsageOverview(filters: UsageFilters) {
     interactionMs: sql<number>`COALESCE(SUM(IF(${usageEvents.eventName} = 'usage_session_summary' AND ${usageEvents.featureId} = 'interaction', ${usageEvents.durationMs}, 0)), 0)`.mapWith(Number),
   }).from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(where)
     .groupBy(customerKey).orderBy(desc(count())).limit(100);
-  const days = await db.select({ day: sql<number>`FLOOR(${usageEvents.occurredMs} / 86400000)`.mapWith(Number), ...summaryColumns })
+  const days = await db.select({ day: usageCalendarDay, ...summaryColumns })
     .from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(where)
-    .groupBy(sql`FLOOR(${usageEvents.occurredMs} / 86400000)`).orderBy(asc(sql`FLOOR(${usageEvents.occurredMs} / 86400000)`));
+    .groupBy(usageCalendarDay).orderBy(asc(usageCalendarDay));
   const systemType = sql<string>`JSON_UNQUOTE(JSON_EXTRACT(${usageEvents.payloadJson}, '$.properties.systemType'))`;
   const systems = await db.select({ systemType, ...summaryColumns,
     entries: sql<number>`SUM(IF(${usageEvents.eventName} = 'system_entered', 1, 0))`.mapWith(Number),

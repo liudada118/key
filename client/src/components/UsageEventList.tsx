@@ -32,7 +32,7 @@ export default function UsageEventList({ filters, errorsOnly, enabled }: { filte
             {row.event.properties.result && <Badge variant="outline">{results[row.event.properties.result]}</Badge>}
             {row.event.eventName === "error_reported" && <Badge variant="outline">{Math.max(1, row.event.properties.count ?? 1)} 次</Badge>}
           </p><p className="mt-2 break-words text-sm">{row.customerName} · {usageFeatureLabel(row.event.properties.featureId || filters.featureId)} · v{row.event.appVersion}</p></div>
-          <time className="text-xs text-muted-foreground">{usageTime(row.event.occurredAt)} UTC</time>
+          <time dateTime={row.event.occurredAt} className="text-xs text-muted-foreground">{usageTime(row.event.occurredAt)} 北京时间</time>
         </div>
         <p className="mt-2 break-words text-sm text-muted-foreground">{[
           row.event.properties.systemType && `系统：${usageSystemLabel(row.event.properties.systemType)}`,
@@ -46,7 +46,7 @@ export default function UsageEventList({ filters, errorsOnly, enabled }: { filte
         ].filter(Boolean).join(" · ")}</p>
         {row.event.eventName === "error_reported" && <p className="mt-3 whitespace-pre-wrap break-words text-sm">{row.event.properties.message || usageErrorLabel(row.event.properties.errorCode || "") || "客户端未提供错误描述"}</p>}
         <details className="mt-3 text-xs text-muted-foreground"><summary className="w-fit cursor-pointer py-2">{errorsOnly ? "技术详情与调用栈" : "上报详情"}</summary>
-          <p className="break-all">安装：{row.installationId} · 接收：{usageTime(row.receivedAt)} UTC</p>
+          <p className="break-all">安装：{row.installationId} · 接收：{usageTime(row.receivedAt)} 北京时间</p>
           {row.event.runtimeVersions && <p className="mt-2 break-words">运行版本：{Object.entries(row.event.runtimeVersions).map(([key, value]) => `${key}=${value}`).join(" · ")}</p>}
           <div className="mt-2"><DeleteUploadedButton kind="usage" sourceId={row.sourceId} installationId={row.installationId}
             objectId={row.eventId} onDeleted={() => { setSelected(null); void events.refetch(); }} /></div>
@@ -59,7 +59,7 @@ export default function UsageEventList({ filters, errorsOnly, enabled }: { filte
         }}>查看本次会话上下文</Button>
         {selected?.sourceId === row.sourceId && selected.installationId === row.installationId && selected.eventId === row.eventId && <div className="mt-3 border-l-2 pl-4 text-sm" aria-live="polite">
           {context.isPending ? "正在加载上下文…" : context.isError ? "会话上下文加载失败，请重试。" : <><p className="mb-3 font-medium">同安装、同会话的最近 20 条记录</p>
-            <ol className="space-y-2">{context.data?.map(item => <li key={item.eventId} className="break-words"><time className="text-xs text-muted-foreground">{usageTime(item.occurredAt)}</time> · {usageEventLabels[item.eventName]}{item.properties.featureId ? ` · ${usageFeatureLabel(item.properties.featureId)}` : ""}{item.properties.action ? ` · ${usageActionLabel(item.properties.action)}` : ""}{item.properties.result ? ` · ${results[item.properties.result]}` : ""}</li>)}</ol></>}
+            <ol className="space-y-2">{context.data?.map(item => <li key={item.eventId} className="break-words"><time dateTime={item.occurredAt} className="text-xs text-muted-foreground">{usageTime(item.occurredAt)} 北京时间</time> · {usageEventLabels[item.eventName]}{item.properties.featureId ? ` · ${usageFeatureLabel(item.properties.featureId)}` : ""}{item.properties.action ? ` · ${usageActionLabel(item.properties.action)}` : ""}{item.properties.result ? ` · ${results[item.properties.result]}` : ""}</li>)}</ol></>}
         </div>}
       </li>)}</ol>}
     {events.data && <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground"><p>共 {events.data.total} 条 · 第 {events.data.page} / {Math.max(1, Math.ceil(events.data.total / events.data.pageSize))} 页</p>

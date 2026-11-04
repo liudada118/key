@@ -934,7 +934,7 @@ function KeyGenerator({
         count={mode === "batch" ? parseInt(count) || 1 : 1}
         category={category}
         generationRemark={remark.trim() || undefined}
-        canGenerateWithoutContract={user?.role === "super_admin"}
+        canGenerateWithoutContract={user?.role === "super_admin" || user?.role === "admin"}
         isSuperAdmin={user?.role === "super_admin"}
         directGenerationPending={isPending}
         onGenerateWithContract={handleGenerateWithContract}

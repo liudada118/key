@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
+import { formatBeijingDateTime } from "@shared/time";
 
 /** Delete one uploaded object after confirmation; customer-local content is outside this operation. */
 export function DeleteUploadedButton({ kind, sourceId, installationId, objectId, onDeleted }: {
@@ -45,6 +46,6 @@ export default function UploadRetentionPanel() {
       <Button variant="outline" size="sm" className="h-11" disabled={cleanup.isPending || !cleanup.data?.dryRun} onClick={() => void act(false)}>确认清理本批</Button></div>
     {message && <p role="status" className="mt-2">{message}</p>}
     <p className="mt-3 font-medium">最近删除审计</p>
-    {audit.isError ? <p role="alert">审计读取失败，请刷新重试。</p> : <ul className="mt-2 max-h-40 overflow-auto text-xs">{audit.data?.map(row => <li key={row.id} className="py-1">{new Date(row.createdAt).toLocaleString("zh-CN")} · {row.actorId ? `管理员 #${row.actorId}` : "自动任务"} · {row.kind} · {row.affected} 条 · {row.action}</li>)}</ul>}
+    {audit.isError ? <p role="alert">审计读取失败，请刷新重试。</p> : <ul className="mt-2 max-h-40 overflow-auto text-xs">{audit.data?.map(row => <li key={row.id} className="py-1">{formatBeijingDateTime(row.createdAt)} 北京时间 · {row.actorId ? `管理员 #${row.actorId}` : "自动任务"} · {row.kind} · {row.affected} 条 · {row.action}</li>)}</ul>}
   </details>;
 }

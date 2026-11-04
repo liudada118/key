@@ -1,5 +1,8 @@
 import { sql, type SQL } from "drizzle-orm";
 import { usageEvents, usageSources } from "../drizzle/schema";
+import { BEIJING_OFFSET_MS } from "../shared/time";
+
+export const usageCalendarDay = sql<number>`FLOOR((${usageEvents.occurredMs} + ${BEIJING_OFFSET_MS}) / 86400000)`.mapWith(Number);
 
 const fallbackFeatures: Record<string, string> = {
   app_session_started: "application", system_entered: "system_navigation",
@@ -77,7 +80,7 @@ export const usageAnalysisColumns = {
   cancelled: distinctOperations(sql`${hasResultEvent} AND ${usageEvents.result} = 'cancelled'`),
   unknownResults: distinctOperations(sql`${hasResultEvent} AND (${usageEvents.result} IS NULL OR ${usageEvents.result} = 'unknown')`),
   errors: number(sql`COALESCE(SUM(IF(${usageEvents.eventName} = 'error_reported', ${usageEvents.occurrenceCount}, 0)), 0)`),
-  activeDays: number(sql`COUNT(DISTINCT CASE WHEN ${usageBusinessActivity} THEN FLOOR(${usageEvents.occurredMs} / 86400000) END)`),
+  activeDays: number(sql`COUNT(DISTINCT CASE WHEN ${usageBusinessActivity} THEN ${usageCalendarDay} END)`),
   monitoringMs: duration("monitoring_usage_summary"), monitoringSamples: durationSamples("monitoring_usage_summary"),
   collectionMs: number(sql`COALESCE(SUM(IF(${usageLatestCollectionOutcome}, ${usageEvents.durationMs}, 0)), 0)`),
   collectionSamples: number(sql`COUNT(CASE WHEN ${usageLatestCollectionOutcome} AND ${usageEvents.durationMs} IS NOT NULL THEN 1 END)`),

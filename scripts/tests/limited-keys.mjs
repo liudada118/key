@@ -28,6 +28,7 @@ const creatorsOnly = process.argv.includes("--creators-only");
 const tamperedOnly = process.argv.includes("--tampered-only");
 const notificationsOnly = process.argv.includes("--notifications-only");
 const timesOnly = process.argv.includes("--times-only");
+const adminNoContractOnly = process.argv.includes("--admin-no-contract-only");
 let requestRows = [];
 let readReceiptFailure = false;
 let restoreFailure = true;
@@ -71,7 +72,8 @@ function reply(procedure, input) {
     case "sensors.licenseGroups": return { groups: [] };
     case "customers.all": return [];
     case "contracts.list": return { items: [], total: 0, page: 1, pageSize: 1000 };
-    case "contracts.policy": return { requireContract: false };
+    case "contracts.policy": return { requireContract: adminNoContractOnly };
+    case "keyGenerationRequests.create": return { id: 999, requestNo: "KGR-SYNTHETIC", status: "PENDING" };
     case "keys.list":
     case "offlineKeys.list": return records(procedure, input);
     case "offlineKeys.stats": return { total: 0 };
@@ -418,6 +420,51 @@ async function verifyNotifications(origin) {
   console.log("Notification UI passed: role boundaries, super-admin approval, persistent applicant receipts, hidden-page guard, failure/retry, pagination, unresolved tamper notice, collapsed/mobile screenshots; all APIs synthetic.");
 }
 
+async function verifyAdminNoContract(origin) {
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    for (const mode of ["single", "batch"]) {
+      role = "admin";
+      await page.goto(`${origin}/generate`);
+      if (mode === "batch") await page.getByRole("tab", { name: "批量生成", exact: true }).click();
+      await page.getByText("手部检测", { exact: true }).click();
+      const start = requests.length;
+      await page.locator("main").last().getByRole("button", { name: mode === "single" ? "生成密钥" : "批量生成", exact: true }).click();
+      const dialog = page.getByRole("dialog");
+      await dialog.getByRole("tab", { name: "无合同生成", exact: true }).click();
+      await dialog.getByText("管理员可直接生成，不创建审批申请。", { exact: true }).waitFor();
+      await dialog.getByLabel("无合同说明（可选）", { exact: true }).fill("合成管理员演示");
+      await assertNoPageOverflow(`administrator dialog ${width}`);
+      await page.screenshot({ path: path.join(artifacts, `admin-no-contract-${mode}-${width}.png`), fullPage: true });
+      assert(!requests.slice(start).some(r => /^(keys\.(generate|batchGenerate)|keyGenerationRequests.create)$/.test(r.procedure)));
+      await dialog.getByRole("button", { name: "直接生成", exact: true }).click();
+      const request = await waitForRequest(mode === "single" ? "keys.generate" : "keys.batchGenerate", start);
+      assert.equal(request.input.remark, "合成管理员演示");
+      assert.equal(request.input.days, 30);
+      assert.equal(request.input.contractId, undefined);
+      assert.equal(request.input.deviceLimit || 0, 0);
+      if (mode === "batch") assert.equal(request.input.count, 10);
+      assert(!requests.slice(start).some(r => r.procedure === "keyGenerationRequests.create"));
+      await dialog.waitFor({ state: "hidden" });
+    }
+  }
+  role = "user";
+  await page.goto(`${origin}/generate`);
+  await page.getByText("手部检测", { exact: true }).click();
+  const start = requests.length;
+  await page.locator("main").last().getByRole("button", { name: "生成密钥", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("tab", { name: "无合同申请", exact: true }).click();
+  assert.equal(await dialog.getByRole("button", { name: "直接生成", exact: true }).count(), 0);
+  assert.equal(await dialog.getByRole("button", { name: "提交申请", exact: true }).isDisabled(), true);
+  await dialog.getByLabel("申请原因", { exact: true }).fill("合成普通用户申请");
+  await dialog.getByRole("button", { name: "提交申请", exact: true }).click();
+  assert.equal((await waitForRequest("keyGenerationRequests.create", start)).input.reason, "合成普通用户申请");
+  assert(!requests.slice(start).some(r => /keys\.(generate|batchGenerate)/.test(r.procedure)));
+  assert.deepEqual(errors, []); assert.deepEqual(unexpected, []);
+  console.log("Administrator no-contract UI passed: single/batch, user approval, note, confirmation, desktop/mobile; synthetic APIs only.");
+}
+
 try {
   await server.listen();
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
@@ -426,7 +473,9 @@ try {
   page.on("pageerror", error => errors.push(error.message));
   await page.route("**/*", mockRequests);
 
-  if (timesOnly) {
+  if (adminNoContractOnly) {
+    await verifyAdminNoContract(origin);
+  } else if (timesOnly) {
     await verifyKeyTimes(origin);
   } else if (notificationsOnly) {
     await verifyNotifications(origin);
