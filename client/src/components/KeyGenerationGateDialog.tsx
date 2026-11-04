@@ -28,6 +28,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { LICENSE_PRODUCT_LABELS, type LicenseProductType } from "@shared/licenseProducts";
+import { noContractCustomerName } from "@shared/keyCustomerAttribution";
 
 export type GenerationContract = {
   id: number;
@@ -52,6 +53,7 @@ type KeyGenerationGateDialogProps = {
   count: number;
   category: "production" | "rental";
   generationRemark?: string;
+  accountName?: string;
   canGenerateWithoutContract: boolean;
   /** 仅区分超级管理员与普通管理员的说明文案。 */
   isSuperAdmin?: boolean;
@@ -78,6 +80,7 @@ export default function KeyGenerationGateDialog({
   count,
   category,
   generationRemark,
+  accountName,
   canGenerateWithoutContract,
   isSuperAdmin = false,
   directGenerationPending,
@@ -415,6 +418,10 @@ export default function KeyGenerationGateDialog({
               <div className="text-right text-xs text-muted-foreground">
                 {reason.length} / 1000
               </div>
+            </div>
+            <div className="mt-3 border-t pt-3 text-sm">
+              <span className="text-muted-foreground">客户 / 使用人：</span>
+              <span className="break-words">{noContractCustomerName({ reason, remark: generationRemark, accountName }) || "待完善"}</span>
             </div>
             {generationRemark && (
               <div className="mt-5 flex items-start gap-2 border-t pt-4 text-sm">

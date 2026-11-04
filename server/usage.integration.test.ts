@@ -9,7 +9,10 @@ import { generateLicenseKey } from "../shared/crypto";
 let testDb: ReturnType<typeof drizzle>;
 vi.mock("./db", () => ({ getDb: async () => testDb }));
 import { authenticateUsage, getUsageCollectionOutcome, getUsageDashboard, getUsageAnalysisSummary, getUsageEventContext, getUsageOverview,
-  listUsageCustomerUsage, listUsageEvents, listUsageFeatureUsage, listUsageSystems, persistUsageBatch } from "./usageStore";
+  listUsageCustomers, listUsageCustomerUsage, listUsageEvents, listUsageFeatureUsage, listUsageSystems, persistUsageBatch } from "./usageStore";
+import { licenseCustomerDisplayName, licenseInternalUse } from "./keyCustomerAttribution";
+import { licenseKeys } from "../drizzle/schema";
+import { eq } from "drizzle-orm";
 const adminUrl = process.env.USAGE_TEST_ADMIN_URL;
 
 describe.skipIf(!adminUrl)("usage MySQL transaction and attribution", () => {
@@ -35,7 +38,8 @@ describe.skipIf(!adminUrl)("usage MySQL transaction and attribution", () => {
     testDb = drizzle(pool);
     await pool.query("CREATE TABLE customers (id int PRIMARY KEY, isActive boolean NOT NULL, name varchar(256))");
     await pool.query("INSERT INTO customers VALUES (1,1,'Company A'),(2,1,'Company B'),(3,0,'Inactive')");
-    await pool.query("CREATE TABLE licenseKeys (id int AUTO_INCREMENT PRIMARY KEY, keyString text, status varchar(32), expireTimestamp bigint, isDeleted boolean DEFAULT 0, customerId int, customerName varchar(256))");
+    await pool.query("CREATE TABLE licenseKeys (id int AUTO_INCREMENT PRIMARY KEY, keyString text, status varchar(32), expireTimestamp bigint, isDeleted boolean DEFAULT 0, customerId int, customerName varchar(256), createdByName varchar(128), contractId int, contractNo varchar(128), generationRequestId int, remark text)");
+    await pool.query("CREATE TABLE keyGenerationRequests (id int PRIMARY KEY, reason text)");
     await pool.query("CREATE TABLE offlineKeys (id int PRIMARY KEY, customerId int, customerName varchar(256))");
     for (const file of ["0013_agent_chat_sync.sql", "0014_agent_chat_license_auth.sql", "0015_usage_analytics.sql", "0021_agent_chat_offline_sources.sql", "0022_upload_retention.sql", "0026_agent_legacy_license_sources.sql", "0027_usage_collection_revisions.sql"]) {
       const migration = await readFile(new URL(`../drizzle/${file}`, import.meta.url), "utf8");
@@ -45,6 +49,54 @@ describe.skipIf(!adminUrl)("usage MySQL transaction and attribution", () => {
   afterAll(async () => {
     await pool?.end();
     if (admin) { await admin.query(`DROP DATABASE IF EXISTS \`${databaseName}\``); await admin.end(); }
+  });
+
+  it("resolves historical no-contract notes, self use and later bindings consistently without rewriting receipts", async () => {
+    const scoped = { from: "2026-11-04", to: "2026-11-04", environment: "test" as const };
+    for (const [id, reason] of [[7101, "客户甲试用"], [7102, "销售自用"], [7103, ""], [7104, "客户甲试用"]] as const) {
+      await pool.query("INSERT INTO keyGenerationRequests VALUES (?,?)", [id, reason]);
+      await pool.query("INSERT INTO licenseKeys (id,createdByName,generationRequestId) VALUES (?, '测试账号', ?)", [id, id]);
+      await pool.query("INSERT INTO agent_chat_sources (id,license_key_id) VALUES (?,?)", [id, id]);
+      await persistUsageBatch({ sourceId: id, customerId: null, customerName: `未绑定公司 · 密钥 #${id}` }, [event({ occurredAt: "2026-11-04T09:00:00Z" })]);
+    }
+    const company = { ...scoped, identityScope: "company" as const };
+    expect(await getUsageAnalysisSummary(company)).toMatchObject({ usedCustomers: 2, uses: 2 });
+    expect(await getUsageAnalysisSummary({ ...scoped, identityScope: "self" })).toMatchObject({ usedCustomers: 1 });
+    expect(await getUsageAnalysisSummary({ ...scoped, identityScope: "unbound" })).toMatchObject({ usedCustomers: 1 });
+    expect(await getUsageAnalysisSummary({ ...scoped, identityScope: "all" })).toMatchObject({ usedCustomers: 4 });
+    expect((await listUsageCustomers()).filter(r => r.customerKey === "source:7102"))
+      .toEqual([{ customerKey: "source:7102", customerName: "测试账号 · 自用", identityScope: "self" }]);
+    expect((await listUsageCustomerUsage({ filters: company, page: 1, sort: "recent" })).items.map(r => r.customerName))
+      .toEqual(["客户甲试用", "客户甲试用"]); // Same notes are not proof of the same customer.
+    expect((await getUsageDashboard(company)).customers).toHaveLength(2);
+    expect((await listUsageEvents({ filters: company, errorsOnly: false, page: 1 })).total).toBe(2);
+    const [name] = await testDb.select({ name: licenseCustomerDisplayName, self: licenseInternalUse }).from(licenseKeys).where(eq(licenseKeys.id, 7102));
+    expect(name).toEqual({ name: "测试账号", self: 1 });
+    await pool.query("UPDATE licenseKeys SET customerId=2,customerName='Explicit Company' WHERE id=7102");
+    expect(await getUsageAnalysisSummary(company)).toMatchObject({ usedCustomers: 3 });
+    expect(await getUsageAnalysisSummary({ ...scoped, identityScope: "self" })).toMatchObject({ usedCustomers: 0 });
+    expect((await listUsageCustomers()).find(r => r.customerKey === "customer:2")?.customerName).toBe("Company B");
+    expect((await rows("SELECT customer_id,customer_name FROM usage_sources WHERE source_id=7102"))[0])
+      .toEqual({ customer_id: null, customer_name: "未绑定公司 · 密钥 #7102" });
+  });
+
+  it("shows later installation verification across sessions and filter boundaries without retracting the error", async () => {
+    const scope = { sourceId: 7201, customerId: 7201, customerName: "Updater fixture" };
+    const installationId = randomUUID();
+    const error = event({ installationId, occurredAt: "2026-11-05T15:59:00Z", appVersion: "1.1.44", eventName: "error_reported",
+      properties: { module: "backend", message: "[InstallerUpdater] engine", errorCode: "SOFTWARE_UPDATE_FAILED" } });
+    const verified = event({ installationId, occurredAt: "2026-11-05T16:05:00Z", appVersion: "1.1.45", eventName: "usage_session_summary",
+      properties: { featureId: "software_update", action: "installation_verified", result: "success" } });
+    await persistUsageBatch(scope, [error, verified]);
+    const scoped = { from: "2026-11-05", to: "2026-11-05", environment: "test" as const, appVersion: "1.1.44", customerKey: "customer:7201" };
+    const listing = await listUsageEvents({ filters: scoped, errorsOnly: true, page: 1 });
+    expect(listing.total).toBe(1);
+    expect(listing.items[0].softwareUpdate).toEqual({ status: "verified", occurredAt: new Date(verified.occurredAt).toISOString(), appVersion: "1.1.45", eventId: verified.eventId });
+    expect(listing.items[0].event).toEqual({ ...error, occurredAt: new Date(error.occurredAt).toISOString() });
+    expect(await getUsageAnalysisSummary(scoped)).toMatchObject({ errors: 1, errorCustomers: 1 });
+    await persistUsageBatch({ ...scope, sourceId: 7202, customerId: 7202 }, [error]);
+    const unrelated = await listUsageEvents({ filters: { ...scoped, customerKey: "customer:7202" }, errorsOnly: true, page: 1 });
+    expect(unrelated.items[0].softwareUpdate).toEqual({ status: "unconfirmed" });
   });
 
   it("retains out-of-order 2/0/1 facts, never regresses, and rejects a second ID for revision 2", async () => {

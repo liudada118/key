@@ -668,8 +668,9 @@ export default function KeyList({ deviceMode = "unlimited", embedded = false }: 
                         <TableCell>
                           {renderStatus(key)}
                         </TableCell>
-                        <TableCell className="text-sm text-foreground">
-                          {key.customerName || "-"}
+                        <TableCell className="max-w-72 break-words text-sm text-foreground">
+                          {key.customerName || "待完善"}
+                          {key.internalUse && <Badge variant="outline" className="ml-2">自用</Badge>}
                         </TableCell>
                         <TableCell className="text-sm text-foreground">
                           {key.contractNo

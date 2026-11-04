@@ -52,7 +52,7 @@ const errorLabels: Record<string, string> = {
   LICENSE_EXPIRED: "密钥已到期", LICENSE_INACTIVE: "密钥已停用", LICENSE_CUSTOMER_INACTIVE: "关联客户已停用",
   ALGORITHM_BIND_START_FAILED: "系统算法自动启动失败", ALGORITHM_INPUT_OR_RUNTIME_INVALID: "算法输入或运行异常",
   ALGORITHM_RUNTIME_FAILED: "算法运行失败", FRONTEND_CACHE_INVALID: "网页缓存校验失败",
-  FRONTEND_BOOT_FAILED: "新版网页启动失败", SOFTWARE_UPDATE_FAILED: "安装包更新失败",
+  FRONTEND_BOOT_FAILED: "新版网页启动失败", SOFTWARE_UPDATE_FAILED: "安装包更新过程异常",
   SYSTEM_INSTALL_FAILED: "公司系统安装失败", SYSTEM_SUBMISSION_TIMEOUT: "提交审核超时", OPERATION_FAILED: "操作未完成",
 };
 

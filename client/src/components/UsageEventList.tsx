@@ -31,6 +31,8 @@ export default function UsageEventList({ filters, errorsOnly, enabled }: { filte
             <span>{usageEventLabels[row.event.eventName]}</span>
             {row.event.properties.result && <Badge variant="outline">{results[row.event.properties.result]}</Badge>}
             {row.event.eventName === "error_reported" && <Badge variant="outline">{Math.max(1, row.event.properties.count ?? 1)} 次</Badge>}
+            {row.softwareUpdate?.status === "verified" && <Badge variant="outline" className="border-emerald-600/30 text-emerald-700">后续更新已确认成功</Badge>}
+            {row.softwareUpdate?.status === "unconfirmed" && <Badge variant="outline">最终安装结果未确认</Badge>}
           </p><p className="mt-2 break-words text-sm">{row.customerName} · {usageFeatureLabel(row.event.properties.featureId || filters.featureId)} · v{row.event.appVersion}</p></div>
           <time dateTime={row.event.occurredAt} className="text-xs text-muted-foreground">{usageTime(row.event.occurredAt)} 北京时间</time>
         </div>
@@ -45,6 +47,7 @@ export default function UsageEventList({ filters, errorsOnly, enabled }: { filte
           row.event.properties.format && `格式：${row.event.properties.format}`,
         ].filter(Boolean).join(" · ")}</p>
         {row.event.eventName === "error_reported" && <p className="mt-3 whitespace-pre-wrap break-words text-sm">{row.event.properties.message || usageErrorLabel(row.event.properties.errorCode || "") || "客户端未提供错误描述"}</p>}
+        {row.softwareUpdate?.status === "verified" && <p className="mt-2 break-words text-sm text-emerald-700">同一安装于 {usageTime(row.softwareUpdate.occurredAt)} 北京时间核验新版本 v{row.softwareUpdate.appVersion} 启动成功。此前异常保留为过程记录。</p>}
         <details className="mt-3 text-xs text-muted-foreground"><summary className="w-fit cursor-pointer py-2">{errorsOnly ? "技术详情与调用栈" : "上报详情"}</summary>
           <p className="break-all">安装：{row.installationId} · 接收：{usageTime(row.receivedAt)} 北京时间</p>
           {row.event.runtimeVersions && <p className="mt-2 break-words">运行版本：{Object.entries(row.event.runtimeVersions).map(([key, value]) => `${key}=${value}`).join(" · ")}</p>}

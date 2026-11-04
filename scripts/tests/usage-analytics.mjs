@@ -22,7 +22,7 @@ const stats = { observedCustomers: 2, usedCustomers: 1, errorCustomers: 1, insta
   observedEvents: 21, exposures: 7, attempts: 4, uses: 3, successes: 3, failures: 1, cancelled: 0,
   unknownResults: 0, errors: 2, activeDays: 4, monitoringMs: 3600000, monitoringSamples: 2,
   collectionMs: 120000, collectionSamples: 1, lastUsedMs: now, lastObservedMs: now, lastReceivedMs: now };
-const companies = [{ customerKey: "customer:1", customerName: "合成康复中心" }, { customerKey: "customer:2", customerName: "合成传感实验室" }, { customerKey: "source:3", customerName: "未绑定来源 · 示例 #3" }];
+const companies = [{ customerKey: "customer:1", customerName: "合成康复中心", identityScope: "company" }, { customerKey: "customer:2", customerName: "合成传感实验室", identityScope: "company" }, { customerKey: "source:3", customerName: "未绑定来源 · 示例 #3", identityScope: "unbound" }];
 const features = [
   { ...stats, featureId: "monitoring", category: "business" },
   { ...stats, featureId: "collection", category: "business", monitoringSamples: 0, monitoringMs: 0 },
@@ -33,6 +33,10 @@ const features = [
 function reply(procedure, input) {
   requests.push({ procedure, input });
   if (procedure === "auth.me") return { id: 991, name: "合成验收账号", role, isActive: active };
+  if (procedure === "keyGenerationRequests.notifications") return { pending: 0, approved: 0 };
+  if (procedure === "keys.tamperedCount") return 0;
+  if (procedure === "uploadRetention.policy") return { enabled: false };
+  if (procedure === "usage.dashboard") return { days: [], features: [], customers: [] };
   if (procedure === "usage.customers") return companies;
   if (procedure === "usage.summary") return mode === "empty" ? { ...stats, observedCustomers: 0, usedCustomers: 0, errors: 0, monitoringSamples: 0, monitoringMs: 0 } : stats;
   if (procedure === "usage.featureUsage") {
@@ -99,6 +103,7 @@ try {
   });
   await page.goto(`${origin}/usage-analytics`);
   const app = page.locator(".usage-analytics");
+  await app.getByRole("tab", { name: "客户明细", exact: true }).click();
   await app.getByRole("button", { name: "合成康复中心", exact: true }).waitFor();
   assert.equal(last("usage.customerUsage").filters.identityScope, "company");
   await app.getByRole("tab", { name: "按功能看", exact: true }).click();
@@ -134,6 +139,7 @@ try {
   await app.getByRole("button", { name: "清除系统筛选", exact: true }).waitFor();
   await received("usage.events", input => input.filters.systemType === "jqbed");
   await app.getByRole("button", { name: "全部功能", exact: true }).click();
+  await app.getByRole("tab", { name: "功能明细", exact: true }).click();
   await app.getByRole("button", { name: "传感器监测", exact: true }).waitFor();
   await app.getByLabel("功能分类", { exact: true }).selectOption("diagnostic");
   await app.getByRole("button", { name: "主进程内存", exact: true }).waitFor();
@@ -157,11 +163,14 @@ try {
   assert.equal(last("usage.customerUsage").page, 2);
   await app.getByLabel("归属范围", { exact: true }).selectOption("unbound");
   await app.getByRole("button", { name: "查询", exact: true }).click();
+  await app.getByRole("tab", { name: "客户明细", exact: true }).click();
   await app.getByRole("button", { name: "未绑定来源 · 示例 #3", exact: true }).waitFor();
   assert.equal(last("usage.customerUsage").page, 1);
   mode = "empty"; await page.reload();
+  await app.getByRole("tab", { name: "客户明细", exact: true }).click();
   await app.getByText("此范围内尚未观测到匹配记录。", { exact: true }).waitFor();
   mode = "failure"; await page.reload();
+  await app.getByRole("tab", { name: "客户明细", exact: true }).click();
   await app.getByText("数据加载失败，请点击刷新重试。", { exact: true }).waitFor();
   mode = "normal"; await app.getByRole("button", { name: "刷新", exact: true }).click();
   await app.getByRole("button", { name: "合成康复中心", exact: true }).waitFor();

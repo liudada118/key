@@ -8,6 +8,7 @@ import {
 } from "./db";
 import { prepareOnlineKeyGeneration } from "./onlineKeyGeneration";
 import { normalizeLicenseFile } from "../shared/licenseScopes";
+import { noContractCustomerName } from "../shared/keyCustomerAttribution";
 
 const storedSensorTypesSchema = z.union([
   z.string().min(1),
@@ -133,6 +134,7 @@ export async function reviewKeyGenerationRequest(params: {
     createdById: request.requestedById,
     createdByName: request.requestedByName,
     generationRequestId: request.id,
+    customerName: noContractCustomerName({ reason: request.reason, remark: request.generationRemark, accountName: request.requestedByName }),
     remark: request.generationRemark,
   });
   const approved = await approveKeyGenerationRequestWithKeys({

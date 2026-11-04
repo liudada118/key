@@ -1,6 +1,7 @@
 import type { KeyRequestNotificationInput } from "./feishuKeyRequestWebhook";
 import { formatLicenseScope } from "../shared/licenseScopes";
 import { LICENSE_PRODUCT_LABELS } from "../shared/licenseProducts";
+import { noContractCustomerName } from "../shared/keyCustomerAttribution";
 
 type FetchLike = (
   input: string | URL | Request,
@@ -130,6 +131,7 @@ export function buildFeishuKeyRequestApprovalCard(
     : "";
   const content = [
     `**申请人：** ${escapeCardMarkdown(input.requestedByName)}`,
+    `**客户 / 使用人：** ${escapeCardMarkdown(noContractCustomerName({ reason: input.reason, remark: input.generationRemark, accountName: input.requestedByName }) || "待完善")}`,
     `**生成方式：** ${escapeCardMarkdown(generationMode)}`,
     `**授权产品：** ${escapeCardMarkdown(LICENSE_PRODUCT_LABELS[input.productType ?? "shroom-desktop"])}`,
     `**授权范围：** ${escapeCardMarkdown(formatSensorTypes(input.sensorTypes))}`,

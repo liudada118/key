@@ -31,7 +31,10 @@ beforeEach(() => {
       activatedAt: "2026-10-27 09:52:24", tamperedAt: "2026-10-27 10:00:00",
     };
     const row = Object.keys(getTableColumns(table)).map(name => data[name] ?? null);
-    if (query.includes("left join `license_device_policies`")) row.push(deviceLimit, deviceLimit > 0 ? 1 : 0);
+    if (query.includes("left join `license_device_policies`")) {
+      if (table === licenseKeys) row.push(0); // Derived internal-use flag precedes device metadata.
+      row.push(deviceLimit, deviceLimit > 0 ? 1 : 0);
+    }
     return { rows: [row] };
   });
 });

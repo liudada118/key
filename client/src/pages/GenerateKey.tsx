@@ -388,7 +388,7 @@ function KeyGenerator({
   const handleGenerateWithoutContract = (note?: string) => {
     if (parsedDeviceLimit === null) return toast.error("请输入 1–10000 的整数作为电脑数量上限");
     const combinedRemark =
-      [remark.trim(), note?.trim()].filter(Boolean).join("；") || undefined;
+      [note?.trim(), remark.trim()].filter(Boolean).join("；") || undefined;
     const commonInput = {
       productType,
       sensorTypes: getSensorTypesParam(),
@@ -939,6 +939,7 @@ function KeyGenerator({
         directGenerationPending={isPending}
         onGenerateWithContract={handleGenerateWithContract}
         onGenerateWithoutContract={handleGenerateWithoutContract}
+        accountName={user?.name || user?.username}
       />
     </>
   );

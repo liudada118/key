@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
-import { and, asc, count, desc, eq, gte, lt, lte, sql, type SQL } from "drizzle-orm";
-import { agentChatSources, customers, licenseKeys, offlineKeys, usageCollectionRevisions, usageEvents, usageSources } from "../drizzle/schema";
+import { and, asc, count, desc, eq, gt, gte, lt, lte, or, sql, type SQL } from "drizzle-orm";
+import { agentChatSources, customers, licenseKeys, offlineKeys, usageCollectionRevisions, usageEvents, usageSources as usageSourceSnapshots } from "../drizzle/schema";
+import { usageIdentity as usageSources } from "./usageIdentity";
+import { licenseCustomerDisplayName } from "./keyCustomerAttribution";
 import { getDb } from "./db";
 import { AgentSyncError, authenticateLicenseUpload } from "./agentSyncStore";
 import { sanitizeUsageEvent, type UsageEvent, type UsageFilters } from "./usageSchema";
@@ -8,6 +10,7 @@ import { usageAnalysisColumns, usageCustomerKey, usageFeatureCategory,
   usageCalendarDay, usageFeatureId, usageLatestCollectionOutcome, usageSuccessfulResult, usageSystemType } from "./usageAnalyticsSql";
 import { beijingDayStartMs } from "../shared/time";
 import { registerUsageGuard } from "./uploadRetention";
+import { isSoftwareUpdateError, laterInstallationEvidence, UPDATE_EVIDENCE_WINDOW_MS } from "./usageUpdateEvidence";
 
 export type UsagePrincipal = { sourceId: number; customerId: number | null; customerName: string };
 
@@ -23,7 +26,7 @@ export async function authenticateUsage(key: string): Promise<UsagePrincipal> {
   const principal = await authenticateLicenseUpload(key, { allowLegacy: false });
   const db = await database();
   const [source] = await db.select({ customerId: sql<number | null>`COALESCE(${licenseKeys.customerId}, ${offlineKeys.customerId})`, customerName: customers.name,
-    licenseName: sql<string | null>`COALESCE(${licenseKeys.customerName}, ${offlineKeys.customerName})`,
+    licenseName: sql<string | null>`COALESCE(${licenseCustomerDisplayName}, ${offlineKeys.customerName})`,
     licenseKeyId: sql<number | null>`COALESCE(${licenseKeys.id}, ${offlineKeys.id})`,
   }).from(agentChatSources).leftJoin(licenseKeys, eq(agentChatSources.licenseKeyId, licenseKeys.id))
     .leftJoin(offlineKeys, eq(agentChatSources.offlineKeyId, offlineKeys.id))
@@ -44,7 +47,7 @@ export async function persistUsageBatch(principal: UsagePrincipal, events: Usage
   const sorted = events.map(raw => ({ raw, event: sanitizeUsageEvent(raw) }))
     .sort((a, b) => `${a.event.installationId}:${a.event.eventId}`.localeCompare(`${b.event.installationId}:${b.event.eventId}`));
   await db.transaction(async tx => {
-    await tx.insert(usageSources).values(principal).onDuplicateKeyUpdate({ set: { sourceId: sql`source_id` } });
+    await tx.insert(usageSourceSnapshots).values(principal).onDuplicateKeyUpdate({ set: { sourceId: sql`source_id` } });
     for (const { raw, event } of sorted) {
       const properties = event.properties;
       const payloadHash = digest({ ...raw, eventId: event.eventId, installationId: event.installationId,
@@ -99,7 +102,7 @@ const summaryColumns = {
   uniqueErrors: sql<number>`COUNT(DISTINCT ${usageEvents.errorFingerprint})`.mapWith(Number),
 };
 
-/** Beijing calendar filters keep indexed absolute timestamps and immutable company attribution. */
+/** Beijing calendar filters use current display attribution without rewriting upload receipts. */
 function whereFilters(filters: UsageFilters): SQL | undefined {
   const conditions = [gte(usageEvents.occurredMs, beijingDayStartMs(filters.from)), lt(usageEvents.occurredMs, beijingDayStartMs(filters.to) + 86400000)];
   if (filters.environment !== "all") conditions.push(eq(usageEvents.environment, filters.environment));
@@ -107,8 +110,7 @@ function whereFilters(filters: UsageFilters): SQL | undefined {
   if (filters.appVersion) conditions.push(eq(usageEvents.appVersion, filters.appVersion));
   if (filters.module) conditions.push(eq(usageEvents.module, filters.module));
   if (filters.featureId) conditions.push(eq(usageFeatureId, filters.featureId));
-  if (filters.identityScope === "company") conditions.push(sql`${usageSources.customerId} IS NOT NULL`);
-  if (filters.identityScope === "unbound") conditions.push(sql`${usageSources.customerId} IS NULL`);
+  if (filters.identityScope && filters.identityScope !== "all") conditions.push(eq(usageSources.identityScope, filters.identityScope));
   if (filters.systemType) conditions.push(eq(usageSystemType, filters.systemType));
   return and(...conditions);
 }
@@ -116,7 +118,8 @@ function whereFilters(filters: UsageFilters): SQL | undefined {
 /** List observed customer identities, including sources without a company binding. */
 export async function listUsageCustomers() {
   const db = await database();
-  return db.select({ customerKey, customerName: sql<string>`MAX(${usageSources.customerName})` }).from(usageSources)
+  return db.select({ customerKey, customerName: sql<string>`MAX(${usageSources.customerName})`,
+    identityScope: sql<"company" | "self" | "unbound">`MAX(${usageSources.identityScope})` }).from(usageSources)
     .groupBy(customerKey).orderBy(asc(customerKey));
 }
 
@@ -246,7 +249,19 @@ export async function listUsageEvents(input: { filters: UsageFilters; errorsOnly
   const rows = await db.select(eventColumns).from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId))
     .where(where).orderBy(desc(usageEvents.occurredMs), asc(usageEvents.sourceId), asc(usageEvents.installationId), asc(usageEvents.eventId))
     .limit(pageSize).offset((page - 1) * pageSize);
-  return { items: rows.map(({ payloadJson, ...row }) => ({ ...row, event: JSON.parse(payloadJson) as UsageEvent })), total, page, pageSize };
+  const items = rows.map(({ payloadJson, ...row }) => ({ ...row, event: JSON.parse(payloadJson) as UsageEvent }));
+  const updateErrors = items.filter(row => isSoftwareUpdateError(row.event));
+  // One bounded, indexed query for the entire visible page; a new app session may follow installation.
+  const evidence = updateErrors.length ? await db.select({ sourceId: usageEvents.sourceId,
+    installationId: usageEvents.installationId, payloadJson: usageEvents.payloadJson }).from(usageEvents).where(and(
+    eq(usageEvents.eventName, "usage_session_summary"), eq(usageEvents.featureId, "software_update"),
+    eq(usageEvents.result, "success"), sql`JSON_UNQUOTE(JSON_EXTRACT(${usageEvents.payloadJson}, '$.properties.action')) = 'installation_verified'`,
+    or(...updateErrors.map(row => and(eq(usageEvents.sourceId, row.sourceId), eq(usageEvents.installationId, row.installationId),
+      eq(usageEvents.environment, row.event.environment), gt(usageEvents.occurredMs, Date.parse(row.event.occurredAt)),
+      lte(usageEvents.occurredMs, Date.parse(row.event.occurredAt) + UPDATE_EVIDENCE_WINDOW_MS)))),
+  )).orderBy(asc(usageEvents.occurredMs)).limit(1000) : [];
+  const candidates = evidence.map(({ payloadJson, ...row }) => ({ ...row, event: JSON.parse(payloadJson) as UsageEvent }));
+  return { items: items.map(row => ({ ...row, softwareUpdate: laterInstallationEvidence(row, candidates) })), total, page, pageSize };
 }
 
 /** Retrieve preceding events within the selected source, installation and session for error investigation. */

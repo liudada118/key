@@ -1,5 +1,6 @@
 import { sql, type SQL } from "drizzle-orm";
-import { usageEvents, usageSources } from "../drizzle/schema";
+import { usageEvents } from "../drizzle/schema";
+import { usageIdentity as usageSources } from "./usageIdentity";
 import { BEIJING_OFFSET_MS } from "../shared/time";
 
 export const usageCalendarDay = sql<number>`FLOOR((${usageEvents.occurredMs} + ${BEIJING_OFFSET_MS}) / 86400000)`.mapWith(Number);

@@ -1,5 +1,6 @@
 import { formatLicenseScope } from "../shared/licenseScopes";
 import { LICENSE_PRODUCT_LABELS, type LicenseProductType } from "../shared/licenseProducts";
+import { noContractCustomerName } from "../shared/keyCustomerAttribution";
 
 type FetchLike = (
   input: string | URL | Request,
@@ -68,6 +69,7 @@ export function buildKeyRequestNotificationText(
     "[新的无合同密钥申请]",
     `申请编号：${input.requestNo}`,
     `申请人：${input.requestedByName}`,
+    `客户 / 使用人：${noContractCustomerName({ reason: input.reason, remark: input.generationRemark, accountName: input.requestedByName }) || "待完善"}`,
     `生成方式：${generationMode}`,
     `授权产品：${LICENSE_PRODUCT_LABELS[input.productType ?? "shroom-desktop"]}`,
     `授权范围：${formatSensorTypes(input.sensorTypes)}`,

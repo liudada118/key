@@ -47,7 +47,7 @@ function Pagination({ data, busy, onPage }: { data?: { total: number; page: numb
   </div></div>;
 }
 
-/** Both perspectives retain bounded queries, historical attribution and the same drill-down scope. */
+/** Both perspectives retain bounded queries and the same current-attribution drill-down scope. */
 export default function UsageAnalytics() {
   const { user } = useAuth();
   const enabled = user?.role === "super_admin" && Boolean(user.isActive);
@@ -77,7 +77,7 @@ export default function UsageAnalytics() {
   const valid = Number.isFinite(period) && period >= 0 && period < 93 * 86400000;
   const validModule = !moduleDraft || /^[A-Za-z0-9_.:-]{1,80}$/.test(moduleDraft);
   const eventFilters: UsageFilters = { ...effective, ...(system ? { systemType: system } : {}), ...(section === "errors" && module ? { module } : {}) };
-  const scopeLabel = filters.identityScope === "unbound" ? "来源" : filters.identityScope === "all" ? "客户 / 来源" : "客户";
+  const scopeLabel = filters.identityScope === "unbound" ? "待完善来源" : filters.identityScope === "self" ? "内部自用" : filters.identityScope === "all" ? "客户 / 来源" : "客户";
   const selectedFeature = trail.find(item => item.type === "feature");
 
   function clearDetail() { setTrail([]); setSection("dashboard"); setPage(1); setModule(""); setModuleDraft(""); setSystem(undefined); }
@@ -103,8 +103,8 @@ export default function UsageAnalytics() {
     <form className="space-y-3 border-b pb-4" onSubmit={event => { event.preventDefault(); if (valid) apply(draft); }}>
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-[120px_minmax(0,1fr)_minmax(0,1fr)_140px_auto]">
         <Field label="时间范围"><select className={selectClass} value={range} onChange={event => { const value = event.target.value; setRange(value); if (value !== "custom") apply({ ...draft, from: recentFilters(Number(value)).from, to: recentFilters(Number(value)).to }); }}><option value="7">近 7 天</option><option value="30">近 30 天</option><option value="custom">自定义日期</option></select></Field>
-        <Field label="客户公司"><select className={selectClass} value={draft.customerKey || ""} onChange={event => setDraft({ ...draft, customerKey: event.target.value || undefined })}><option value="">全部匹配客户</option>{customers.data?.filter(item => draft.identityScope === "unbound" ? item.customerKey.startsWith("source:") : draft.identityScope === "company" ? item.customerKey.startsWith("customer:") : true).map(item => <option key={item.customerKey} value={item.customerKey}>{item.customerName}</option>)}</select></Field>
-        <Field label="归属范围"><select className={selectClass} value={draft.identityScope || "all"} onChange={event => setDraft({ ...draft, identityScope: event.target.value as UsageFilters["identityScope"], customerKey: undefined })}><option value="company">公司客户</option><option value="unbound">未绑定来源</option><option value="all">全部客户与来源</option></select></Field>
+        <Field label="客户 / 使用人"><select className={selectClass} value={draft.customerKey || ""} onChange={event => setDraft({ ...draft, customerKey: event.target.value || undefined })}><option value="">全部匹配客户</option>{customers.data?.filter(item => !draft.identityScope || draft.identityScope === "all" || item.identityScope === draft.identityScope).map(item => <option key={item.customerKey} value={item.customerKey}>{item.customerName}</option>)}</select></Field>
+        <Field label="归属范围"><select className={selectClass} value={draft.identityScope || "all"} onChange={event => setDraft({ ...draft, identityScope: event.target.value as UsageFilters["identityScope"], customerKey: undefined })}><option value="company">客户使用</option><option value="self">内部自用</option><option value="unbound">归属待完善</option><option value="all">全部客户与来源</option></select></Field>
         <Field label="运行环境"><select className={selectClass} value={draft.environment} onChange={event => setDraft({ ...draft, environment: event.target.value as UsageFilters["environment"] })}><option value="production">正式环境</option><option value="development">开发环境</option><option value="test">测试环境</option><option value="all">全部环境</option></select></Field>
         <div className="col-span-2 flex items-end gap-2 xl:col-span-1"><Button type="submit" className="h-10" disabled={!valid}><span>查询</span></Button><Button type="button" variant="ghost" className="h-10" onClick={() => { setRange("30"); apply(recentFilters()); }}><span>重置</span></Button></div>
       </div>
@@ -116,10 +116,10 @@ export default function UsageAnalytics() {
     {trail.length > 0 && <nav aria-label="分析路径" className="flex flex-wrap items-center gap-2 text-sm"><Button variant="ghost" size="sm" onClick={clearDetail}><ArrowLeft className="size-4" aria-hidden="true" /><span>{view === "customers" ? "全部客户" : "全部功能"}</span></Button>{trail.map((item, index) => <span key={`${item.type}:${item.id}`} className="flex min-w-0 items-center gap-2"><span aria-hidden="true" className="text-muted-foreground">/</span><button type="button" className="break-words rounded px-1 py-2 text-left font-medium hover:text-primary focus-visible:ring-2 focus-visible:ring-ring" onClick={() => { setTrail(trail.slice(0, index + 1)); setSection("overview"); setPage(1); setSystem(undefined); }}>{item.label}</button></span>)}</nav>}
     <QueryState loading={summary.isPending} error={summary.isError} empty={false}>
       {summary.data && <section className="usage-stats" aria-label="所选范围使用汇总">
-        <div><p>业务使用{scopeLabel}<Tip label="业务使用口径">按已上报的监测观测、业务结果或工具操作统计。新版采集只计最新完整修订且已落库行数大于零的成功结果；旧版结果保留原观测口径。次数不代表任务完成率。</Tip></p><strong>{summary.data.usedCustomers}<small>{filters.identityScope === "company" ? "家" : "个"}</small></strong><span>已上报{scopeLabel} {summary.data.observedCustomers}</span></div>
+        <div><p>业务使用{scopeLabel}<Tip label="业务使用口径">按已上报的监测观测、业务结果或工具操作统计。新版采集只计最新完整修订且已落库行数大于零的成功结果；旧版结果保留原观测口径。次数不代表任务完成率。</Tip></p><strong>{summary.data.usedCustomers}<small>个</small></strong><span>已上报{scopeLabel} {summary.data.observedCustomers}</span></div>
         <div><p>已上报安装<Tip label="安装数口径">按授权来源与安装标识去重，不等于物理电脑或人员数量。</Tip></p><strong>{summary.data.installations}<small>个</small></strong><span>当前筛选范围</span></div>
         {effective.featureId && effective.featureId !== "monitoring" ? <div><p>已确认使用</p><strong>{summary.data.uses}<small>次</small></strong><span>成功结果 {summary.data.successes} · 失败 {summary.data.failures}</span></div> : <div><p>监测观测时长<Tip label="监测观测时长口径">历史窗口观测的累计值，不是去重后的有效时长，也不是任务完成率；多安装可并行累计。</Tip></p><strong className="usage-duration">{summary.data.monitoringSamples ? usageDurationText(summary.data.monitoringMs) : "未上报时长"}</strong><span>{summary.data.monitoringSamples} 条时长记录</span></div>}
-        <div><p>异常影响{scopeLabel}</p><strong>{summary.data.errorCustomers}<small>{filters.identityScope === "company" ? "家" : "个"}</small></strong><span>错误上报 {summary.data.errors} 次</span></div>
+        <div><p>异常影响{scopeLabel}</p><strong>{summary.data.errorCustomers}<small>个</small></strong><span>错误上报 {summary.data.errors} 次</span></div>
       </section>}
     </QueryState>
     <Tabs value={section} onValueChange={changeSection}><TabsList className="h-auto flex-wrap" aria-label="明细视图"><TabsTrigger id="usage-section-dashboard" aria-controls="usage-section-content" value="dashboard" className="min-h-11">使用看板</TabsTrigger><TabsTrigger id="usage-section-overview" aria-controls="usage-section-content" value="overview" className="min-h-11">{activeList === "customers" ? "客户明细" : "功能明细"}</TabsTrigger><TabsTrigger id="usage-section-systems" aria-controls="usage-section-content" value="systems" className="min-h-11">展示系统</TabsTrigger><TabsTrigger id="usage-section-timeline" aria-controls="usage-section-content" value="timeline" className="min-h-11">操作记录</TabsTrigger><TabsTrigger id="usage-section-errors" aria-controls="usage-section-content" value="errors" className="min-h-11">异常排查</TabsTrigger></TabsList></Tabs>
@@ -164,6 +164,6 @@ export default function UsageAnalytics() {
     </>}
     </div>
     </div>
-    <footer className="border-t pt-4 text-xs leading-6 text-muted-foreground"><p className="flex items-start gap-2"><Info aria-hidden="true" className="mt-1 size-3.5 shrink-0" /><span>仅统计已埋点并成功上传的数据；未观测到不等于未使用。入口展示、操作发起、成功结果与错误上报分别统计，错误不等于失败操作总数。</span></p><details className="mt-2"><summary className="w-fit cursor-pointer py-1">统计口径</summary><p className="mt-2">客户归属使用首次接收时的历史快照；未绑定公司来源单独区分。操作有标识时按授权来源、安装、功能及操作标识去重；缺少标识时按事件计数。没有明确功能标识的错误仅进入全局错误记录。前台和交互窗口不等于员工工时；运行诊断不计入业务使用客户。日期与详情时间均为北京时间（UTC+8），离线补传按发生时间归属。</p></details></footer>
+    <footer className="border-t pt-4 text-xs leading-6 text-muted-foreground"><p className="flex items-start gap-2"><Info aria-hidden="true" className="mt-1 size-3.5 shrink-0" /><span>仅统计已埋点并成功上传的数据；未观测到不等于未使用。入口展示、操作发起、成功结果与错误上报分别统计，错误不等于失败操作总数。</span></p><details className="mt-2"><summary className="w-fit cursor-pointer py-1">统计口径</summary><p className="mt-2">归属按当前密钥信息显示：客户绑定优先，无合同使用申请原因/备注，包含“自用”时使用账号姓名。内部自用与归属待完善单独统计；备注来源不等于已绑定客户档案，不同密钥不会仅因备注同名而合并。原始上报快照保留。操作有标识时按授权来源、安装、功能及操作标识去重；缺少标识时按事件计数。没有明确功能标识的错误仅进入全局错误记录。前台和交互窗口不等于员工工时；运行诊断不计入业务使用客户。日期与详情时间均为北京时间（UTC+8），离线补传按发生时间归属。</p></details></footer>
   </div>;
 }

@@ -27,6 +27,7 @@ import { toast } from "sonner";
 import { useLocation } from "wouter";
 import { formatLicenseScope } from "@shared/licenseScopes";
 import { LICENSE_PRODUCT_LABELS, type LicenseProductType } from "@shared/licenseProducts";
+import { noContractCustomerName } from "@shared/keyCustomerAttribution";
 
 type RequestStatus = "PENDING" | "APPROVED" | "REJECTED";
 type StatusFilter = "ALL" | RequestStatus;
@@ -262,6 +263,7 @@ export default function KeyGenerationRequests() {
                 <TableRow>
                   <TableHead>申请编号</TableHead>
                   <TableHead>申请人</TableHead>
+                  <TableHead>客户 / 使用人</TableHead>
                   <TableHead>生成参数</TableHead>
                   <TableHead>申请原因</TableHead>
                   <TableHead>状态</TableHead>
@@ -272,7 +274,7 @@ export default function KeyGenerationRequests() {
               <TableBody>
                 {isLoading && (
                   <TableRow>
-                    <TableCell colSpan={7} className="h-36 text-center">
+                    <TableCell colSpan={8} className="h-36 text-center">
                       <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
                         <Loader2 className="h-4 w-4 animate-spin" />
                         正在加载申请
@@ -283,7 +285,7 @@ export default function KeyGenerationRequests() {
                 {!isLoading && requests.length === 0 && (
                   <TableRow>
                     <TableCell
-                      colSpan={7}
+                      colSpan={8}
                       className="h-36 text-center text-sm text-muted-foreground"
                     >
                       暂无申请记录
@@ -305,6 +307,10 @@ export default function KeyGenerationRequests() {
                     </TableCell>
                     <TableCell className="whitespace-nowrap">
                       {request.requestedByName}
+                    </TableCell>
+                    <TableCell className="min-w-32 max-w-72 break-words">
+                      {noContractCustomerName({ reason: request.reason, remark: request.generationRemark, accountName: request.requestedByName }) || "待完善"}
+                      {[request.reason, request.generationRemark].some(value => value?.includes("自用")) && <Badge variant="outline" className="ml-2">自用</Badge>}
                     </TableCell>
                     <TableCell className="min-w-48">
                       <p

@@ -38,6 +38,7 @@ import {
 } from "../drizzle/schema";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
+import { licenseCustomerDisplayName, licenseInternalUse } from "./keyCustomerAttribution";
 import { generateLicenseKey, decodeLicenseKey } from "../shared/crypto";
 import { normalizeLicenseProduct, type LicenseProductType } from "../shared/licenseProducts";
 import { createOfflineLicensePayload } from "./offlineLicensePayload";
@@ -1112,7 +1113,7 @@ export async function getLicenseKeys(opts: {
     conditions.push(
       or(
         like(licenseKeys.keyString, `%${opts.search}%`),
-        like(licenseKeys.customerName, `%${opts.search}%`)
+        like(licenseCustomerDisplayName, `%${opts.search}%`)
       )!
     );
   }
@@ -1121,7 +1122,9 @@ export async function getLicenseKeys(opts: {
   const offset = (opts.page - 1) * opts.pageSize;
 
   const [items, totalResult] = await Promise.all([
-    db.select({ ...licenseKeySelection, deviceLimit: effectiveDeviceLimit("online"), deviceRestricted: restrictedDeviceFormat("online") }).from(licenseKeys)
+    db.select({ ...licenseKeySelection, customerName: licenseCustomerDisplayName,
+      internalUse: sql<boolean>`${licenseInternalUse}`.mapWith(value => Number(value) === 1),
+      deviceLimit: effectiveDeviceLimit("online"), deviceRestricted: restrictedDeviceFormat("online") }).from(licenseKeys)
       .leftJoin(licenseDevicePolicies, and(eq(licenseDevicePolicies.keyType, "online"), eq(licenseDevicePolicies.keyId, licenseKeys.id)))
       .where(where).orderBy(desc(licenseKeys.createdAt)).limit(opts.pageSize).offset(offset),
     db.select({ count: count() }).from(licenseKeys)

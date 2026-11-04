@@ -3,6 +3,7 @@ import type { InsertLicenseKey } from "../drizzle/schema";
 import { generateLicenseKey } from "@shared/crypto";
 import { normalizeLicenseFile } from "@shared/licenseScopes";
 import { normalizeLicenseProduct, type LicenseProductType } from "../shared/licenseProducts";
+import { noContractCustomerName } from "../shared/keyCustomerAttribution";
 
 export type OnlineGenerationMode = "single" | "batch";
 
@@ -51,7 +52,8 @@ export function prepareOnlineKeyGeneration(params: {
       createdById: params.createdById,
       createdByName: params.createdByName,
       customerId: params.customerId || null,
-      customerName: params.customerName || null,
+      customerName: params.customerName || (!params.contractId && !params.contractNo
+        ? noContractCustomerName({ remark: params.remark, accountName: params.createdByName }) : null),
       contractId: params.contractId || null,
       contractNo: params.contractNo || null,
       generationRequestId: params.generationRequestId || null,

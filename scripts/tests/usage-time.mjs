@@ -29,12 +29,18 @@ function reply(procedure, input) {
   if (procedure === "auth.me") return { id: 991, name: "Synthetic admin", role: "super_admin", isActive: true };
   if (procedure === "keyGenerationRequests.notifications") return { pending: 0, approved: 0 };
   if (procedure === "keys.tamperedCount") return 0;
-  if (procedure === "usage.customers") return [];
+  if (procedure === "usage.customers") return [
+    { customerKey: "customer:1", customerName: "Synthetic company", identityScope: "company" },
+    { customerKey: "source:2", customerName: "Synthetic customer note", identityScope: "company" },
+    { customerKey: "source:3", customerName: "Synthetic employee · 自用", identityScope: "self" },
+    { customerKey: "source:4", customerName: "Synthetic unknown", identityScope: "unbound" },
+  ];
   if (procedure === "usage.summary") return stats;
   if (procedure === "usage.dashboard") return { days: [{ day: Date.parse("2026-11-03") / 86400000,
     usedCustomers: 1, monitoringMs: 60000, errors: 2 }], features: [], customers: [] };
   if (procedure === "usage.events") return { items: [{ sourceId: 1, installationId: event.installationId,
-    eventId: event.eventId, customerName: "Synthetic company", receivedAt: new Date("2026-11-03T03:00:00Z"), event }], total: 1, page: 1, pageSize: 50 };
+    eventId: event.eventId, customerName: "Synthetic company", receivedAt: new Date("2026-11-03T03:00:00Z"), event,
+    softwareUpdate: { status: "verified", occurredAt: "2026-11-03T03:33:34Z", appVersion: "1.1.45", eventId: "verified-fixture" } }], total: 1, page: 1, pageSize: 50 };
   if (procedure === "usage.context") return [{ ...event, eventId: "context-fixture", eventName: "feature_attempted",
     occurredAt: "2026-11-02T16:05:00Z", properties: { featureId: "export", action: "save" } }];
   if (procedure === "uploadRetention.policy") return { enabled: false };
@@ -85,6 +91,16 @@ try {
     await app.getByRole("heading", { name: "使用趋势", exact: true }).waitFor();
     const initial = requests.filter(r => r.procedure === "usage.dashboard").at(-1).input;
     assert.equal(initial.from, "2026-10-05"); assert.equal(initial.to, "2026-11-03");
+    const customerSelect = app.getByLabel("客户 / 使用人", { exact: true });
+    assert.deepEqual(await customerSelect.locator("option").allTextContents(), ["全部匹配客户", "Synthetic company", "Synthetic customer note"]);
+    for (const [scope, label] of [["self", "Synthetic employee · 自用"], ["unbound", "Synthetic unknown"]]) {
+      await app.getByLabel("归属范围", { exact: true }).selectOption(scope);
+      assert.deepEqual(await customerSelect.locator("option").allTextContents(), ["全部匹配客户", label]);
+      await app.getByRole("button", { name: "查询", exact: true }).click();
+      await page.waitForFunction(() => !document.querySelector('.usage-analytics [role="status"]'));
+    }
+    await app.getByLabel("归属范围", { exact: true }).selectOption("company");
+    await app.getByRole("button", { name: "查询", exact: true }).click();
     await app.getByText("每日数值 · 北京时间", { exact: true }).click();
     const day = app.getByRole("row").filter({ has: page.getByRole("cell", { name: "2026-11-03", exact: true }) });
     assert.equal(await day.count(), 1);
@@ -96,6 +112,8 @@ try {
     await app.getByText("2026-11-03 至 2026-11-03 · 北京时间（UTC+8） · 客户", { exact: true }).waitFor();
     await app.getByRole("tab", { name: "异常排查", exact: true }).click();
     await app.getByText("2026/11/3 10:57:18 北京时间", { exact: true }).waitFor();
+    await app.getByText("后续更新已确认成功", { exact: true }).waitFor();
+    await app.getByText(/同一安装于 2026\/11\/3 11:33:34 北京时间核验新版本 v1.1.45/).waitFor();
     assert.equal(await app.locator("time").first().getAttribute("datetime"), occurredAt);
     const query = requests.filter(r => r.procedure === "usage.events").at(-1).input;
     assert.equal(query.filters.from, "2026-11-03"); assert.equal(query.filters.to, "2026-11-03");
