@@ -151,7 +151,7 @@ const menuSections: MenuSection[] = [
       { icon: MessageSquare, label: "Agent 聊天", path: "/agent-chats", roles: ["super_admin"] },
       { icon: PackagePlus, label: "公司系统库", path: "/system-packages" },
       { icon: ClipboardCheck, label: "算法平台", path: "/algorithm-platform" },
-      { icon: BarChart3, label: "客户使用分析", path: "/usage-analytics", roles: ["super_admin"] },
+      { icon: BarChart3, label: "客户使用分析", path: "/usage-analytics", roles: ["super_admin", "admin", "user"] },
       // roles 必须写死成管理员及以上：后端 sdkRequests 全部走 adminProcedure，
       // 菜单要是对子账号可见，点进去只会看到一个 FORBIDDEN
       { icon: KeyRound, label: "SDK 申请与登记", path: "/sdk-requests", roles: ["super_admin", "admin"] },

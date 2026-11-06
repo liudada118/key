@@ -11,6 +11,7 @@ import { usageAnalysisColumns, usageCustomerKey, usageFeatureCategory,
 import { beijingDayStartMs } from "../shared/time";
 import { registerUsageGuard } from "./uploadRetention";
 import { isSoftwareUpdateError, laterInstallationEvidence, UPDATE_EVIDENCE_WINDOW_MS } from "./usageUpdateEvidence";
+import { usageOwnerCondition, type UsageReadScope } from "./usageAccess";
 
 export type UsagePrincipal = { sourceId: number; customerId: number | null; customerName: string };
 
@@ -103,7 +104,7 @@ const summaryColumns = {
 };
 
 /** Beijing calendar filters use current display attribution without rewriting upload receipts. */
-function whereFilters(filters: UsageFilters): SQL | undefined {
+function whereFilters(scope: UsageReadScope, filters: UsageFilters): SQL | undefined {
   const conditions = [gte(usageEvents.occurredMs, beijingDayStartMs(filters.from)), lt(usageEvents.occurredMs, beijingDayStartMs(filters.to) + 86400000)];
   if (filters.environment !== "all") conditions.push(eq(usageEvents.environment, filters.environment));
   if (filters.customerKey) conditions.push(eq(customerKey, filters.customerKey));
@@ -112,31 +113,31 @@ function whereFilters(filters: UsageFilters): SQL | undefined {
   if (filters.featureId) conditions.push(eq(usageFeatureId, filters.featureId));
   if (filters.identityScope && filters.identityScope !== "all") conditions.push(eq(usageSources.identityScope, filters.identityScope));
   if (filters.systemType) conditions.push(eq(usageSystemType, filters.systemType));
-  return and(...conditions);
+  return and(usageOwnerCondition(scope), ...conditions);
 }
 
 /** List observed customer identities, including sources without a company binding. */
-export async function listUsageCustomers() {
+export async function listUsageCustomers(scope: UsageReadScope) {
   const db = await database();
   return db.select({ customerKey, customerName: sql<string>`MAX(${usageSources.customerName})`,
     identityScope: sql<"company" | "self" | "unbound">`MAX(${usageSources.identityScope})` }).from(usageSources)
-    .groupBy(customerKey).orderBy(asc(customerKey));
+    .where(usageOwnerCondition(scope)).groupBy(customerKey).orderBy(asc(customerKey));
 }
 
 /** Full-scope summaries are independent of the currently visible list page. */
-export async function getUsageAnalysisSummary(filters: UsageFilters) {
+export async function getUsageAnalysisSummary(scope: UsageReadScope, filters: UsageFilters) {
   const db = await database();
   const { observedCustomers, usedCustomers, errorCustomers, installations, observedEvents,
     errors, uses, successes, failures, monitoringMs, monitoringSamples, collectionMs, collectionSamples } = usageAnalysisColumns;
   const [summary] = await db.select({ observedCustomers, usedCustomers, errorCustomers, installations,
     observedEvents, errors, uses, successes, failures, monitoringMs, monitoringSamples, collectionMs, collectionSamples })
-    .from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(whereFilters(filters));
+    .from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(whereFilters(scope, filters));
   return summary;
 }
 
 /** Daily product evidence uses the same identity, operation and business-use rules as detail lists. */
-export async function getUsageDashboard(filters: UsageFilters) {
-  const db = await database(), where = whereFilters(filters);
+export async function getUsageDashboard(scope: UsageReadScope, filters: UsageFilters) {
+  const db = await database(), where = whereFilters(scope, filters);
   const day = usageCalendarDay;
   const { usedCustomers, monitoringMs, errors } = usageAnalysisColumns;
   const days = await db.select({ day, usedCustomers, monitoringMs, errors }).from(usageEvents)
@@ -156,9 +157,9 @@ export type UsageAnalysisListInput = { filters: UsageFilters; page: number; sort
 const analysisPageSize = 20;
 
 /** Group product features before pagination, never add overlapping event-row customer counts. */
-export async function listUsageFeatureUsage(input: UsageAnalysisListInput & { category: "all" | "business" | "diagnostic" }) {
+export async function listUsageFeatureUsage(scope: UsageReadScope, input: UsageAnalysisListInput & { category: "all" | "business" | "diagnostic" }) {
   const db = await database();
-  const where = and(whereFilters(input.filters), sql`${usageFeatureId} IS NOT NULL`,
+  const where = and(whereFilters(scope, input.filters), sql`${usageFeatureId} IS NOT NULL`,
     input.category === "all" ? undefined : eq(usageFeatureCategory, input.category));
   const [{ total }] = await db.select({ total: sql<number>`COUNT(DISTINCT ${usageFeatureId})`.mapWith(Number) })
     .from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(where);
@@ -173,8 +174,8 @@ export async function listUsageFeatureUsage(input: UsageAnalysisListInput & { ca
 }
 
 /** Customer drill-down uses identical feature semantics, including legacy events without a feature ID. */
-export async function listUsageCustomerUsage(input: UsageAnalysisListInput) {
-  const db = await database(), where = whereFilters(input.filters);
+export async function listUsageCustomerUsage(scope: UsageReadScope, input: UsageAnalysisListInput) {
+  const db = await database(), where = whereFilters(scope, input.filters);
   const [{ total }] = await db.select({ total: sql<number>`COUNT(DISTINCT ${usageCustomerKey})`.mapWith(Number) })
     .from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(where);
   const page = Math.min(input.page, Math.max(1, Math.ceil(total / analysisPageSize)));
@@ -192,19 +193,19 @@ export async function listUsageCustomerUsage(input: UsageAnalysisListInput) {
 }
 
 /** Bounded system detail for the selected feature/customer; anonymous IDs remain installation-scoped. */
-export async function listUsageSystems(filters: UsageFilters) {
+export async function listUsageSystems(scope: UsageReadScope, filters: UsageFilters) {
   const db = await database();
   return db.select({ systemType: usageSystemType, ...summaryColumns,
     entries: sql<number>`SUM(IF(${usageEvents.eventName} = 'system_entered', 1, 0))`.mapWith(Number),
     monitoringMs: usageAnalysisColumns.monitoringMs, monitoringSamples: usageAnalysisColumns.monitoringSamples,
   }).from(usageEvents).innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId))
-    .where(and(whereFilters(filters), sql`${usageSystemType} IS NOT NULL`))
+    .where(and(whereFilters(scope, filters), sql`${usageSystemType} IS NOT NULL`))
     .groupBy(usageSystemType).orderBy(desc(usageAnalysisColumns.monitoringMs), asc(usageSystemType)).limit(100);
 }
 
 /** Aggregate all matching events in SQL; displayed top lists state their explicit cap. */
-export async function getUsageOverview(filters: UsageFilters) {
-  const db = await database(), where = whereFilters(filters);
+export async function getUsageOverview(scope: UsageReadScope, filters: UsageFilters) {
+  const db = await database(), where = whereFilters(scope, filters);
   const totals = await db.select(summaryColumns).from(usageEvents)
     .innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(where);
   const features = await db.select({ eventName: usageEvents.eventName, featureId: usageEvents.featureId,
@@ -240,9 +241,9 @@ const eventColumns = { sourceId: usageEvents.sourceId, installationId: usageEven
   customerName: usageSources.customerName, payloadJson: usageEvents.payloadJson, receivedAt };
 
 /** Read one bounded timeline page, optionally restricted to reported errors. */
-export async function listUsageEvents(input: { filters: UsageFilters; errorsOnly: boolean; page: number }) {
+export async function listUsageEvents(scope: UsageReadScope, input: { filters: UsageFilters; errorsOnly: boolean; page: number }) {
   const db = await database();
-  const where = and(whereFilters(input.filters), input.errorsOnly ? eq(usageEvents.eventName, "error_reported") : undefined);
+  const where = and(whereFilters(scope, input.filters), input.errorsOnly ? eq(usageEvents.eventName, "error_reported") : undefined);
   const [{ total }] = await db.select({ total: count() }).from(usageEvents)
     .innerJoin(usageSources, eq(usageSources.sourceId, usageEvents.sourceId)).where(where);
   const pageSize = 50, page = Math.min(input.page, Math.max(1, Math.ceil(total / pageSize)));
@@ -265,8 +266,9 @@ export async function listUsageEvents(input: { filters: UsageFilters; errorsOnly
 }
 
 /** Retrieve preceding events within the selected source, installation and session for error investigation. */
-export async function getUsageEventContext(input: { sourceId: number; installationId: string; eventId: string }) {
+export async function getUsageEventContext(scope: UsageReadScope, input: { sourceId: number; installationId: string; eventId: string }) {
   const db = await database();
+  if (!await canReadUsageSource(db, scope, input.sourceId)) return null;
   const identity = and(eq(usageEvents.sourceId, input.sourceId), eq(usageEvents.installationId, input.installationId.toLowerCase()));
   const [target] = await db.select().from(usageEvents).where(and(identity, eq(usageEvents.eventId, input.eventId.toLowerCase()))).limit(1);
   if (!target) return null;
@@ -277,8 +279,9 @@ export async function getUsageEventContext(input: { sourceId: number; installati
 }
 
 /** Read the highest immutable revision and report chain gaps without falling back to an older outcome. */
-export async function getUsageCollectionOutcome(input: { sourceId: number; installationId: string; collectionId: string }) {
+export async function getUsageCollectionOutcome(scope: UsageReadScope, input: { sourceId: number; installationId: string; collectionId: string }) {
   const db = await database();
+  if (!await canReadUsageSource(db, scope, input.sourceId)) return null;
   const identity = and(eq(usageCollectionRevisions.sourceId, input.sourceId),
     eq(usageCollectionRevisions.installationId, input.installationId.toLowerCase()),
     eq(usageCollectionRevisions.collectionId, input.collectionId));
@@ -301,4 +304,13 @@ export async function getUsageCollectionOutcome(input: { sourceId: number; insta
     missingRevisions, missingPredecessors: chain.missingPredecessors,
     complete: missingRevisions === 0 && chain.missingPredecessors === 0,
     contentUnavailable: !content, event: content ? JSON.parse(content.payloadJson) as UsageEvent : null };
+}
+
+/** Check the source before reading any event body or retained revision receipt. */
+async function canReadUsageSource(db: Awaited<ReturnType<typeof database>>, scope: UsageReadScope, sourceId: number) {
+  const owner = usageOwnerCondition(scope);
+  if (scope.kind === "all") return true;
+  const [source] = await db.select({ sourceId: usageSources.sourceId }).from(usageSources)
+    .where(and(eq(usageSources.sourceId, sourceId), owner)).limit(1);
+  return Boolean(source);
 }

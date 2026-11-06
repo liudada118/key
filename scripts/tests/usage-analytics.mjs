@@ -174,9 +174,29 @@ try {
   await app.getByText("数据加载失败，请点击刷新重试。", { exact: true }).waitFor();
   mode = "normal"; await app.getByRole("button", { name: "刷新", exact: true }).click();
   await app.getByRole("button", { name: "合成康复中心", exact: true }).waitFor();
-  for (const [nextRole, isActive] of [["user", true], ["super_admin", false]]) {
-    role = nextRole; active = isActive; const start = requests.length; await page.reload();
-    await page.getByText("需要启用中的超级管理员账号查看客户使用情况。", { exact: true }).waitFor();
+  for (const nextRole of ["user", "admin"]) {
+    role = nextRole; active = true; const start = requests.length; await page.reload();
+    await app.getByText("数据范围：我创建的密钥", { exact: true }).waitFor();
+    await app.getByRole("tab", { name: "客户明细", exact: true }).click();
+    await app.getByRole("button", { name: "合成康复中心", exact: true }).waitFor();
+    await app.getByRole("tab", { name: "异常排查", exact: true }).click();
+    await app.getByText("合成导出失败", { exact: true }).waitFor();
+    await app.getByText("技术详情与调用栈", { exact: true }).click();
+    await app.getByText("SYNTHETIC STACK", { exact: true }).waitFor();
+    assert.equal(await app.getByRole("button", { name: "删除服务器记录", exact: true }).count(), 0);
+    assert.equal(await app.getByText("上传数据保存与删除", { exact: true }).count(), 0);
+    await app.getByRole("button", { name: "查看本次会话上下文", exact: true }).click();
+    await app.getByText("同安装、同会话的最近 20 条记录", { exact: true }).waitFor();
+    assert(!requests.slice(start).some(r => r.procedure.startsWith("uploadRetention.")));
+    for (const width of [1440, 375]) {
+      await page.setViewportSize({ width, height: 1100 }); await noOverflow();
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await page.screenshot({ path: path.join(artifacts, `issuer-${role}-${width}.png`), fullPage: true });
+    }
+  }
+  for (const nextRole of ["user", "admin", "super_admin"]) {
+    role = nextRole; active = false; const start = requests.length; await page.reload();
+    await page.getByText("请使用启用中的账号登录后查看客户使用情况。", { exact: true }).waitFor();
     assert(!requests.slice(start).some(r => r.procedure.startsWith("usage.")));
   }
   assert.deepEqual(errors, []); assert.deepEqual(unexpected, []);

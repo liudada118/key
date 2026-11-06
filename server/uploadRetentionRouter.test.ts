@@ -16,8 +16,12 @@ describe("upload retention administration", () => {
       await expect(caller(role, active).policy()).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(caller(role, active).cleanup({})).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(caller(role, active).audit()).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(caller(role, active).delete({ kind: "usage", sourceId: 9,
+        installationId: "249c3777-cff6-44e4-99ea-a812e302a992", objectId: "fixture-event",
+        confirmation: "DELETE_UPLOADED_DATA" })).rejects.toMatchObject({ code: "FORBIDDEN" });
     }
     expect(cleanupExpiredUploads).not.toHaveBeenCalled();
+    expect(deleteUploadedIdentity).not.toHaveBeenCalled();
   });
   it("defaults to preview and requires an explicit confirmation for bounded destructive cleanup", async () => {
     await caller("super_admin").cleanup({});

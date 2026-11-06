@@ -76,6 +76,16 @@ describe("sidebar disclosure and direct license navigation", () => {
     expect(html).toContain("SDK 申请与登记");
   });
 
+  it.each(["user", "admin"])("shows scoped usage analytics to %s without opening super-admin tools", role => {
+    session.role = role;
+    session.path = "/usage-analytics";
+    const html = render();
+    expect(html).toContain('aria-label="客户使用分析"');
+    expect(html).toContain('aria-current="page"');
+    expect(html).not.toContain("Agent 聊天");
+    expect(html).not.toContain("审计日志");
+  });
+
   it.each(["/limited-generate", "/limited-keys"])("keeps the restricted category visible and marks %s active", (path) => {
     session.path = path;
     const html = render();

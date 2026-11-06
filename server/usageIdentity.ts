@@ -15,6 +15,8 @@ const kind = sql<"company" | "self" | "unbound">`CASE WHEN ${isSelf} THEN 'self'
 
 export const usageIdentity = new QueryBuilder().select({
   sourceId: usageSources.sourceId,
+  createdById: sql<number | null>`CASE WHEN ${licenseKeys.id} IS NOT NULL THEN ${licenseKeys.createdById}
+    WHEN ${offlineKeys.id} IS NOT NULL THEN ${offlineKeys.createdById} END`.as("created_by_id"),
   customerId: customerId.as("customer_id"),
   identityScope: kind.as("identity_scope"),
   customerName: sql<string>`CASE WHEN ${isSelf} THEN CONCAT(COALESCE(${knownName}, '账号'), ' · 自用')

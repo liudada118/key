@@ -50,7 +50,8 @@ function Pagination({ data, busy, onPage }: { data?: { total: number; page: numb
 /** Both perspectives retain bounded queries and the same current-attribution drill-down scope. */
 export default function UsageAnalytics() {
   const { user } = useAuth();
-  const enabled = user?.role === "super_admin" && Boolean(user.isActive);
+  const enabled = Boolean(user?.isActive && ["super_admin", "admin", "user"].includes(user.role));
+  const isSuperAdmin = user?.role === "super_admin";
   const [filters, setFilters] = useState<UsageFilters>(recentFilters);
   const [draft, setDraft] = useState<UsageFilters>(filters);
   const [range, setRange] = useState("30");
@@ -95,11 +96,12 @@ export default function UsageAnalytics() {
     if (section === "dashboard") void dashboard.refetch();
     setRefreshKey(value => value + 1);
   }
-  if (!enabled) return <p role="alert" className="p-6 text-sm text-muted-foreground">需要启用中的超级管理员账号查看客户使用情况。</p>;
+  if (!enabled) return <p role="alert" className="p-6 text-sm text-muted-foreground">请使用启用中的账号登录后查看客户使用情况。</p>;
 
   return <div className="usage-analytics min-w-0 space-y-5">
-    <UploadRetentionPanel />
+    {isSuperAdmin && <UploadRetentionPanel />}
     <header className="flex flex-wrap items-center justify-between gap-3"><h1 className="flex items-center gap-2 text-2xl font-semibold"><BarChart3 aria-hidden="true" className="size-6" /><span>客户使用分析</span></h1><Button variant="outline" size="sm" onClick={refresh} disabled={summary.isFetching}><RefreshCw aria-hidden="true" className="size-4" /><span>刷新</span></Button></header>
+    {!isSuperAdmin && <p className="text-sm text-muted-foreground">数据范围：我创建的密钥</p>}
     <form className="space-y-3 border-b pb-4" onSubmit={event => { event.preventDefault(); if (valid) apply(draft); }}>
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-[120px_minmax(0,1fr)_minmax(0,1fr)_140px_auto]">
         <Field label="时间范围"><select className={selectClass} value={range} onChange={event => { const value = event.target.value; setRange(value); if (value !== "custom") apply({ ...draft, from: recentFilters(Number(value)).from, to: recentFilters(Number(value)).to }); }}><option value="7">近 7 天</option><option value="30">近 30 天</option><option value="custom">自定义日期</option></select></Field>
@@ -160,7 +162,7 @@ export default function UsageAnalytics() {
     {(section === "timeline" || section === "errors") && <>
       {section === "errors" && <form className="flex max-w-md flex-wrap items-end gap-2" onSubmit={event => { event.preventDefault(); if (validModule) setModule(moduleDraft); }}><div className="min-w-0 flex-1"><Field label="错误模块（精确匹配）"><Input maxLength={80} placeholder="全部错误模块" value={moduleDraft} onChange={event => setModuleDraft(event.target.value)} /></Field></div><Button size="sm" type="submit" disabled={!validModule}><span>筛选错误</span></Button>{!validModule && <p role="alert" className="basis-full text-xs text-destructive">模块标识仅支持字母、数字和 _.:-。</p>}</form>}
       {system && <div className="flex items-center gap-2 text-sm"><span>系统：{usageSystemLabel(system)}</span><Button variant="ghost" size="icon" aria-label="清除系统筛选" onClick={() => setSystem(undefined)}><X aria-hidden="true" className="size-4" /></Button></div>}
-      <UsageEventList key={`${JSON.stringify(eventFilters)}:${section}:${refreshKey}`} filters={eventFilters} errorsOnly={section === "errors"} enabled={enabled} />
+      <UsageEventList key={`${JSON.stringify(eventFilters)}:${section}:${refreshKey}`} filters={eventFilters} errorsOnly={section === "errors"} enabled={enabled} canDelete={isSuperAdmin} />
     </>}
     </div>
     </div>

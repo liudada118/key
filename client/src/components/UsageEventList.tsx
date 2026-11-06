@@ -10,7 +10,7 @@ import { usageEventLabels, usageFeatureLabel, usageActionLabel, usageErrorLabel,
 
 const results: Record<string, string> = { success: "成功", failure: "失败", cancelled: "已取消", unknown: "结果未知" };
 
-export default function UsageEventList({ filters, errorsOnly, enabled }: { filters: UsageFilters; errorsOnly: boolean; enabled: boolean }) {
+export default function UsageEventList({ filters, errorsOnly, enabled, canDelete = false }: { filters: UsageFilters; errorsOnly: boolean; enabled: boolean; canDelete?: boolean }) {
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<{ sourceId: number; installationId: string; eventId: string } | null>(null);
   const events = trpc.usage.events.useQuery({ filters, errorsOnly, page }, { enabled, refetchInterval: 60000 });
@@ -51,8 +51,8 @@ export default function UsageEventList({ filters, errorsOnly, enabled }: { filte
         <details className="mt-3 text-xs text-muted-foreground"><summary className="w-fit cursor-pointer py-2">{errorsOnly ? "技术详情与调用栈" : "上报详情"}</summary>
           <p className="break-all">安装：{row.installationId} · 接收：{usageTime(row.receivedAt)} 北京时间</p>
           {row.event.runtimeVersions && <p className="mt-2 break-words">运行版本：{Object.entries(row.event.runtimeVersions).map(([key, value]) => `${key}=${value}`).join(" · ")}</p>}
-          <div className="mt-2"><DeleteUploadedButton kind="usage" sourceId={row.sourceId} installationId={row.installationId}
-            objectId={row.eventId} onDeleted={() => { setSelected(null); void events.refetch(); }} /></div>
+          {canDelete && <div className="mt-2"><DeleteUploadedButton kind="usage" sourceId={row.sourceId} installationId={row.installationId}
+            objectId={row.eventId} onDeleted={() => { setSelected(null); void events.refetch(); }} /></div>}
           {row.event.properties.module && <p className="mt-2">模块：{row.event.properties.module} · 级别：{row.event.properties.severity || "未提供"}</p>}
           {row.event.properties.stack && <pre className="mt-2 whitespace-pre-wrap break-all rounded-md bg-muted p-3 leading-6">{row.event.properties.stack}</pre>}
         </details>

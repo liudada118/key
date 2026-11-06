@@ -8,8 +8,19 @@ import { generateLicenseKey } from "../shared/crypto";
 
 let testDb: ReturnType<typeof drizzle>;
 vi.mock("./db", () => ({ getDb: async () => testDb }));
-import { authenticateUsage, getUsageCollectionOutcome, getUsageDashboard, getUsageAnalysisSummary, getUsageEventContext, getUsageOverview,
-  listUsageCustomers, listUsageCustomerUsage, listUsageEvents, listUsageFeatureUsage, listUsageSystems, persistUsageBatch } from "./usageStore";
+import { authenticateUsage, persistUsageBatch } from "./usageStore";
+import * as usageStore from "./usageStore";
+const fullScope = { kind: "all" } as const;
+const getUsageCollectionOutcome = usageStore.getUsageCollectionOutcome.bind(null, fullScope);
+const getUsageDashboard = usageStore.getUsageDashboard.bind(null, fullScope);
+const getUsageAnalysisSummary = usageStore.getUsageAnalysisSummary.bind(null, fullScope);
+const getUsageEventContext = usageStore.getUsageEventContext.bind(null, fullScope);
+const getUsageOverview = usageStore.getUsageOverview.bind(null, fullScope);
+const listUsageCustomers = usageStore.listUsageCustomers.bind(null, fullScope);
+const listUsageCustomerUsage = usageStore.listUsageCustomerUsage.bind(null, fullScope);
+const listUsageEvents = usageStore.listUsageEvents.bind(null, fullScope);
+const listUsageFeatureUsage = usageStore.listUsageFeatureUsage.bind(null, fullScope);
+const listUsageSystems = usageStore.listUsageSystems.bind(null, fullScope);
 import { licenseCustomerDisplayName, licenseInternalUse } from "./keyCustomerAttribution";
 import { licenseKeys } from "../drizzle/schema";
 import { eq } from "drizzle-orm";
@@ -38,9 +49,9 @@ describe.skipIf(!adminUrl)("usage MySQL transaction and attribution", () => {
     testDb = drizzle(pool);
     await pool.query("CREATE TABLE customers (id int PRIMARY KEY, isActive boolean NOT NULL, name varchar(256))");
     await pool.query("INSERT INTO customers VALUES (1,1,'Company A'),(2,1,'Company B'),(3,0,'Inactive')");
-    await pool.query("CREATE TABLE licenseKeys (id int AUTO_INCREMENT PRIMARY KEY, keyString text, status varchar(32), expireTimestamp bigint, isDeleted boolean DEFAULT 0, customerId int, customerName varchar(256), createdByName varchar(128), contractId int, contractNo varchar(128), generationRequestId int, remark text)");
+    await pool.query("CREATE TABLE licenseKeys (id int AUTO_INCREMENT PRIMARY KEY, keyString text, status varchar(32), expireTimestamp bigint, isDeleted boolean DEFAULT 0, customerId int, customerName varchar(256), createdById int, createdByName varchar(128), contractId int, contractNo varchar(128), generationRequestId int, remark text)");
     await pool.query("CREATE TABLE keyGenerationRequests (id int PRIMARY KEY, reason text)");
-    await pool.query("CREATE TABLE offlineKeys (id int PRIMARY KEY, customerId int, customerName varchar(256))");
+    await pool.query("CREATE TABLE offlineKeys (id int PRIMARY KEY, customerId int, customerName varchar(256), createdById int)");
     for (const file of ["0013_agent_chat_sync.sql", "0014_agent_chat_license_auth.sql", "0015_usage_analytics.sql", "0021_agent_chat_offline_sources.sql", "0022_upload_retention.sql", "0026_agent_legacy_license_sources.sql", "0027_usage_collection_revisions.sql"]) {
       const migration = await readFile(new URL(`../drizzle/${file}`, import.meta.url), "utf8");
       for (const statement of migration.split("--> statement-breakpoint")) await pool.query(statement);
@@ -49,6 +60,84 @@ describe.skipIf(!adminUrl)("usage MySQL transaction and attribution", () => {
   afterAll(async () => {
     await pool?.end();
     if (admin) { await admin.query(`DROP DATABASE IF EXISTS \`${databaseName}\``); await admin.end(); }
+  });
+
+  it("scopes every aggregate before grouping even when issuers share a customer", async () => {
+    const owner = { kind: "issuer", issuerId: 41 } as const;
+    const scoped = { from: "2026-11-06", to: "2026-11-06", environment: "test" as const, identityScope: "all" as const };
+    for (const [id, issuerId, customerId] of [[7301, 41, 1], [7302, 42, 1], [7303, 42, 2], [7304, 41, null]]) {
+      await pool.query("INSERT INTO licenseKeys (id,createdById,customerId,createdByName,remark) VALUES (?,?,?,'Issuer Fixture',?)",
+        [id, issuerId, customerId, customerId === null ? "自用" : null]);
+      await pool.query("INSERT INTO agent_chat_sources (id,license_key_id) VALUES (?,?)", [id, id]);
+    }
+    await pool.query("INSERT INTO offlineKeys (id,customerId,createdById) VALUES (7305,1,41)");
+    await pool.query("INSERT INTO agent_chat_sources (id,offline_key_id) VALUES (7305,7305)");
+    // Deliberately reuse the same event/installation IDs: source identity must never be omitted.
+    const shared = event({ occurredAt: "2026-11-06T06:00:00Z", properties: { featureId: "export", result: "success", format: "csv", systemType: "jqbed" } });
+    for (const sourceId of [7301, 7302, 7303, 7304, 7305, 7306]) {
+      await persistUsageBatch({ sourceId, customerId: 1, customerName: "Shared snapshot" }, [shared]);
+    }
+    expect((await usageStore.listUsageCustomers(owner)).map(row => row.customerKey).sort()).toEqual(["customer:1", "source:7304"]);
+    expect(await usageStore.getUsageAnalysisSummary(owner, scoped)).toMatchObject({ usedCustomers: 2, uses: 3, installations: 3, observedEvents: 3 });
+    const dashboard = await usageStore.getUsageDashboard(owner, scoped);
+    expect(dashboard.days).toHaveLength(1);
+    expect(dashboard.days[0].usedCustomers).toBe(2);
+    expect(dashboard.features[0]).toMatchObject({ featureId: "export", usedCustomers: 2, uses: 3 });
+    expect(dashboard.customers.find(row => row.customerKey === "customer:1")?.uses).toBe(2);
+    const list = { filters: scoped, page: 1, sort: "recent" as const };
+    expect((await usageStore.listUsageFeatureUsage(owner, { ...list, category: "all" })).items[0]).toMatchObject({ uses: 3, installations: 3 });
+    const customers = await usageStore.listUsageCustomerUsage(owner, list);
+    expect(customers.total).toBe(2);
+    expect(customers.items.find(row => row.customerKey === "customer:1")).toMatchObject({ uses: 2, installations: 2 });
+    expect((await usageStore.listUsageSystems(owner, scoped))[0]).toMatchObject({ events: 3, installations: 3, customers: 2 });
+    expect((await usageStore.getUsageOverview(owner, scoped)).totals).toMatchObject({ events: 3, installations: 3, customers: 2 });
+    const events = await usageStore.listUsageEvents(owner, { filters: scoped, errorsOnly: false, page: 999 });
+    expect(events).toMatchObject({ total: 3, page: 1 });
+    expect(events.items.map(row => row.sourceId).sort()).toEqual([7301, 7304, 7305]);
+    for (const sourceId of [7301, 7305]) {
+      expect(await usageStore.getUsageEventContext(owner, { sourceId, installationId: shared.installationId, eventId: shared.eventId })).toHaveLength(1);
+    }
+    for (const sourceId of [7302, 7303, 7306]) {
+      expect(await usageStore.getUsageEventContext(owner, { sourceId, installationId: shared.installationId, eventId: shared.eventId })).toBeNull();
+    }
+    for (const customerKey of ["customer:2", "source:7306"]) {
+      expect(await usageStore.getUsageAnalysisSummary(owner, { ...scoped, customerKey })).toMatchObject({ uses: 0, observedEvents: 0 });
+      expect((await usageStore.listUsageEvents(owner, { filters: { ...scoped, customerKey }, errorsOnly: false, page: 1 })).total).toBe(0);
+    }
+    const emptyScope = { kind: "issuer", issuerId: 43 } as const;
+    expect(await usageStore.listUsageCustomers(emptyScope)).toEqual([]);
+    expect(await usageStore.getUsageAnalysisSummary(emptyScope, scoped)).toMatchObject({ uses: 0, observedCustomers: 0 });
+    expect(await usageStore.getUsageDashboard(emptyScope, scoped)).toEqual({ days: [], features: [], customers: [] });
+    expect((await usageStore.getUsageOverview(fullScope, scoped)).totals.events).toBe(6);
+    expect((await usageStore.getUsageOverview({ kind: "issuer", issuerId: 42 }, scoped)).totals.events).toBe(2);
+  });
+
+  it("guards collection receipts and error bodies by online/offline issuer, not shared IDs", async () => {
+    const owner = { kind: "issuer", issuerId: 51 } as const;
+    for (const [id, createdById] of [[7401, 51], [7402, 52]]) {
+      await pool.query("INSERT INTO licenseKeys (id,createdById,customerId) VALUES (?,?,1)", [id, createdById]);
+      await pool.query("INSERT INTO agent_chat_sources (id,license_key_id) VALUES (?,?)", [id, id]);
+    }
+    await pool.query("INSERT INTO offlineKeys (id,createdById,customerId) VALUES (7403,51,1)");
+    await pool.query("INSERT INTO agent_chat_sources (id,offline_key_id) VALUES (7403,7403)");
+    const shared = event({ schemaVersion: 2, occurredAt: "2026-11-07T06:00:00.000Z", eventName: "collection_finished", properties: {
+      featureId: "collection", collectionId: "shared-outcome", outcome: "saved", result: "success", outcomeRevision: 0,
+      stopReason: "user", committedRows: 8, failedRows: 0, frameCount: 8, durationMs: 1000 } });
+    const error = event({ occurredAt: shared.occurredAt, installationId: shared.installationId, sessionId: shared.sessionId,
+      eventName: "error_reported", properties: { featureId: "collection", errorCode: "SYNTHETIC", message: "Fixture error" } });
+    for (const sourceId of [7401, 7402, 7403]) await persistUsageBatch({ sourceId, customerId: 1, customerName: "Shared" }, [shared, error]);
+    const identity = { installationId: shared.installationId, collectionId: "shared-outcome" };
+    for (const sourceId of [7401, 7403]) {
+      expect(await usageStore.getUsageCollectionOutcome(owner, { ...identity, sourceId })).toMatchObject({ complete: true, event: shared });
+    }
+    expect(await usageStore.getUsageCollectionOutcome(owner, { ...identity, sourceId: 7402 })).toBeNull();
+    expect(await usageStore.getUsageEventContext(owner, { sourceId: 7402, installationId: error.installationId, eventId: error.eventId })).toBeNull();
+    const scoped = { from: "2026-11-07", to: "2026-11-07", environment: "test" as const, identityScope: "all" as const };
+    expect(await usageStore.getUsageAnalysisSummary(owner, scoped)).toMatchObject({ errors: 2, successes: 2, collectionMs: 2000 });
+    expect((await usageStore.listUsageEvents(owner, { filters: scoped, errorsOnly: true, page: 1 })).items.map(row => row.sourceId).sort()).toEqual([7401, 7403]);
+    await pool.query("DELETE FROM usage_events WHERE source_id=7402");
+    expect(await usageStore.getUsageCollectionOutcome(owner, { ...identity, sourceId: 7402 })).toBeNull();
+    expect(await usageStore.getUsageCollectionOutcome(fullScope, { ...identity, sourceId: 7402 })).toMatchObject({ contentUnavailable: true });
   });
 
   it("resolves historical no-contract notes, self use and later bindings consistently without rewriting receipts", async () => {
